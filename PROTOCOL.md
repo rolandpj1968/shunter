@@ -33,7 +33,7 @@ These are safety properties. Every reachable state must satisfy them, whatever t
 - **I2, fast-forward only.** Trunk's history only grows. No landing rewrites or drops a commit already on trunk.
 - **I3, stacks are whole.** A stack lands entirely or not at all, and never in an order that lands a change before its base.
 - **I4, frozen while riding.** A change's head doesn't move while it rides a batch. If it moves, the batch is void and doesn't land.
-- **I5, speculation is exact.** A speculative batch (§5.3) is built on the exact head of the batch beneath it, and lands only if that batch landed at that head.
+- **I5, speculation is exact.** In a speculation chain (§5.3), batch *k* is built on the exact head of batch *k−1*, and lands only if batches 1…*k−1* all landed at exactly the heads it was built on. Batches land in chain order.
 - **I6, blame needs evidence.** A change goes back to its owner as charged only when a blame rule or a recorded judgement names it.
 - **I7, one writer.** At most one actor fast-forwards trunk.
 
@@ -68,9 +68,10 @@ A line whose base is queued but not landed **waits for its base** and lines itse
 ### 5.3 Batches and speculation
 
 - **Joining:** the runner joins waiting lines into a batch, in order. It **skips** a line it can't take (it shares files with the batch, must run alone, or would exceed the caps) rather than stopping at it. Skipping is safe because no line is stacked on another line (§5.2).
-- **Speculation:** while batch 1 runs, the runner may build batch 2 on batch 1's exact head (I5).
-- **When batch 1 lands:** batch 2 is still a fast-forward and is promoted.
-- **When batch 1 fails or lands any other way:** batch 2 is void.
+- **Speculation, to depth D:** while batch 1 runs, the runner builds batch 2 on batch 1's exact head, batch 3 on batch 2's, and so on up to depth D. All D batches run CI at the same time (I5).
+- **Landing is in chain order:** when batch 1 lands, the chain shifts up, batch 2 becomes batch 1, and the runner extends the chain at its tail.
+- **When batch *j* fails, or lands any other way:** batches *j+1…D* are void, because the head they were built on will never exist. They're rebuilt on trunk, minus whatever blame removed from batch *j*.
+- **Choosing D:** the trade-off is throughput against waste. With a batch pass probability *p*, the best case lands D batches per CI cycle, and a failure at position *j* voids D−*j* runs. Deep chains pay when *p* is high (around 0.9), and depth 1 is about the limit when *p* is near 0.5. On metered CI, voided runs cost money; on owned runners they cost only capacity, so D is bounded by free runner slots (D × one batch's jobs) more than by spend. D is set at judgement point J4.
 - **Change-based CI:** a batch's CI may run only the jobs its change can affect. "Its change" is measured against the batch beneath it, not trunk, or speculation would count batch 1's change twice.
 
 ### 5.4 Classifying a failure
@@ -133,7 +134,7 @@ Each point defines what the judge **sees**, what it **may choose**, the **deadli
 
 ### J4. Cost against speed
 
-Batch size caps, speculation depth, which jobs a batch runs.
+Batch size caps, speculation depth D (§5.3), which jobs a batch runs. A human sets the bounds; within them, the judge sets D from the recent pass rate and the runner slots free.
 - **Sees:** pass rates, queue length, CI spend.
 - **May choose:** settings within bounds a human has set.
 - **Default:** keep the current settings.
@@ -172,6 +173,7 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 
 ## 10. Open questions
 
-- Depth of speculation beyond one batch: Zuul goes deep, and we stopped at one because of CI cost.
+- **Speculating on failure as well as success** (as SubmitQueue does): alongside "batch 2 on batch 1's head", also build "batch 2 on trunk", for when batch 1 fails. This is exponential in general, but bounded to one alternative it removes the rebuild delay after a failure.
+- **The depth policy:** a fixed D, D chosen by the judge (J4), or D computed from the pass rate. Note that adaptive *batch size* was considered and rejected, as pre-splitting without cause; depth is different, because it spends spare capacity and never shrinks a batch.
 - Whether J1's default should be "park" rather than "split" whenever any doubt exists.
 - How promoted rules are retired when they stop firing.
