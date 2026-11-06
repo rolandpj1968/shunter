@@ -6,7 +6,7 @@
 
 **Turning a high rate of locally-checked changes into one globally-tested history, when the global test is slow, expensive and noisy, and judgement is scarce.**
 
-AI-agent teams face this problem; human teams on legacy workflows largely don't.
+AI-agent teams face this problem. Human teams on legacy workflows don't, except at the scale of the largest monorepos (Google's, Uber's, OpenStack's), which is where Zuul and SubmitQueue came from.
 
 - **On a human team with a legacy workflow,** developers open pull requests by hand, CI tests each one, and a human merges it. Pull requests arrive slowly enough that testing them one at a time, with humans judging each failure, keeps up.
 - **On an AI-agent team with an agentic workflow,** many AI agents write code concurrently and open pull requests themselves, with one coordinator (a human or an AI) overseeing them. Pull requests arrive faster than one-at-a-time testing can land them, and the judgement humans supplied for free is missing.
