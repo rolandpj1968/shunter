@@ -74,7 +74,36 @@ A line whose base is queued but not landed **waits for its base** and lines itse
 - **Choosing D:** the trade-off is throughput against waste. With a batch pass probability *p*, the best case lands D batches per CI cycle, and a failure at position *j* voids D−*j* runs. Deep chains pay when *p* is high (around 0.9), and depth 1 is about the limit when *p* is near 0.5. On metered CI, voided runs cost money; on owned runners they cost only capacity, so D is bounded by free runner slots (D × one batch's jobs) more than by spend. D is set at judgement point J4.
 - **Change-based CI:** a batch's CI may run only the jobs its change can affect. "Its change" is measured against the batch beneath it, not trunk, or speculation would count batch 1's change twice.
 
-### 5.4 Classifying a failure
+### 5.4 Pre-flight
+
+There are three tiers of checking, and each answers a different question:
+
+| Tier | Runs on | Question |
+|---|---|---|
+| **1. Producer pre-checks** | the change, on its own base, before it's offered as a line | Does this change work at all? |
+| **2. Batch pre-flight** | the assembled batch, on the runner, before CI is dispatched | Did *combining* these changes break something cheap to detect? |
+| **3. CI** | the batch, in full | Is this exact state safe to land? |
+
+Tier 2 runs on every batch, before any CI is spent. A failure there sends the changes it names back (by the blame rules of §5.6), with no rerun.
+
+**What belongs in pre-flight is an economic test.** A check earns its place if
+
+> P(it catches a failure) × (the CI run it saves + the latency of a failed batch) > its own cost on every batch.
+
+So a pre-flight check is:
+- **cheap:** seconds to a few minutes, never comparable to CI;
+- **deterministic:** a flaky pre-flight step sends correct changes back with no rerun, which is worse than not having the step;
+- **integration-sensitive, or a frequent CI catch:** above all, things a single change's pre-check can't see, such as conflicts, generated files after the merge, counts that ratchet across changes, and rules that fire across modules.
+
+Not in pre-flight: long test suites, anything that needs services or browsers, anything flaky. Those belong to CI.
+
+**The selection is data-driven, in both directions:**
+- **Promotion:** every failure CI catches is recorded with the test, its location and its run time. A failure CI catches often, which a check could catch in seconds, is promoted into pre-flight.
+- **Demotion:** every pre-flight step's catch history is recorded. A step that has caught nothing in a long window (on the order of 150 batches) is dropped.
+
+The review that promotes and demotes is judgement point J6.
+
+### 5.5 Classifying a failure
 
 Each failure gets one class, decided in this order:
 1. **Infrastructure:** no check ran (setup, tooling, the runner lost), or the forge refused for a transient reason (§2.2). The batch reruns, or the line goes back unchanged.
@@ -82,7 +111,7 @@ Each failure gets one class, decided in this order:
 3. **Timing:** only timeouts or lost connections. One rerun.
 4. **Deterministic:** an assertion, or a compile or lint error. No rerun; go to blame.
 
-### 5.5 Blame
+### 5.6 Blame
 
 Blame maps the evidence in a deterministic failure to changes. The most specific rule goes first:
 - a rule a change's **description** breaks (for example, "closes an issue whose gap it leaves listed");
@@ -93,12 +122,12 @@ The outcomes:
 - **Blame names some changes, but not all:** those return to their owners, and the rest go again whole.
 - **Blame names none, or all:** that's not a decision blame can make → **judgement point J1** (§6.1).
 
-### 5.6 Landing
+### 5.7 Landing
 
 - The runner fast-forwards trunk to the batch's tested head (I1, I2). Transient forge refusals are retried (§2.2).
 - If the fast-forward is refused permanently, a judgement-free fallback lands the batch by the forge's merge (I1 still holds for the tree, though not for commit identity), voids speculation, and resumes speculation once nothing rides on the old head.
 
-### 5.7 Flaky tests
+### 5.8 Flaky tests
 
 Flakes set *p*, the chance that a batch passes on its merits, and *p* sets batch size, speculation depth and waste. With 1,000 tests that each flake 0.01% of the time, about one run in ten fails from flakes alone, so unmanaged flakes cap *p* near 0.9.
 
@@ -122,7 +151,7 @@ Each point defines what the judge **sees**, what it **may choose**, the **deadli
   - **park** (§6.4): the failure isn't the batch's, trunk or a shared fixture is broken;
   - rerun once (stating why it might differ).
 - **Deadline:** 10 minutes. **Default:** if the same test failed in the previous batch with unrelated changes, park. Otherwise split.
-- **Promotion:** a recurring J1 judgement becomes a blame rule (§5.5). An example is "a PR that closes a listed gap": judged once, a rule thereafter.
+- **Promotion:** a recurring J1 judgement becomes a blame rule (§5.6). An example is "a PR that closes a listed gap": judged once, a rule thereafter.
 
 ### J2. Trunk, or a shared fixture, may be broken
 
@@ -152,13 +181,24 @@ Batch size caps, speculation depth D (§5.3), which jobs a batch runs. A human s
 
 ### J5. A newly flaky test: a test bug or a product bug?
 
-- **Triggered by:** a test whose flake score (§5.7) crosses the quarantine threshold for the first time.
+- **Triggered by:** a test whose flake score (§5.8) crosses the quarantine threshold for the first time.
 - **Sees:** its failure modes, with messages and timings; the code it exercises; recent changes there; the nightly order-shuffled and run-twice results.
 - **May choose:**
   - **test bug:** quarantine it and assign a fix;
   - **product bug:** file it as a product defect, and keep the test gating (a race or a missing lock must not be hidden);
-  - **infrastructure:** add the failure's signature to the infrastructure list (§5.4).
+  - **infrastructure:** add the failure's signature to the infrastructure list (§5.5).
 - **Deadline:** one day. **Default:** quarantine with an expiry, which is safe for throughput, and the expiry brings the question back.
+
+### J6. The pre-flight review
+
+- **Triggered:** periodically (for example weekly), or when a step's catch rate or cost changes sharply.
+- **Sees:** the record of what CI caught, with each failure's location and run time; each pre-flight step's catch history and cost; the share of batches failing in CI on things a cheap check could have caught.
+- **May choose:**
+  - promote a check into pre-flight;
+  - demote a step that no longer catches anything;
+  - move a check between tier 1 and tier 2 (an integration-insensitive check belongs with the producer).
+- **Default:** no change.
+- **Constraint:** a step may be promoted only if it's deterministic (§5.4).
 
 ### 6.4 Parking
 

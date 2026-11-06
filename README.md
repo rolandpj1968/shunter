@@ -34,6 +34,7 @@ Within those terms, Shunter's knobs trade throughput, latency and cost against e
 
 - **Batching** tests several changes in one CI run. It raises throughput and lowers cost, but it blurs which change caused a failure.
 - **Speculation** tests the next batches on the expected future trunk, before the current batch lands. It raises throughput and cuts latency, but it costs runs that are thrown away when an earlier batch fails. On metered CI that waste is money; on owned runners it's only spare capacity, so a team on owned runners can speculate deeper.
+- **Pre-flight** runs cheap, deterministic checks on the assembled batch before any CI is spent: conflicts, regenerated files, lint, counts across changes, frequent CI catches. Checks are promoted into pre-flight when CI keeps catching what they'd catch in seconds, and dropped when they stop catching anything.
 - **Change-based test selection** runs only the jobs a change can affect, which lowers cost without weakening the invariant.
 - **Flaky-test management** keeps a batch's chance of passing high. That chance limits every other knob (see *The arithmetic of flakiness* below).
 - **Judgement** decides what rules can't, at defined points. The coordinator's attention is itself a limit on throughput, so recurring judgements are promoted into rules, and silence falls back to a safe default.
