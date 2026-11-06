@@ -18,4 +18,4 @@ What sets it apart is a **judge in the loop**:
 
 ## Why "Shunter"
 
-In a railway yard, the shunter moves cars about to make up trains, and decides what goes where.
+In a railway yard, the shunter moves carriages and wagons about to make up trains, and decides what goes where.
