@@ -98,6 +98,17 @@ The outcomes:
 - The runner fast-forwards trunk to the batch's tested head (I1, I2). Transient forge refusals are retried (§2.2).
 - If the fast-forward is refused permanently, a judgement-free fallback lands the batch by the forge's merge (I1 still holds for the tree, though not for commit identity), voids speculation, and resumes speculation once nothing rides on the old head.
 
+### 5.7 Flaky tests
+
+Flakes set *p*, the chance that a batch passes on its merits, and *p* sets batch size, speculation depth and waste. With 1,000 tests that each flake 0.01% of the time, about one run in ten fails from flakes alone, so unmanaged flakes cap *p* near 0.9.
+
+- **Flake score.** Each test's failure rate on code where it should pass, kept over a rolling window. The evidence is a rerun that passes, a failure on trunk-equivalent code that passes unchanged, and the nightly order-shuffled and run-twice runs.
+- **Cost.** A flake's cost is its score × the batches it fails × the changes in those batches. Fix the most costly first, not the most numerous.
+- **Quarantine, bounded.** A test whose score crosses the threshold still runs and is still reported, but doesn't gate a batch. Each quarantined test has an owner, an expiry date and an issue. The quarantine count is a ratchet: it only goes down. When a test's expiry passes, judgement point J5 runs again.
+- **Retry the test, not the batch.** Only a quarantined or known-flaky test may be retried in place. Any other failing test gets no retry: a fresh failure is evidence.
+- **Prevention.** A new or changed test runs twice, and in shuffled order, before it lands, and a leak audit fails a test that changes shared state (§12). Flakes are cheapest to stop at the change that introduces them.
+- **Feeding D.** The judge's choice of speculation depth (J4) reads *p* net of quarantined tests.
+
 ## 6. Judgement points
 
 Each point defines what the judge **sees**, what it **may choose**, the **deadline**, and the **default** if the judge is silent. Every choice is recorded with its evidence.
@@ -138,6 +149,16 @@ Batch size caps, speculation depth D (§5.3), which jobs a batch runs. A human s
 - **Sees:** pass rates, queue length, CI spend.
 - **May choose:** settings within bounds a human has set.
 - **Default:** keep the current settings.
+
+### J5. A newly flaky test: a test bug or a product bug?
+
+- **Triggered by:** a test whose flake score (§5.7) crosses the quarantine threshold for the first time.
+- **Sees:** its failure modes, with messages and timings; the code it exercises; recent changes there; the nightly order-shuffled and run-twice results.
+- **May choose:**
+  - **test bug:** quarantine it and assign a fix;
+  - **product bug:** file it as a product defect, and keep the test gating (a race or a missing lock must not be hidden);
+  - **infrastructure:** add the failure's signature to the infrastructure list (§5.4).
+- **Deadline:** one day. **Default:** quarantine with an expiry, which is safe for throughput, and the expiry brings the question back.
 
 ### 6.4 Parking
 
