@@ -106,7 +106,7 @@ Flakes set *p*, the chance that a batch passes on its merits, and *p* sets batch
 - **Cost.** A flake's cost is its score × the batches it fails × the changes in those batches. Fix the most costly first, not the most numerous.
 - **Quarantine, bounded.** A test whose score crosses the threshold still runs and is still reported, but doesn't gate a batch. Each quarantined test has an owner, an expiry date and an issue. The quarantine count is a ratchet: it only goes down. When a test's expiry passes, judgement point J5 runs again.
 - **Retry the test, not the batch.** Only a quarantined or known-flaky test may be retried in place. Any other failing test gets no retry: a fresh failure is evidence.
-- **Prevention.** A new or changed test runs twice, and in shuffled order, before it lands, and a leak audit fails a test that changes shared state (§12). Flakes are cheapest to stop at the change that introduces them.
+- **Prevention.** A new or changed test runs twice, and in shuffled order, before it lands, and a leak audit fails a test that changes shared state (each test counts the shared fixtures before and after it runs). Flakes are cheapest to stop at the change that introduces them.
 - **Feeding D.** The judge's choice of speculation depth (J4) reads *p* net of quarantined tests.
 
 ## 6. Judgement points
