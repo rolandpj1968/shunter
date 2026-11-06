@@ -1,0 +1,177 @@
+# Shunter: a merge queue with a judge in the loop
+
+*Draft 0.1, 6 November 2026. The protocol behind a merge queue that lands work from many concurrent agents onto one branch: its mechanism, the invariants no actor may break, and the points where judgement decides.*
+
+## 1. The problem
+
+Many producers, here AI agents, open pull requests faster than CI can test them one at a time. One branch, called **trunk** here, must only ever contain tested states. CI is slow (20–30 minutes), costly, and fails for many reasons that aren't the change's fault: flaky tests, dying runners, a forge returning server errors, tests that leak state into each other, and trunk itself broken.
+
+Pure mechanism handles the common case and fails the rest badly. A rule like "split the batch when blame names nobody" turns one broken shared fixture into a cascade of half-batches. What was needed was someone to look and say "this isn't any PR's fault: stop". This protocol says where that judgement sits, what it may do, and what happens when it's silent.
+
+## 2. Principles
+
+1. **Trunk only ever advances to a tested state,** by fast-forward to the exact commit CI tested. Nothing is rewritten between test and landing.
+2. **Every external call is fallible.** A failure is transient by default. It's permanent only when the refusal follows from what the request means: not a fast-forward, permission denied, a rule violation, a bad reference. Transient failures are retried with backoff, then escalated; they're never charged to a change.
+3. **Blame needs evidence.** A change is charged with a failure only when evidence names it: a failing test in files it touches, an error at a line it added, a rule its description breaks. Otherwise the failure belongs to the infrastructure, to trunk, or to judgement.
+4. **Rules guard safety; judgement handles the rest.** The invariants (§4) bind every actor, the judge included. Within them, decisions with no clear mechanical answer go to the judge, at defined points (§6), from a fixed menu of actions.
+5. **Silence is safe.** Every judgement point has a deadline and a conservative default. A missing judge costs time, never correctness.
+6. **Judgements become rules.** Each judgement is recorded with its evidence. When the same judgement recurs, it's promoted into a mechanical rule, and the rulebook grows only from observed judgement.
+7. **Nothing waits forever unnoticed.** Every change either lands or returns to its owner with a stated reason.
+
+## 3. Actors
+
+- **Producers** (agents) write changes, run cheap local checks, and offer a change for landing as a **line**: one change, or a stack of changes that must land together.
+- **The runner** is the only actor that writes trunk. It builds batches, runs CI and lands.
+- **The judge** decides at the judgement points. Today that's the coordinator, an AI session; any actor that meets §6's contract will do.
+- **The forge and CI** (for example, GitHub and its runners) are external and fallible.
+
+## 4. Invariants
+
+These are safety properties. Every reachable state must satisfy them, whatever the producers, the forge or the judge do.
+
+- **I1, tested trunk.** Every commit trunk points to was the head of a CI run that passed with exactly that tree.
+- **I2, fast-forward only.** Trunk's history only grows. No landing rewrites or drops a commit already on trunk.
+- **I3, stacks are whole.** A stack lands entirely or not at all, and never in an order that lands a change before its base.
+- **I4, frozen while riding.** A change's head doesn't move while it rides a batch. If it moves, the batch is void and doesn't land.
+- **I5, speculation is exact.** A speculative batch (§5.3) is built on the exact head of the batch beneath it, and lands only if that batch landed at that head.
+- **I6, blame needs evidence.** A change goes back to its owner as charged only when a blame rule or a recorded judgement names it.
+- **I7, one writer.** At most one actor fast-forwards trunk.
+
+Liveness:
+
+- **L1.** Every offered line eventually lands, or returns to its owner with a reason, or is held by a recorded judgement visible to its owner.
+- **L2.** If the forge and CI eventually behave, and trunk is healthy, a line with no fault of its own eventually lands.
+
+## 5. Mechanism
+
+### 5.1 States of a line
+
+```
+offered ──gate──▶ waiting ──join──▶ riding ──CI pass──▶ landed
+   │                │  ▲               │
+   │ refused        │  │ parked /      ├─CI fail, blamed──▶ returned (to its owner, with evidence)
+   ▼                ▼  │ restored      ├─CI fail, unblamed──▶ judgement (§6.1)
+returned         waiting-for-base      ├─infrastructure──▶ waiting (retried)
+                 (lines itself when    └─head moved──▶ waiting (void batch)
+                  its base lands)
+```
+
+### 5.2 The gate
+
+A line is accepted when:
+- its changes are open and from approved producers;
+- each change's base has landed, or is earlier in the same line;
+- it isn't already waiting or riding.
+
+A line whose base is queued but not landed **waits for its base** and lines itself when the base lands. Nobody polls.
+
+### 5.3 Batches and speculation
+
+- **Joining:** the runner joins waiting lines into a batch, in order. It **skips** a line it can't take (it shares files with the batch, must run alone, or would exceed the caps) rather than stopping at it. Skipping is safe because no line is stacked on another line (§5.2).
+- **Speculation:** while batch 1 runs, the runner may build batch 2 on batch 1's exact head (I5).
+- **When batch 1 lands:** batch 2 is still a fast-forward and is promoted.
+- **When batch 1 fails or lands any other way:** batch 2 is void.
+- **Change-based CI:** a batch's CI may run only the jobs its change can affect. "Its change" is measured against the batch beneath it, not trunk, or speculation would count batch 1's change twice.
+
+### 5.4 Classifying a failure
+
+Each failure gets one class, decided in this order:
+1. **Infrastructure:** no check ran (setup, tooling, the runner lost), or the forge refused for a transient reason (§2.2). The batch reruns, or the line goes back unchanged.
+2. **Known flake:** a test recorded as flaky failed. One rerun.
+3. **Timing:** only timeouts or lost connections. One rerun.
+4. **Deterministic:** an assertion, or a compile or lint error. No rerun; go to blame.
+
+### 5.5 Blame
+
+Blame maps the evidence in a deterministic failure to changes. The most specific rule goes first:
+- a rule a change's **description** breaks (for example, "closes an issue whose gap it leaves listed");
+- an error at a line a change **added**;
+- a failing test in files a change **touches**.
+
+The outcomes:
+- **Blame names some changes, but not all:** those return to their owners, and the rest go again whole.
+- **Blame names none, or all:** that's not a decision blame can make → **judgement point J1** (§6.1).
+
+### 5.6 Landing
+
+- The runner fast-forwards trunk to the batch's tested head (I1, I2). Transient forge refusals are retried (§2.2).
+- If the fast-forward is refused permanently, a judgement-free fallback lands the batch by the forge's merge (I1 still holds for the tree, though not for commit identity), voids speculation, and resumes speculation once nothing rides on the old head.
+
+## 6. Judgement points
+
+Each point defines what the judge **sees**, what it **may choose**, the **deadline**, and the **default** if the judge is silent. Every choice is recorded with its evidence.
+
+### J1. A deterministic failure that blame can't attribute
+
+- **Sees:** the failure, the batch's changes, the last N batches' results, trunk's recent health (nightly runs, other batches failing on the same test), and the changes' descriptions.
+- **May choose:**
+  - charge changes X (stating the evidence);
+  - split the batch (whole stacks);
+  - **park** (§6.4): the failure isn't the batch's, trunk or a shared fixture is broken;
+  - rerun once (stating why it might differ).
+- **Deadline:** 10 minutes. **Default:** if the same test failed in the previous batch with unrelated changes, park. Otherwise split.
+- **Promotion:** a recurring J1 judgement becomes a blame rule (§5.5). An example is "a PR that closes a listed gap": judged once, a rule thereafter.
+
+### J2. Trunk, or a shared fixture, may be broken
+
+- **Triggered by:** two consecutive batches with unrelated changes failing on the same test, or the nightly run failing.
+- **Sees:** the failures, and recent landings touching the failing area.
+- **May choose:**
+  - park and assign a fix, which lands first and alone;
+  - revert a named landing;
+  - declare it a flake (recording it).
+- **Deadline:** 15 minutes. **Default:** park.
+
+### J3. Escalated retries
+
+- **Triggered by:** a transient failure that persists past its retry budget.
+- **May choose:**
+  - keep waiting, with a new budget;
+  - pause the queue;
+  - treat the failure as permanent (stating why).
+- **Default:** pause, and alert a human.
+
+### J4. Cost against speed
+
+Batch size caps, speculation depth, which jobs a batch runs.
+- **Sees:** pass rates, queue length, CI spend.
+- **May choose:** settings within bounds a human has set.
+- **Default:** keep the current settings.
+
+### 6.4 Parking
+
+Parking moves the waiting lines aside: arrivals park too, and parked lines count as queued. The batch in flight finishes. The fix lands alone; then the lines come back. Parking is a judgement act, recorded, and always followed by a restore.
+
+## 7. The failure model
+
+The protocol assumes all of the following, and must stay safe under any combination of them:
+- the forge refuses, errors, times out, or answers late; a refusal may be transient or permanent;
+- CI hangs, loses runners, serves unreadable logs, or reports a result for the wrong attempt;
+- tests are flaky, order-dependent, or leak state into each other;
+- trunk breaks without any batch's fault;
+- producers push to a riding change, retire mid-line, or offer duplicate lines;
+- the judge is slow, silent or wrong (safety must still hold; only liveness may suffer);
+- the runner restarts at any point. All its state is on disk, and it resumes from what it finds.
+
+## 8. Comparison with other systems
+
+| | Batching | Speculation | Attribution | Judgement |
+|---|---|---|---|---|
+| **Bors** (Rust) | yes | no | bisection | none |
+| **Zuul** (OpenStack) | dependent pipeline | yes, deep | each change tested on those ahead | none; humans re-trigger |
+| **GitHub merge queue** | yes | yes | removes failing group members | none |
+| **Uber SubmitQueue** | conflict analysis | probabilistic | build graph | none |
+| **This protocol** | yes, with skip-ahead | one level | evidence first, then judgement | explicit points, deadlines, safe defaults, promotion into rules |
+
+The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judgement as a first-class part of the protocol, bounded by invariants and backed by defaults.
+
+## 9. Verification
+
+- **A TLA+ model** of §5 and §6, with the forge, CI and the judge as adversaries. TLC checks I1–I7 under every interleaving and every failure in §7, and checks L1 under fairness for the forge and CI.
+- **The judge is modelled as nondeterministic choice within its menu.** So the model proves safety whatever the judge decides, which is the point of bounding judgement.
+
+## 10. Open questions
+
+- Depth of speculation beyond one batch: Zuul goes deep, and we stopped at one because of CI cost.
+- Whether J1's default should be "park" rather than "split" whenever any doubt exists.
+- How promoted rules are retired when they stop firing.
