@@ -6,12 +6,12 @@
 
 **Turning a high rate of locally-checked changes into one globally-tested history, when the global test is slow, expensive and noisy, and judgement is scarce.**
 
-Two kinds of development team face this problem:
+AI-agent teams face this problem; human teams on legacy workflows largely don't.
 
-- **Human teams on legacy workflows:** developers open pull requests by hand, CI tests each one, and a human merges it.
-- **AI-agent teams on agentic workflows:** many AI agents write code concurrently and open pull requests themselves, with one coordinator (a human or an AI) overseeing them.
+- **On a human team with a legacy workflow,** developers open pull requests by hand, CI tests each one, and a human merges it. Pull requests arrive slowly enough that testing them one at a time, with humans judging each failure, keeps up.
+- **On an AI-agent team with an agentic workflow,** many AI agents write code concurrently and open pull requests themselves, with one coordinator (a human or an AI) overseeing them. Pull requests arrive faster than one-at-a-time testing can land them, and the judgement humans supplied for free is missing.
 
-Legacy merge workflows quietly rely on conditions that agentic workflows break:
+Legacy merge workflows work because they quietly rely on conditions that agentic workflows break:
 
 1. **Arrival rate against test throughput.** A human team opens a few pull requests a day, and CI can test each one separately with time to spare. AI agents open pull requests faster than CI can test them one at a time. When pull requests arrive faster than CI can test them, the queue grows without bound, so an agentic workflow *must* test pull requests in batches.
 2. **Batching destroys attribution.** When CI tests one pull request per run, a failure belongs to that pull request. When CI tests twelve pull requests in one run, the failure could belong to any of them. Bisecting the batch costs extra CI runs, and blaming from the evidence in the logs is heuristic.
