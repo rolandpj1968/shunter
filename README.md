@@ -71,7 +71,7 @@ So a 5,000-test suite where each test flakes once in a thousand runs almost neve
 - **Speculation depth:** a failure at position *j* in a chain of *D* speculative batches voids the *D − j* behind it, so the waste grows quickly as *p* falls.
 - **Cost:** a batch needs 1/*p* runs on average to go green: 1.1 runs at 90%, 2 at 50%.
 
-That's why Shunter treats flaky tests as part of the protocol, not as test hygiene. Each test gets a flake score from its history. Flakes are fixed in order of what they cost the queue, and quarantine is bounded by owners, expiry dates and a ratchet. Only known flakes are retried, test by test, and a judge decides whether a newly flaky test is a test bug or a product bug (see [`PROTOCOL.md`](PROTOCOL.md) §5.7 and J5).
+That's why Shunter treats flaky tests as part of the protocol, not as test hygiene. Each test gets a flake score from its history. Flakes are fixed in order of what they cost the queue, and quarantine is bounded by owners, expiry dates and a ratchet. Only known flakes are retried, test by test, and a judge decides whether a newly flaky test is a test bug or a product bug (see [`PROTOCOL.md`](PROTOCOL.md) §5.8 and J5).
 
 ## Status
 
