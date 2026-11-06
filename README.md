@@ -8,8 +8,8 @@
 
 Two kinds of development team face this problem:
 
-- **Human teams on legacy workflows:** developers open pull requests by hand, CI tests each one, and a person merges it.
-- **AI-agent teams on agentic workflows:** many AI agents write code concurrently and open pull requests themselves, with one coordinator (a person or an AI) overseeing them.
+- **Human teams on legacy workflows:** developers open pull requests by hand, CI tests each one, and a human merges it.
+- **AI-agent teams on agentic workflows:** many AI agents write code concurrently and open pull requests themselves, with one coordinator (a human or an AI) overseeing them.
 
 Legacy merge workflows quietly rely on conditions that agentic workflows break:
 
@@ -36,7 +36,7 @@ What sets it apart is a **judge in the loop**:
 
 A flaky test fails sometimes on code that should pass it. Flakes are common in real test suites: Google has reported that about 1.5% of its test runs produce a flaky result, and that about 16% of its tests show some flakiness. Academic studies of open-source projects put the commonest causes as asynchronous waits, concurrency, and tests that depend on each other's order or leftover state.
 
-On a human team, the usual answer is "just rerun it". A rerun costs a few minutes of one person's attention, the failure is someone's own pull request, and the cost is invisible. On an AI-agent team, the same rerun costs a whole CI run and holds up every pull request in the batch, and it happens all day.
+On a human team, the usual answer is "just rerun it". A rerun costs a few minutes of one human's attention, the failure is someone's own pull request, and the cost is invisible. On an AI-agent team, the same rerun costs a whole CI run and holds up every pull request in the batch, and it happens all day.
 
 The arithmetic: if a suite has *T* tests, each failing at random with probability *f* on correct code, a run on correct code passes with probability (1 − *f*)^*T*.
 
