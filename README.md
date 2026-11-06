@@ -1,6 +1,6 @@
 # Shunter
 
-**Shunter assembles trains of changes, lands them on trunk, and knows when to hold the line.**
+**Shunter assembles trains of code changes, lands them on a linear trunk, and knows when to hold the line.**
 
 ## The problem
 
