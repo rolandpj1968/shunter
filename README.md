@@ -22,6 +22,28 @@ Legacy merge workflows quietly rely on conditions that agentic workflows break:
 
 In short: **legacy merge workflows assume that verification is cheap relative to the rate of new pull requests, and that judgement is abundant and spread across the team. In agentic workflows, verification is the bottleneck, and judgement is scarce and concentrated in the coordinator.** Shunter's mechanism attacks the first problem: batching, speculation and change-based testing. Shunter's judgement design attacks the second: the coordinator's judgement is spent only where rules can't decide, each decision has a deadline and a safe default, and judgements that recur are promoted into rules.
 
+## The arithmetic of flakiness
+
+A flaky test fails sometimes on code that should pass it. Flakes are common in real test suites: Google has reported that about 1.5% of its test runs produce a flaky result, and that about 16% of its tests show some flakiness. Academic studies of open-source projects put the commonest causes as asynchronous waits, concurrency, and tests that depend on each other's order or leftover state.
+
+On a human team, the usual answer is "just rerun it". A rerun costs a few minutes of one person's attention, the failure is someone's own pull request, and the cost is invisible. On an AI-agent team, the same rerun costs a whole CI run and holds up every pull request in the batch, and it happens all day.
+
+The arithmetic: if a suite has *T* tests, each failing at random with probability *f* on correct code, a run on correct code passes with probability (1 − *f*)^*T*.
+
+| Tests *T* | *f* = 0.001% | *f* = 0.01% | *f* = 0.1% |
+|---|---|---|---|
+| 500 | 99.5% | 95.1% | 60.6% |
+| 1,000 | 99.0% | 90.5% | 36.8% |
+| 5,000 | 95.1% | 60.7% | 0.7% |
+
+So a 5,000-test suite where each test flakes once in a thousand runs almost never passes on correct code, however good the changes are. And this is *p*, the chance that a batch passes on its merits before any change in it is actually wrong. Everything else rests on it:
+
+- **Batch size:** a batch also fails when any of its changes is wrong, so *p* only falls as batches grow.
+- **Speculation depth:** a failure at position *j* in a chain of *D* speculative batches voids the *D − j* behind it, so the waste grows quickly as *p* falls.
+- **Cost:** a batch needs 1/*p* runs on average to go green: 1.1 runs at 90%, 2 at 50%.
+
+That's why Shunter treats flaky tests as part of the protocol, not as test hygiene. Each test gets a flake score from its history. Flakes are fixed in order of what they cost the queue, and quarantine is bounded by owners, expiry dates and a ratchet. Only known flakes are retried, test by test, and a judge decides whether a newly flaky test is a test bug or a product bug (see [`PROTOCOL.md`](PROTOCOL.md) §5.7 and J5).
+
 ## How it works
 
 Shunter is a merge queue for codebases where many producers, AI agents especially, open pull requests faster than CI can test them one at a time. It batches changes into trains, speculates one train ahead, and lands only exactly what CI tested, by fast-forward.
