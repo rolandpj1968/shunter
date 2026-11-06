@@ -22,6 +22,24 @@ Legacy merge workflows quietly rely on conditions that agentic workflows break:
 
 In short: **legacy merge workflows assume that verification is cheap relative to the rate of new pull requests, and that judgement is abundant and spread across the team. In agentic workflows, verification is the bottleneck, and judgement is scarce and concentrated in the coordinator.** Shunter's mechanism attacks the first problem: batching, speculation and change-based testing. Shunter's judgement design attacks the second: the coordinator's judgement is spent only where rules can't decide, each decision has a deadline and a safe default, and judgements that recur are promoted into rules.
 
+## What Shunter optimises
+
+**The primary problem is throughput onto a linear trunk.** Trunk is one ordered history, and each change must be tested in the exact state it will land into: trunk plus every change that lands before it. Every landing changes the base for the next change, so the integration test is inherently sequential. A team can test branches in parallel as much as it likes, but CI on a branch shows only that the change works on its own base, not that it works on trunk. Landing is therefore a serial process, and the goal is to push as many tested changes through it per hour as AI agents produce. Throughput must at least match the agents' rate of new pull requests, or the queue grows without bound.
+
+**The secondary problem is the cost of CI:** money on metered runners, and machine time on owned ones.
+
+**One property is never traded away:** trunk only ever holds states that CI has tested (the invariants in [`PROTOCOL.md`](PROTOCOL.md)).
+
+Within those terms, Shunter's knobs trade throughput, latency and cost against each other:
+
+- **Batching** tests several changes in one CI run. It raises throughput and lowers cost, but it blurs which change caused a failure.
+- **Speculation** tests the next batches on the expected future trunk, before the current batch lands. It raises throughput and cuts latency, but it costs runs that are thrown away when an earlier batch fails. On metered CI that waste is money; on owned runners it's only spare capacity, so a team on owned runners can speculate deeper.
+- **Change-based test selection** runs only the jobs a change can affect, which lowers cost without weakening the invariant.
+- **Flaky-test management** keeps a batch's chance of passing high. That chance limits every other knob (see *The arithmetic of flakiness* below).
+- **Judgement** decides what rules can't, at defined points. The coordinator's attention is itself a limit on throughput, so recurring judgements are promoted into rules, and silence falls back to a safe default.
+
+With unlimited money, a team could speculate on every plausible future trunk, and a change would land about one CI run after it was ready, whatever the arrival rate. Money buys latency through speculation; it never removes the need to test each change in the state it lands into. Shunter aims to get as close to that throughput as the CI budget allows.
+
 ## How it works
 
 Shunter is a merge queue for codebases where many producers, AI agents especially, open pull requests faster than CI can test them one at a time. It batches changes into trains, speculates one train ahead, and lands only exactly what CI tested, by fast-forward.
