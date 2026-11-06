@@ -218,7 +218,7 @@ The protocol assumes all of the following, and must stay safe under any combinat
 - CI hangs, loses runners, serves unreadable logs, or reports a result for the wrong attempt;
 - tests are flaky, order-dependent, or leak state into each other;
 - trunk breaks without any batch's fault;
-- producers push to a riding change, retire mid-line, or offer duplicate lines;
+- producers push to a riding change, retire mid-line, offer duplicate lines, or hang silently (a producer stuck in a tool call holds its work invisibly: each producer needs a liveness signal, and work held by a silent producer is handed on after a deadline);
 - the judge is slow, silent or wrong (safety must still hold; only liveness may suffer);
 - the runner restarts at any point. All its state is on disk, and it resumes from what it finds.
 
