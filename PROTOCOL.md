@@ -86,6 +86,13 @@ There are three tiers of checking, and each answers a different question:
 
 Tier 2 runs on every batch, before any CI is spent. A failure there sends the changes it names back (by the blame rules of §5.6), with no rerun.
 
+**Test scope is an axis of its own.** Every test has one scope, and the scope decides when it runs:
+- **Package tests** test one unit. They're selected by the dependency graph: the changed units plus everything that depends on them.
+- **Feature tests** exercise one feature or screen, including UI (browser) tests of a single screen. They're tagged by feature area and selected by what changed.
+- **Scenario tests** run the product end to end: user journeys, cross-feature flows, demo worlds. They're never selected away. They always run in the batch's CI and before a release.
+
+Test selection pays off only if this hygiene holds. A large integration suite dressed up as a package test defeats it: any change near it selects everything. In one codebase measured over 104 changes, three such packages held 40% of the test time, and half of all changes selected 80% or more of the suite because of them.
+
 **What belongs in pre-flight is an economic test.** A check earns its place if
 
 > P(it catches a failure) × (the CI run it saves + the latency of a failed batch) > its own cost on every batch.
