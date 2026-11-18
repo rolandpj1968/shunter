@@ -1,0 +1,508 @@
+// Package shadow runs Shunter beside a live queue, with no side effect: it
+// reads the same inputs, runs the same state machine and the same rules, and
+// reports what it would have done and where that differs from what the live
+// queue did (docs/cutover.md, "Run in shadow").
+//
+// It has two halves:
+//
+//   - History. The live queue's train logs are replayed through the state
+//     machine (the train-log adapter), and every effect the machine asks
+//     for is logged as one Shunter would perform. For every train that
+//     opened a pull request, Shunter reads the CI checks on the train's
+//     exact head through its own CI adapter and classifies them by §5.5,
+//     and compares that with the outcome the live queue recorded; for every
+//     train the live queue landed, it asks whether its own lander would have
+//     found the verdict on the head (I9).
+//   - Now. The lines the live queue holds waiting, from its line file, go
+//     through Shunter's own gate against the forge, and the joining rule
+//     says which trains Shunter would assemble from them.
+//
+// Every adapter shadow is given must be read-only: it calls only Describe
+// and Status. The command line gives it a forge client that refuses writes
+// before they are sent.
+package shadow
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/rolandpj1968/shunter/adapter"
+	"github.com/rolandpj1968/shunter/daemon"
+	"github.com/rolandpj1968/shunter/replay"
+	"github.com/rolandpj1968/shunter/replay/adapter/trainlog"
+	"github.com/rolandpj1968/shunter/state"
+)
+
+// Reader is what shadow may call: reads only.
+type Reader interface {
+	Describe(ctx context.Context, ids []state.ChangeID) ([]adapter.ChangeInfo, error)
+	Status(ctx context.Context, train state.TrainID, head state.Head, lines []adapter.BuildLine) (adapter.Report, error)
+}
+
+// Input is everything a shadow run reads.
+type Input struct {
+	// Logs are the live queue's train logs, in order.
+	Logs []trainlog.Log
+	// Landed says whether the train with this pull request landed.
+	Landed func(pr string) bool
+	// Waiting are the lines the live queue holds waiting now, each its
+	// changes in order. Optional.
+	Waiting [][]state.ChangeID
+	// Read is the read-only forge and CI.
+	Read Reader
+	// Depth and MaxLines shape the trains Shunter would assemble.
+	Depth, MaxLines int
+}
+
+// Train is one train of the history, as the live queue ran it and as
+// Shunter reads it.
+type Train struct {
+	Log     string
+	PR      string
+	Head    state.Head
+	Lines   int
+	Old     string // what the live queue recorded: passed, failed, failed-unblamed, ...
+	Shunter string // Shunter's reading of the checks on the head
+	Landed  bool   // the live queue landed it
+	Verdict bool   // Shunter's lander would find the verdict on the head
+	Kind    string // "agree", or the kind of divergence
+	Note    string
+}
+
+// Line is one waiting line, through Shunter's gate now.
+type Line struct {
+	Changes []state.ChangeID
+	Gate    string // waiting, waiting-for-base, parked, refused, unread
+	Reason  string
+}
+
+// Report is a shadow run's result.
+type Report struct {
+	Logs       int
+	Unrecorded int // logs with no protocol line naming a change
+	Trains     []Train
+	// Agree and Diverge count the trains, Diverge by kind.
+	Agree   int
+	Diverge map[string]int
+	// Effects counts what the machine asked for, replaying the history: what
+	// Shunter would have performed, by kind.
+	Effects map[string]int
+	// Effect is each of them, in order, for the effects log.
+	Effect []Effect
+	// Refused counts the history's events the machine refused, by event
+	// and kind of refusal.
+	Refused map[string]int
+	Ignored map[string]int
+	// Now: the waiting lines through the gate, and the trains Shunter would
+	// assemble from them.
+	Waiting  []Line
+	Assemble [][]state.LineID
+	// ReadErrors are reads that failed; nothing is concluded from them.
+	ReadErrors []string
+}
+
+// Effect is one effect Shunter would perform.
+type Effect struct {
+	Segment string       `json:"segment"`
+	Event   string       `json:"event"`
+	Effect  state.Effect `json:"effect"`
+}
+
+// outcome is what a train log says became of the train.
+type outcome struct {
+	pr, head, green string
+	lines           int
+	opened          bool
+	result          string
+	reran           bool
+}
+
+func readLog(lg trainlog.Log) outcome {
+	var o outcome
+	unblamed, blamed := false, false
+	for _, m := range lg.Markers {
+		switch m.Word {
+		case "BATCH-READY":
+			if len(m.Args) > 0 {
+				o.head = m.Args[0]
+				o.lines = len(m.Args) - 1
+			}
+		case "BATCH-OPENED":
+			if len(m.Args) >= 2 {
+				o.opened, o.pr, o.head = true, m.Args[0], m.Args[1]
+				o.result = "open"
+			}
+		case "BATCH-RERUN":
+			o.reran = true
+		case "BATCH-GREEN":
+			o.result = "passed"
+			if len(m.Args) >= 2 {
+				o.green = m.Args[1]
+			}
+		case "BATCH-UNBLAMED":
+			unblamed = true
+		case "BATCH-BLAME":
+			blamed = true
+		case "BATCH-FAILED":
+			switch {
+			case !o.opened:
+				o.result = "preflight-failed"
+			case unblamed:
+				o.result = "failed-unblamed"
+			default:
+				o.result = "failed-blamed"
+			}
+		case "BATCH-INFRA":
+			o.result = "infra"
+		case "BATCH-RUN-CANCELLED":
+			o.result = "no-verdict"
+		case "BATCH-CANCELLED":
+			o.result = "aborted"
+		case "BATCH-SPEC-FAILED":
+			o.result = "void-ahead-failed"
+		case "BATCH-PUSHED":
+			o.result = "void-head-moved"
+		}
+	}
+	if blamed && o.result == "open" {
+		o.result = "failed-blamed"
+	}
+	return o
+}
+
+var outcomeName = map[adapter.Outcome]string{
+	adapter.Pending: "pending", adapter.Passed: "passed", adapter.Failed: "failed",
+	adapter.NoVerdict: "no-verdict", adapter.Infra: "infra", adapter.Flaky: "flaky",
+}
+
+// compare says whether Shunter's reading agrees with the live queue's
+// outcome, and if not, what kind of divergence it is.
+func compare(old, sh string, verdict, landed bool, blamedByHook bool) (kind, note string) {
+	switch {
+	case landed && !verdict:
+		return "landed-without-verdict", "the live queue landed it; Shunter's lander finds no passing verdict on its head (I9) and would not land it"
+	case old == "passed" && sh == "passed":
+		if !landed {
+			return "agree", "green, not landed: the train ahead decided it"
+		}
+		return "agree", ""
+	case old == "passed":
+		return "green-without-verdict", "the live queue recorded green; Shunter reads " + sh + " on the head"
+	case strings.HasPrefix(old, "failed") && sh == "no-verdict":
+		return "charged-on-no-verdict", "the live queue judged a failure; the checks say cancelled or skipped: Shunter judges nothing and puts the lines back"
+	case strings.HasPrefix(old, "failed") && sh == "flaky":
+		return "timing-charged", "only timeouts failed: Shunter reruns once before it judges"
+	case strings.HasPrefix(old, "failed") && sh == "passed":
+		return "failed-now-passes", "the head passes now: a later run passed"
+	case old == "failed-unblamed" && sh == "failed":
+		return "unblamed-without-judge", "blame named nobody, and the live queue split or returned the lines; Shunter asks J1 (I6)"
+	case old == "failed-blamed" && sh == "failed" && !blamedByHook:
+		return "agree", "blamed by the live queue's rules; Shunter needs its blame hook to name the same lines"
+	case strings.HasPrefix(old, "failed") && sh == "failed":
+		return "agree", ""
+	case old == "infra" && sh == "failed":
+		return "failure-read-as-infra", "the live queue called it infrastructure; the checks show a failure, which Shunter would send to blame"
+	case old == "infra" || old == "no-verdict":
+		return "agree", "nobody charged"
+	case old == "open" && sh == "pending":
+		return "agree", "no outcome in the log, and the required checks have not completed: in flight, or stopped outside the log (Shunter voids it at its CI deadline, no verdict)"
+	case old == "open":
+		return "unsettled", "the log has no outcome yet; the checks read " + sh
+	case old == "aborted" || strings.HasPrefix(old, "void"):
+		return "agree", "void or aborted: nothing to judge"
+	}
+	return "old-" + old + "-shunter-" + sh, ""
+}
+
+// Run is a shadow run.
+func Run(ctx context.Context, in Input) Report {
+	rep := Report{Diverge: map[string]int{}, Effects: map[string]int{}, Refused: map[string]int{}}
+	rep.Logs = len(in.Logs)
+	read := &cached{r: in.Read, describe: map[state.ChangeID]adapter.ChangeInfo{}}
+
+	// The machine over the history: what Shunter would perform.
+	src := &trainlog.Source{Logs: in.Logs, Landed: in.Landed}
+	var lines map[state.TrainID][]adapter.BuildLine = map[state.TrainID][]adapter.BuildLine{}
+	_, rr := replay.RunObserved(state.New("trunk-at-start", state.Config{Depth: max(in.Depth, 1)}), src, func(seg string, ev state.Event, fx []state.Effect) {
+		if a, ok := ev.(state.Assemble); ok {
+			for _, id := range a.Lines {
+				lines[a.Train] = append(lines[a.Train], adapter.BuildLine{ID: id})
+			}
+		}
+		for _, e := range fx {
+			if e.Kind == state.EffRecord {
+				continue
+			}
+			k := string(e.Kind)
+			if e.Kind == state.EffAskJudge {
+				k += " " + e.Point
+			}
+			rep.Effects[k]++
+			rep.Effect = append(rep.Effect, Effect{Segment: seg, Event: state.Name(ev), Effect: e})
+		}
+	})
+	for _, f := range rr.Refused {
+		rep.Refused[f.Event+": "+replay.Kind(f.Err)]++
+	}
+	rep.Unrecorded, rep.Ignored = len(src.Unrecorded), src.Ignored
+
+	// Each train's CI, read by Shunter.
+	for _, lg := range in.Logs {
+		o := readLog(lg)
+		if !o.opened {
+			continue
+		}
+		tr := Train{Log: lg.Name, PR: o.pr, Head: state.Head(o.head), Lines: o.lines, Old: o.result}
+		if in.Landed != nil {
+			tr.Landed = in.Landed(o.pr)
+		}
+		r, err := read.status(ctx, state.TrainID(lg.Name), tr.Head, lines[state.TrainID(lg.Name)])
+		if err != nil {
+			rep.ReadErrors = append(rep.ReadErrors, fmt.Sprintf("%s: checks on %s: %v", lg.Name, short(tr.Head), err))
+			tr.Shunter, tr.Kind = "unread", "unread"
+		} else {
+			tr.Shunter = outcomeName[r.Outcome]
+			tr.Verdict = r.Outcome == adapter.Passed && r.Head == tr.Head
+			tr.Kind, tr.Note = compare(tr.Old, tr.Shunter, tr.Verdict, tr.Landed, len(r.Blamed) > 0)
+			if o.green != "" && o.green != o.head {
+				tr.Kind, tr.Note = "green-on-another-head", "the live queue's green names "+short(state.Head(o.green))+", not the head it opened"
+			}
+			if tr.Old == "passed" && o.reran && tr.Kind == "agree" {
+				tr.Note = strings.TrimSpace(tr.Note + " passed on its rerun")
+			}
+		}
+		if tr.Kind == "agree" {
+			rep.Agree++
+		} else {
+			rep.Diverge[tr.Kind]++
+		}
+		rep.Trains = append(rep.Trains, tr)
+	}
+
+	// Now: the waiting lines through the gate, and the trains from them.
+	s := state.New("trunk", state.Config{Depth: max(in.Depth, 1)})
+	for _, ids := range in.Waiting {
+		ln := Line{Changes: ids}
+		info, err := read.describeAll(ctx, ids)
+		if err != nil {
+			ln.Gate, ln.Reason = "unread", err.Error()
+			if adapter.IsPermanent(err) {
+				ln.Gate = "refused"
+			}
+			rep.Waiting = append(rep.Waiting, ln)
+			continue
+		}
+		o := daemon.OfferFor(s, info, false)
+		next, _, err := state.Next(s, o)
+		if err != nil {
+			ln.Gate, ln.Reason = "refused", "the offer: "+err.Error()
+			rep.Waiting = append(rep.Waiting, ln)
+			continue
+		}
+		s = next
+		evs, err := daemon.Gate(ctx, read, *s.Lines[o.Line], daemon.LiveChanges(s, o.Line))
+		if err != nil {
+			ln.Gate, ln.Reason = "unread", err.Error()
+			rep.Waiting = append(rep.Waiting, ln)
+			continue
+		}
+		for _, ev := range evs {
+			if next, _, err := state.Next(s, ev); err == nil {
+				s = next
+			}
+		}
+		l := s.Lines[o.Line]
+		ln.Gate, ln.Reason = l.State.String(), l.Reason
+		if l.State == state.LineReturned {
+			ln.Gate = "refused"
+		}
+		rep.Waiting = append(rep.Waiting, ln)
+	}
+	for i := 0; i < max(in.Depth, 1); i++ {
+		take := daemon.Join(s, max(in.MaxLines, 1))
+		if len(take) == 0 {
+			break
+		}
+		rep.Assemble = append(rep.Assemble, take)
+		id := state.TrainID(fmt.Sprintf("shadow-%d", i+1))
+		next, _, err := state.Next(s, state.Assemble{Train: id, Lines: take})
+		if err != nil {
+			break
+		}
+		// Built, so the next train may be built on it (I5).
+		if next, _, err = state.Next(next, state.Built{Train: id, Head: state.Head("head-of-" + string(id))}); err != nil {
+			break
+		}
+		s = next
+	}
+	return rep
+}
+
+// cached is a read-only reader that reads each change once.
+type cached struct {
+	r        Reader
+	mu       sync.Mutex
+	describe map[state.ChangeID]adapter.ChangeInfo
+}
+
+func (c *cached) describeAll(ctx context.Context, ids []state.ChangeID) ([]adapter.ChangeInfo, error) {
+	return c.Describe(ctx, ids)
+}
+
+func (c *cached) Describe(ctx context.Context, ids []state.ChangeID) ([]adapter.ChangeInfo, error) {
+	var out []adapter.ChangeInfo
+	for _, id := range ids {
+		c.mu.Lock()
+		info, ok := c.describe[id]
+		c.mu.Unlock()
+		if !ok {
+			got, err := c.r.Describe(ctx, []state.ChangeID{id})
+			if err != nil {
+				return nil, err
+			}
+			if len(got) != 1 {
+				return nil, fmt.Errorf("the forge described %d of 1 changes", len(got))
+			}
+			info = got[0]
+			c.mu.Lock()
+			c.describe[id] = info
+			c.mu.Unlock()
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// The adapter.Forge methods a gate never calls.
+func (c *cached) OpenPR(context.Context, string, state.TrainID, state.Head, state.Head) (string, error) {
+	return "", adapter.Permanent(fmt.Errorf("shadow: no side effects"))
+}
+func (c *cached) ClosePR(context.Context, string, state.TrainID, string) error {
+	return adapter.Permanent(fmt.Errorf("shadow: no side effects"))
+}
+func (c *cached) ReadLanding(context.Context, state.TrainID, state.Head, []state.ChangeID) (adapter.Reading, error) {
+	return adapter.Reading{}, adapter.Permanent(fmt.Errorf("shadow: not read this way"))
+}
+
+func (c *cached) status(ctx context.Context, t state.TrainID, h state.Head, lines []adapter.BuildLine) (adapter.Report, error) {
+	return c.r.Status(ctx, t, h, lines)
+}
+
+// ParseLines reads a line file: one line a row, "<tag> <change>...", where
+// the tag is any word that is not a change ("b"). Blank rows and rows
+// starting with # are skipped.
+func ParseLines(r io.Reader) ([][]state.ChangeID, error) {
+	var out [][]state.ChangeID
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) == 0 || strings.HasPrefix(f[0], "#") {
+			continue
+		}
+		if !isChange(f[0]) {
+			f = f[1:]
+		}
+		var ids []state.ChangeID
+		for _, x := range f {
+			if isChange(x) {
+				ids = append(ids, state.ChangeID(strings.TrimPrefix(x, "#")))
+			}
+		}
+		if len(ids) > 0 {
+			out = append(out, ids)
+		}
+	}
+	return out, sc.Err()
+}
+
+func isChange(s string) bool {
+	s = strings.TrimPrefix(s, "#")
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func short(h state.Head) string {
+	if len(h) > 10 {
+		return string(h[:10])
+	}
+	return string(h)
+}
+
+// Write prints the report for a human.
+func (rep Report) Write(w io.Writer, verbose bool) {
+	fmt.Fprintf(w, "History: %d train logs (%d name no change); %d trains opened a pull request.\n", rep.Logs, rep.Unrecorded, len(rep.Trains))
+	fmt.Fprintf(w, "  CI read by Shunter on each train's head: %d agree, %d diverge.\n", rep.Agree, len(rep.Trains)-rep.Agree)
+	for _, k := range sortedKeys(rep.Diverge) {
+		fmt.Fprintf(w, "    %-26s %d\n", k, rep.Diverge[k])
+	}
+	landed, verified := 0, 0
+	for _, t := range rep.Trains {
+		if t.Landed {
+			landed++
+			if t.Verdict {
+				verified++
+			}
+		}
+	}
+	fmt.Fprintf(w, "  Landings: %d; Shunter's lander finds the verdict on the head for %d of them.\n", landed, verified)
+	for _, t := range rep.Trains {
+		if t.Kind != "agree" || verbose {
+			fmt.Fprintf(w, "    %-28s pr %-6s head %s  live queue: %-17s Shunter: %-10s %s  %s\n", t.Log, t.PR, short(t.Head), t.Old, t.Shunter, t.Kind, t.Note)
+		}
+	}
+	fmt.Fprintf(w, "  Effects Shunter would have performed, replaying the history:\n")
+	for _, k := range sortedKeys(rep.Effects) {
+		fmt.Fprintf(w, "    %-26s %d\n", k, rep.Effects[k])
+	}
+	if len(rep.Refused) > 0 {
+		fmt.Fprintf(w, "  Events of the history the machine refuses:\n")
+		for _, k := range sortedKeys(rep.Refused) {
+			fmt.Fprintf(w, "    %-60s %d\n", k, rep.Refused[k])
+		}
+	}
+	if len(rep.Ignored) > 0 {
+		fmt.Fprintf(w, "  Marker words not understood: %v\n", rep.Ignored)
+	}
+	if len(rep.Waiting) > 0 || len(rep.Assemble) > 0 {
+		count := map[string]int{}
+		for _, l := range rep.Waiting {
+			count[l.Gate]++
+		}
+		fmt.Fprintf(w, "Now: %d waiting lines through Shunter's gate: %v.\n", len(rep.Waiting), count)
+		for _, l := range rep.Waiting {
+			if l.Gate != "waiting" || verbose {
+				fmt.Fprintf(w, "    %v  %s  %s\n", l.Changes, l.Gate, l.Reason)
+			}
+		}
+		for i, t := range rep.Assemble {
+			fmt.Fprintf(w, "  Train %d would take %d lines: %v\n", i+1, len(t), t)
+		}
+	}
+	if len(rep.ReadErrors) > 0 {
+		fmt.Fprintf(w, "Reads that failed (nothing concluded from them): %d\n", len(rep.ReadErrors))
+		for _, e := range rep.ReadErrors {
+			fmt.Fprintf(w, "    %s\n", e)
+		}
+	}
+}
+
+func sortedKeys(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

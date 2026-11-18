@@ -163,6 +163,18 @@ func liveChanges(s state.State, skip state.LineID) map[state.ChangeID]state.Line
 	return out
 }
 
+// Gate is the gate's reading of one line (§5.2), for shadow running: the
+// events the runner would apply. live maps each change of a live line other
+// than this one to its line.
+func Gate(ctx context.Context, f adapter.Forge, l state.Line, live map[state.ChangeID]state.LineID) ([]state.Event, error) {
+	return gate(ctx, f, l, live)
+}
+
+// LiveChanges maps each change of a live line other than skip to its line.
+func LiveChanges(s state.State, skip state.LineID) map[state.ChangeID]state.LineID {
+	return liveChanges(s, skip)
+}
+
 // gate is §5.2, read from the forge: every change open and from an approved
 // producer, and stacked only on trunk, on the change before it in the line,
 // or (the first change) on a change of the line's base.

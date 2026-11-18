@@ -49,7 +49,14 @@ type Report struct {
 }
 
 // Run replays src from s and returns the final state and the report.
-func Run(s state.State, src Source) (state.State, Report) {
+func Run(s state.State, src Source) (state.State, Report) { return RunObserved(s, src, nil) }
+
+// Observer sees every step the machine accepts: the event and the effects
+// it asks for. Shadow running logs those effects as what it would perform.
+type Observer func(segment string, ev state.Event, fx []state.Effect)
+
+// RunObserved is Run, with every accepted step shown to obs (when not nil).
+func RunObserved(s state.State, src Source, obs Observer) (state.State, Report) {
 	var rep Report
 	segment, started := "", false
 	var opened []state.TrainID
@@ -102,6 +109,9 @@ func Run(s state.State, src Source) (state.State, Report) {
 		}
 		if a, ok := ev.(state.Assemble); ok {
 			opened = append(opened, a.Train)
+		}
+		if obs != nil {
+			obs(segment, ev, fx)
 		}
 		rep.Applied++
 		s = next
