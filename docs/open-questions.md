@@ -36,7 +36,7 @@
 
 13. **A log written by an older version.** At start, the store replays the log after its last snapshot through the current `Next`. If the current version refuses an event the old one accepted, or decides different effects for it, the store refuses to start, with an error naming the cause. A clean stop always writes a snapshot, so an upgrade after a clean stop replays nothing. §7 says a new version is "checked before it's started". Is refusing to start the right reading of that, or should the snapshot win?
 
-14. **Watching the daemon itself (L3).** The daemon records alerts in the store and sends them to the judge, and the notifier appends every notice, alerts included, to an events file that an outside watcher can read. Nothing yet watches the daemon's own loop from outside: its tick, its poll errors, its fatal stop.
+14. **Watching the daemon itself (L3).** **Answered.** The daemon records alerts in the store and sends them to the judge, and the notifier appends every notice, alerts included, to an events file. `shunter watch`, run from a timer, watches the daemon from outside, sharing no code path with its loop: the store's lock held, the socket answering a command that runs in the loop, no restart loop, no effect or live train past its deadline plus grace, lines not stalled, the trunk lock not stale. It raises each finding through the notify hook ([`cutover.md`](cutover.md), "Watching"). Poll errors are still only the daemon's log.
 
 ## From the adapters
 
