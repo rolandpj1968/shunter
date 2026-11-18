@@ -1,0 +1,60 @@
+{
+  "config": {
+    "patterns": [
+      {
+        "regex": "^FAIL\\s+example\\.com/mod/(\\S+)\\s",
+        "kind": "dir"
+      }
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "FAIL\texample.com/mod/pkg/b [build failed]\n",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "pkg/b/b.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "pkg/b/y_test.go"
+        ]
+      },
+      {
+        "id": "C",
+        "changes": [
+          {
+            "ID": "C",
+            "Head": "hC"
+          }
+        ],
+        "files": [
+          "pkg/c/c.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [
+      "A",
+      "B"
+    ]
+  }
+}

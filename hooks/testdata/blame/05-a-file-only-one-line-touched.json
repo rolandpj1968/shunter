@@ -1,0 +1,42 @@
+{
+  "config": {},
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "lint: shared/common.go:4: unused; shared/only_a.go:9: unused",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "shared/common.go",
+          "shared/only_a.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "shared/common.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [
+      "A"
+    ],
+    "evidence_contains": "alone touches shared/only_a.go"
+  }
+}

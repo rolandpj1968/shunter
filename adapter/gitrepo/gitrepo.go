@@ -206,6 +206,11 @@ type PreflightInput struct {
 	Base  state.Head          `json:"base"`
 	Head  state.Head          `json:"head"`
 	Lines []adapter.BuildLine `json:"lines"`
+	// Tips is each line's last commit in the train, in the order of Lines:
+	// the train as it stood after that line. A hook bisects with it, and
+	// reads each line's files in the train as the difference from the tip
+	// before (Base for the first).
+	Tips map[state.LineID]state.Head `json:"tips"`
 }
 
 // PreflightAnswer is the pre-flight hook's answer. A failure may name the
@@ -293,6 +298,7 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	}
 	res := adapter.BuildResult{LeftOut: map[state.LineID]string{}}
 	var kept []adapter.BuildLine
+	tips := map[state.LineID]state.Head{}
 	for _, l := range req.Lines {
 		why, err := r.apply(ctx, req.Train, l)
 		if err != nil {
@@ -304,6 +310,11 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 			continue
 		}
 		kept = append(kept, l)
+		tip, err := r.git(ctx, "rev-parse", "HEAD")
+		if err != nil {
+			return adapter.BuildResult{}, err
+		}
+		tips[l.ID] = state.Head(tip)
 	}
 	if len(kept) == 0 {
 		return res, r.remember(key, res)
@@ -313,7 +324,7 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 		return adapter.BuildResult{}, err
 	}
 	if r.cfg.Preflight.Configured() {
-		in := PreflightInput{Dir: r.cfg.Dir, Train: req.Train, Base: req.Base, Head: state.Head(head), Lines: kept}
+		in := PreflightInput{Dir: r.cfg.Dir, Train: req.Train, Base: req.Base, Head: state.Head(head), Lines: kept, Tips: tips}
 		var a PreflightAnswer
 		hr, err := r.cfg.Preflight.Run(ctx, in, &a)
 		if err != nil {

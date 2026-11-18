@@ -1,0 +1,38 @@
+{
+  "config": {},
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "see https://forge.example/run/a/x.go for the log",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "b/y.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": []
+  }
+}

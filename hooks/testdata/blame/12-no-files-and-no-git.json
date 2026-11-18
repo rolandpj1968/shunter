@@ -1,0 +1,32 @@
+{
+  "config": {},
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "a/x.go:1: x",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "no-verdict",
+    "blamed": []
+  }
+}

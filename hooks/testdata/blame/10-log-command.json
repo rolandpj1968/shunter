@@ -1,0 +1,66 @@
+{
+  "config": {
+    "log_command": [
+      "sh",
+      "-c",
+      "cat > /dev/null; echo 'error: c/z.go:3: boom'"
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "check failed",
+    "checks": [
+      {
+        "Name": "check",
+        "Status": "completed",
+        "Conclusion": "failure",
+        "Summary": ""
+      }
+    ],
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "b/y.go"
+        ]
+      },
+      {
+        "id": "C",
+        "changes": [
+          {
+            "ID": "C",
+            "Head": "hC"
+          }
+        ],
+        "files": [
+          "c/z.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [
+      "C"
+    ]
+  }
+}

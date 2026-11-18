@@ -1,0 +1,50 @@
+{
+  "config": {
+    "timing": [
+      "panic: test timed out"
+    ],
+    "deterministic": [
+      "Error Trace:"
+    ],
+    "flaky": [
+      "connection reset"
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "connection reset by peer\nError Trace: b/y_test.go:3",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "b/y_test.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [
+      "B"
+    ]
+  }
+}

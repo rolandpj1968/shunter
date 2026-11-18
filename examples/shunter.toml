@@ -78,9 +78,12 @@ effect_backoff = "5s"
 
 # Hooks: the repository's own rules, in any language. Each reads one JSON
 # document on stdin and answers one on stdout. A hook advises; no hook can
-# make a train pass. Verdicts come only from CI's checks.
+# make a train pass. Verdicts come only from CI's checks. hooks/ has generic
+# examples (pre-flight steps, regenerating generated files, blame by line);
+# hooks/README.md says how to plug them in.
 [hooks.preflight]
-# In: {"dir","train","base","head","lines":[{"ID","Changes":[{"ID","Head"}]}]}
+# In: {"dir","train","base","head","lines":[{"ID","Changes":[{"ID","Head"}]}],
+#      "tips":{"<line>":"<its last commit in the train>"}}
 # Out: {"pass":true} or {"pass":false,"blamed":["<line>"],"evidence":"..."}
 # A crash, a timeout or no JSON is no verdict, never a charge.
 command = ["./hooks/preflight"]
