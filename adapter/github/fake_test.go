@@ -63,13 +63,18 @@ func (s *server) pull(n int, st, head, headRef, baseRef, author string, labels .
 }
 
 func (s *server) check(sha, name, status, conclusion string, started time.Time) {
+	s.checkIn(0, sha, name, status, conclusion, started)
+}
+
+// checkIn is a check run in a check suite (one workflow run's checks).
+func (s *server) checkIn(suite int64, sha, name, status, conclusion string, started time.Time) {
 	var c any
 	if conclusion != "" {
 		c = conclusion
 	}
 	s.checks[sha] = append(s.checks[sha], map[string]any{"name": name, "status": status, "conclusion": c,
 		"started_at": started.UTC().Format(time.RFC3339), "head_sha": sha, "html_url": "https://forge.example/run/" + name,
-		"output": map[string]any{"title": name + " " + conclusion, "summary": ""}})
+		"output": map[string]any{"title": name + " " + conclusion, "summary": ""}, "check_suite": map[string]any{"id": suite}})
 }
 
 func (s *server) count(method, prefix string) int {
@@ -215,6 +220,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if b := q.Get("branch"); b != "" && run["head_branch"] != b {
 				continue
 			}
+			if wf, ok := run["workflow"]; ok && len(parts) == 4 && wf != parts[2] {
+				continue
+			}
 			out = append(out, run)
 		}
 		reply(map[string]any{"total_count": len(out), "workflow_runs": out})
@@ -246,4 +254,11 @@ func (s *server) run(id int64, sha, branch, status, conclusion string) {
 		c = conclusion
 	}
 	s.runs = append(s.runs, map[string]any{"id": id, "head_sha": sha, "head_branch": branch, "status": status, "conclusion": c, "name": "ci"})
+}
+
+// runOf is a run of one workflow file, with its check suite.
+func (s *server) runOf(workflow string, suite, id int64, sha, branch, status, conclusion string) {
+	s.run(id, sha, branch, status, conclusion)
+	s.runs[len(s.runs)-1]["workflow"] = workflow
+	s.runs[len(s.runs)-1]["check_suite_id"] = suite
 }

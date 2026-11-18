@@ -1,0 +1,64 @@
+{
+  "config": {
+    "patterns": [
+      {
+        "regex": "issue #(\\d+) is still listed as open",
+        "kind": "description",
+        "describes": "(closes|fixes) #{}\\b"
+      }
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "registry: issue #42 is still listed as open; see src/registry/list.go",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "src/registry/list.go"
+        ],
+        "text": "Tidy the registry\n\nFixes #421"
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "src/registry/list.go"
+        ],
+        "text": "Close a gap\n\nThis closes #42."
+      },
+      {
+        "id": "C",
+        "changes": [
+          {
+            "ID": "C",
+            "Head": "hC"
+          }
+        ],
+        "files": [
+          "src/other.go"
+        ],
+        "text": ""
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [
+      "B"
+    ],
+    "evidence_contains": "description matches"
+  }
+}

@@ -112,6 +112,9 @@ type Check struct {
 	Started    time.Time
 	URL        string
 	Summary    string
+	// Suite is the check suite the run belongs to (one workflow run's
+	// checks), when the forge says; 0 when it does not.
+	Suite int64 `json:",omitempty"`
 }
 
 // CI runs a train's checks.

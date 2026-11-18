@@ -25,12 +25,15 @@ named in the `recalled` file (rows: time, step, why) in the window runs
 whatever its record: write a row when CI fails in what a skipped step
 covers.
 
-On a failure, blame:
-  - a step with "bisect": true is run again at the tips of the train's
+On a failure, blame, as the step's "blame" says ("files" when unset):
+  - "none": nobody is named, and Shunter's J1 decides (its default splits
+    the train in halves by line). For a step whose failure says nothing
+    about which line caused it, where a script queue split the batch.
+  - "bisect" (or the older "bisect": true): the step is run again at the tips of the train's
     lines, by bisection, to find the first line at whose tip it fails;
     that line is blamed (with those before it, it tipped the step). A step
     that fails at the train's base too blames nobody: trunk is broken.
-  - otherwise, the step's output is read for the files and directories it
+  - "files": the step's output is read for the files and directories it
     names, with the blame rules in shunterhooks.py, against each line's
     files in the train (from the tips).
   Blame that names no line, or every line, is no blame: Shunter's J1
@@ -41,7 +44,8 @@ Configuration (JSON, --config FILE):
   {
     "steps": [
       {"name": "lint", "command": ["make", "lint"], "timeout": "10m"},
-      {"name": "ratchet", "command": ["./ratchet.sh"], "bisect": true}
+      {"name": "ratchet", "command": ["./ratchet.sh"], "blame": "bisect"},
+      {"name": "gate", "command": ["./gate.sh"], "blame": "none"}
     ],
     "always": ["lint"],
     "never": [],
@@ -60,6 +64,8 @@ import subprocess
 import sys
 import time
 
+# Shunter runs a hook in its clone: never write __pycache__ beside it.
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shunterhooks as sh  # noqa: E402
 
@@ -125,6 +131,19 @@ def skips(cfg, base, now):
         if r >= min_runs and k == 0 and med > min_secs:
             out[n] = "0 catches in %d runs over %g days, median %.0fs" % (r, days, med)
     return out
+
+
+BLAME_MODES = ("none", "files", "bisect")
+
+
+def blame_mode(step):
+    """How a failure of the step is blamed: "none", "files" or "bisect"."""
+    m = step.get("blame")
+    if m is None:
+        return "bisect" if step.get("bisect") else "files"
+    if m not in BLAME_MODES:
+        raise SystemExit("pre-flight: step %s: blame %r: one of %s" % (step.get("name"), m, ", ".join(BLAME_MODES)))
+    return m
 
 
 def run_step(step, doc, timeout):
@@ -195,6 +214,8 @@ def main():
     doc = sh.read_input()
     order = [sh.line_id(l) for l in doc.get("lines") or []]
     train = str(doc.get("train", ""))
+    for step in cfg.get("steps") or []:
+        blame_mode(step)  # a bad configuration says nothing, before any step runs
     skipped = skips(cfg, base, sh.now())
     for n, why in sorted(skipped.items()):
         sh.log("pre-flight: %s skipped (%s; CI runs it)" % (n, why))
@@ -215,7 +236,10 @@ def main():
                 f.write(out)
         evidence = "pre-flight step %s failed (exit %d, %.0fs):\n%s" % (name, rc, secs, tail(out))
         blamed = []
-        if step.get("bisect") and order:
+        mode = blame_mode(step)
+        if mode == "none":
+            evidence += "\nblame: none for this step (the judge decides)"
+        elif mode == "bisect" and order:
             lid, why = bisect(step, doc, order, timeout)
             sh.log("pre-flight: bisection of %s: %s" % (name, why))
             evidence += "\nbisection: " + why

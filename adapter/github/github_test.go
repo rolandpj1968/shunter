@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -47,6 +48,50 @@ func TestDescribe(t *testing.T) {
 	}
 	if _, err := c.Describe(ctx, []state.ChangeID{"not-a-number"}); !adapter.IsPermanent(err) {
 		t.Fatalf("a bad id: %v, want permanent", err)
+	}
+}
+
+// TestGateProducerRules: an approval file approves a change whoever wrote
+// it, and an author with a branch rule is approved only from a branch the
+// rule matches.
+func TestGateProducerRules(t *testing.T) {
+	s, c := newServer(t)
+	dir := t.TempDir()
+	list := filepath.Join(dir, "approved.list")
+	c.cfg.ApprovedFile = list
+	c2, err := New(Config{Owner: "acme", Repo: "widgets", Trunk: "main", AuthorBranches: map[string]string{"refresh-bot": "^refresh/", "alice": "^feat-"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.branchRule = c2.branchRule
+	s.pull(21, "open", "a21", "refresh/deps", "main", "refresh-bot")
+	s.pull(22, "open", "a22", "fix-everything", "main", "refresh-bot")
+	s.pull(23, "open", "a23", "contrib", "main", "mallory")
+	s.pull(24, "open", "a24", "feat-x", "main", "alice")
+	s.pull(25, "open", "a25", "other", "main", "alice")
+	s.pull(26, "open", "a26", "b", "main", "bob")
+	approved := func() string {
+		got, err := c.Describe(ctx, []state.ChangeID{"21", "22", "23", "24", "25", "26"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, ch := range got {
+			if ch.Approved {
+				out = append(out, string(ch.ID))
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	if got := approved(); got != "21 24 26" {
+		t.Fatalf("no approval file: approved %s", got)
+	}
+	os.WriteFile(list, []byte("# changes approved by hand\n#23 reviewed\n22 25\n"), 0o644)
+	if got := approved(); got != "21 22 23 24 25 26" {
+		t.Fatalf("with the approval file: approved %s", got)
+	}
+	if _, err := New(Config{Owner: "o", Repo: "r", Trunk: "main", AuthorBranches: map[string]string{"x": "("}}); err == nil {
+		t.Fatal("a bad branch rule was taken")
 	}
 }
 
@@ -226,6 +271,66 @@ func TestStatusClassifies(t *testing.T) {
 	}
 }
 
+// TestStatusCountsOnlyItsOwnWorkflow: another workflow's failed checks on
+// the same commit (a nightly run on a head that has landed) are not the
+// train's CI. With a workflow configured, only its runs' check suites are
+// read; with required checks named, only the suites holding them count.
+func TestStatusCountsOnlyItsOwnWorkflow(t *testing.T) {
+	world := func(s *server) {
+		s.refs["main"] = "trunk1"
+		s.runOf("ci.yml", 10, 1, "h", "shunter/t1", "completed", "success")
+		s.runOf("nightly.yml", 20, 2, "h", "main", "completed", "failure")
+		s.checkIn(10, "h", "test (1)", "completed", "success", t0)
+		s.checkIn(10, "h", "check", "completed", "success", t0)
+		s.checkIn(20, "h", "e2e", "completed", "failure", t0.Add(time.Hour))
+		s.checkIn(20, "h", "mutation", "completed", "timed_out", t0.Add(time.Hour))
+	}
+	for _, tc := range []struct {
+		name     string
+		workflow string
+		checks   []string
+	}{
+		{"by workflow", "ci.yml", []string{"check"}},
+		{"by the required check's suite", "", []string{"check"}},
+		{"by workflow, no check named", "ci.yml", nil},
+	} {
+		s, c := newServer(t)
+		c.cfg.Workflow, c.cfg.Checks = tc.workflow, tc.checks
+		world(s)
+		rep, err := c.Status(ctx, "t1", "h", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Outcome != adapter.Passed {
+			t.Errorf("%s: outcome %d (%s %s), want passed", tc.name, rep.Outcome, rep.Evidence, rep.Why)
+		}
+		for _, ch := range rep.Checks {
+			if ch.Suite == 20 {
+				t.Errorf("%s: the report carries another workflow's check %s", tc.name, ch.Name)
+			}
+		}
+		if r, err := c.ReadLanding(ctx, "t1", "h", nil); err != nil || r.Verdict != "h" {
+			t.Errorf("%s: the lander reads %+v %v", tc.name, r, err)
+		}
+	}
+	// A failure in the train's own workflow still fails it.
+	s, c := newServer(t)
+	c.cfg.Workflow = "ci.yml"
+	world(s)
+	s.checkIn(10, "h", "test (2)", "completed", "failure", t0)
+	if rep, _ := c.Status(ctx, "t1", "h", nil); rep.Outcome != adapter.Failed || !strings.Contains(rep.Evidence, "test (2)") || strings.Contains(rep.Evidence, "e2e") {
+		t.Errorf("its own failure: outcome %d evidence %q", rep.Outcome, rep.Evidence)
+	}
+	// No run of the workflow on the head yet: nothing read, pending.
+	s, c = newServer(t)
+	c.cfg.Workflow = "ci.yml"
+	s.runOf("nightly.yml", 20, 2, "h", "main", "completed", "failure")
+	s.checkIn(20, "h", "check", "completed", "failure", t0)
+	if rep, _ := c.Status(ctx, "t1", "h", nil); rep.Outcome != adapter.Pending {
+		t.Errorf("no run of the workflow: outcome %d, want pending", rep.Outcome)
+	}
+}
+
 func blameHook(t *testing.T, answer string, code int) hook.Hook {
 	p := filepath.Join(t.TempDir(), "blame.sh")
 	body := "#!/bin/sh\ncat > /dev/null\necho '" + answer + "'\nexit " + string(rune('0'+code)) + "\n"
@@ -269,6 +374,35 @@ func TestBlameHookAdvisesButCannotPass(t *testing.T) {
 		if rep.Outcome != tc.want || blamed != tc.blamed {
 			t.Errorf("%s exit %d: outcome %d blamed %v (%s), want %d %s", tc.answer, tc.code, rep.Outcome, rep.Blamed, rep.Evidence, tc.want, tc.blamed)
 		}
+	}
+}
+
+// TestBlameHookReadsTheChangesDescriptions: each line comes to the blame
+// hook with its changes' titles and descriptions, for a rule a description
+// breaks (§5.6). A change that can't be read adds nothing.
+func TestBlameHookReadsTheChangesDescriptions(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(11, "open", "aaa", "feat-a", "main", "alice")
+	s.pulls[11]["title"], s.pulls[11]["body"] = "Tidy the list", "This closes #42."
+	s.check("h", "check", "completed", "failure", t0)
+	got := filepath.Join(t.TempDir(), "in.json")
+	p := filepath.Join(t.TempDir(), "blame.sh")
+	os.WriteFile(p, []byte("#!/bin/sh\ncat > "+got+"\necho '{\"class\":\"deterministic\"}'\n"), 0o755)
+	c.cfg.Blame = hook.Hook{Command: []string{p}, Timeout: 10 * time.Second}
+	lines := []adapter.BuildLine{{ID: "11", Changes: []state.Change{{ID: "11", Head: "aaa"}}}, {ID: "12", Changes: []state.Change{{ID: "12", Head: "bbb"}}}}
+	if _, err := c.Status(ctx, "t1", "h", lines); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in BlameInput
+	if err := json.Unmarshal(b, &in); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Lines) != 2 || in.Lines[0].Text != "Tidy the list\n\nThis closes #42." || in.Lines[1].Text != "" {
+		t.Fatalf("the hook read %s", b)
 	}
 }
 

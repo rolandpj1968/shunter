@@ -4,7 +4,7 @@
 Shunter runs it when CI fails on a train's head, with the train's lines and
 the check runs (see the [hooks.blame] section of examples/shunter.toml):
 
-  in:  {"train", "head", "lines": [{"id", "changes": [{"ID", "Head"}]}],
+  in:  {"train", "head", "lines": [{"id", "changes": [{"ID", "Head"}], "text"}],
         "checks": [{"Name", "Conclusion", "URL", "Summary", ...}],
         "evidence"}
   out: {"class": "deterministic", "blamed": [...], "evidence": "..."}
@@ -15,6 +15,9 @@ and the output of `log_command` (the failed jobs' logs, say), which reads
 the same input on its stdin. Each line's files are its own "files", when
 Shunter or a wrapper gives them, or else what its last change's head
 changes since it left trunk, read with git in `git_dir`.
+
+A line's "text" is its changes' titles and descriptions, as Shunter reads
+them from the forge; "description" patterns match against it.
 
 The rules are BlameRules's, in shunterhooks.py. A failure that names no
 line, or every line of several, answers blamed: [] and Shunter's J1 decides
@@ -30,7 +33,10 @@ Configuration (JSON, --config FILE):
     "fetch": ["origin"],                       # fetch a head that is missing
     "log_command": ["./fetch-failed-logs"],    # optional
     "log_timeout": "2m",
-    "patterns": [{"regex": "^FAIL\\s+example.com/mod/(\\S+)\\s", "kind": "dir"}],
+    "patterns": [{"regex": "^FAIL\\s+example.com/mod/(\\S+)\\s", "kind": "dir", "subdirs": false},
+                 {"regex": "below its floor", "kind": "prefix", "path": "locales"},
+                 {"regex": "issue #(\\d+) is still listed as open", "kind": "description",
+                  "describes": "(closes|fixes) #{}\\b"}],
     "test_files": ["_test\\.go$"],
     "timing": ["panic: test timed out"], "deterministic": ["Error Trace:"],
     "flaky": ["connection reset"]
@@ -39,9 +45,12 @@ Configuration (JSON, --config FILE):
 
 import json
 import os
+import re
 import subprocess
 import sys
 
+# Shunter runs a hook in its clone: never write __pycache__ beside it.
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shunterhooks as sh  # noqa: E402
 
@@ -103,7 +112,10 @@ def main():
     cfg, base = sh.load_config(sys.argv, default={})
     doc = sh.read_input()
     order = [sh.line_id(l) for l in doc.get("lines") or []]
-    rules = sh.BlameRules(cfg)
+    try:
+        rules = sh.BlameRules(cfg)
+    except (ValueError, KeyError, re.error) as e:
+        raise SystemExit("blame: the configuration: %s" % e)
     try:
         text = failure_text(cfg, base, doc)
         files = line_files(cfg, base, doc, order)
@@ -111,7 +123,8 @@ def main():
         sh.answer({"class": "no-verdict", "why": "blame could not read what it judges by: %s" % e})
     if rules.kind(text) == "flaky":
         sh.answer({"class": "flaky", "why": "the failure shows only timing or connection errors"})
-    blamed, why = rules.blame(text, order, files)
+    texts = {sh.line_id(l): l.get("text") or "" for l in doc.get("lines") or []}
+    blamed, why = rules.blame(text, order, files, texts)
     for w in why:
         sh.log("blame:", w)
     ev = (doc.get("evidence") or "a check failed").strip()

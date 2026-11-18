@@ -123,6 +123,37 @@ func newRepo(t *testing.T) string {
 	return d
 }
 
+// TestHooksWriteNoBytecode: run as a configuration may run them, with no -B
+// and no PYTHONDONTWRITEBYTECODE, the hooks still write no __pycache__
+// beside themselves (Shunter runs them in its clone).
+func TestHooksWriteNoBytecode(t *testing.T) {
+	py := python(t)
+	dir := t.TempDir()
+	for _, f := range []string{"shunterhooks.py", "blame.py", "preflight.py", "conflict.py"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, dir, f, string(b))
+	}
+	var env []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "PYTHONDONTWRITEBYTECODE=") && !strings.HasPrefix(e, "PYTHONPYCACHEPREFIX=") {
+			env = append(env, e)
+		}
+	}
+	cmd := exec.Command(py, filepath.Join(dir, "blame.py"))
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(`{"train":"t1","head":"h","evidence":"x","lines":[{"id":"1","files":["a/b.go"]}]}`)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "__pycache__")); !os.IsNotExist(err) {
+		t.Fatalf("the hook wrote __pycache__: %v", err)
+	}
+}
+
 // TestBlameFixtures runs the blame hook on each case in testdata/blame:
 // {"config", "input", "want": {"class", "blamed", "evidence_contains"}}.
 func TestBlameFixtures(t *testing.T) {
@@ -289,6 +320,42 @@ func TestPreflightBisectsByLine(t *testing.T) {
 	a, _ = hook(t, "preflight.py", cfg, tr.input())
 	if a["pass"] != false || len(strs(a["blamed"])) != 0 || !strings.Contains(fmt.Sprint(a["evidence"]), "trunk is broken") {
 		t.Fatalf("%v", a)
+	}
+}
+
+// TestPreflightBlameIsSetPerStep: "blame": "none" names nobody even when
+// the output names a file one line touched; "files" (the default) names
+// that line; an unknown mode is a configuration error, not an answer.
+func TestPreflightBlameIsSetPerStep(t *testing.T) {
+	tr := newTrain(t, map[string]string{"one.txt": "1\n"}, map[string]string{"src/b.go": "package src\n"})
+	step := func(mode string) map[string]any {
+		st := map[string]any{"name": "gate", "command": []string{"sh", "-c", "echo 'src/b.go:1:1: bad'; exit 1"}}
+		if mode != "" {
+			st["blame"] = mode
+		}
+		return map[string]any{"steps": []any{st}}
+	}
+	a, stderr := hook(t, "preflight.py", step("none"), tr.input())
+	if a["pass"] != false || len(strs(a["blamed"])) != 0 || !strings.Contains(fmt.Sprint(a["evidence"]), "blame: none") {
+		t.Fatalf("none: %v\n%s", a, stderr)
+	}
+	for _, mode := range []string{"", "files"} {
+		if a, stderr := hook(t, "preflight.py", step(mode), tr.input()); !slices.Equal(strs(a["blamed"]), []string{"2"}) {
+			t.Fatalf("%q: %v\n%s", mode, a, stderr)
+		}
+	}
+	// An unknown mode: the hook exits non-zero with no answer, which
+	// Shunter reads as no verdict.
+	py := python(t)
+	cfg := filepath.Join(t.TempDir(), "c.json")
+	b, _ := json.Marshal(step("blame-everyone"))
+	os.WriteFile(cfg, b, 0o644)
+	in, _ := json.Marshal(tr.input())
+	cmd := exec.Command(py, "-B", "preflight.py", "--config", cfg)
+	cmd.Stdin = bytes.NewReader(in)
+	out, err := cmd.Output()
+	if err == nil || len(bytes.TrimSpace(out)) != 0 {
+		t.Fatalf("an unknown blame mode answered %q (%v)", out, err)
 	}
 }
 

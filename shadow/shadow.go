@@ -23,7 +23,6 @@
 package shadow
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -36,6 +35,7 @@ import (
 	"github.com/rolandpj1968/shunter/replay"
 	"github.com/rolandpj1968/shunter/replay/adapter/trainlog"
 	"github.com/rolandpj1968/shunter/state"
+	"github.com/rolandpj1968/shunter/store"
 )
 
 // Reader is what shadow may call: reads only.
@@ -50,13 +50,15 @@ type Input struct {
 	Logs []trainlog.Log
 	// Landed says whether the train with this pull request landed.
 	Landed func(pr string) bool
-	// Waiting are the lines the live queue holds waiting now, each its
-	// changes in order. Optional.
-	Waiting [][]state.ChangeID
+	// Lines are the lines the live queue holds now, as line files: the
+	// waiting ones in order with their alone flags, the held ones and the
+	// parks. Optional.
+	Lines store.LineFile
 	// Read is the read-only forge and CI.
 	Read Reader
-	// Depth and MaxLines shape the trains Shunter would assemble.
-	Depth, MaxLines int
+	// Depth, MaxLines and MaxChanges shape the trains Shunter would
+	// assemble.
+	Depth, MaxLines, MaxChanges int
 }
 
 // Train is one train of the history, as the live queue ran it and as
@@ -74,10 +76,11 @@ type Train struct {
 	Note    string
 }
 
-// Line is one waiting line, through Shunter's gate now.
+// Line is one line of the live queue's, through Shunter's gate now.
 type Line struct {
 	Changes []state.ChangeID
-	Gate    string // waiting, waiting-for-base, parked, refused, unread
+	Alone   bool
+	Gate    string // waiting, waiting-for-base, held, parked, refused, unread
 	Reason  string
 }
 
@@ -227,11 +230,22 @@ func Run(ctx context.Context, in Input) Report {
 
 	// The machine over the history: what Shunter would perform.
 	src := &trainlog.Source{Logs: in.Logs, Landed: in.Landed}
-	var lines map[state.TrainID][]adapter.BuildLine = map[state.TrainID][]adapter.BuildLine{}
+	lines := map[state.TrainID][]adapter.BuildLine{}
+	offered := map[state.LineID][]state.ChangeID{}
 	_, rr := replay.RunObserved(state.New("trunk-at-start", state.Config{Depth: max(in.Depth, 1)}), src, func(seg string, ev state.Event, fx []state.Effect) {
-		if a, ok := ev.(state.Assemble); ok {
-			for _, id := range a.Lines {
-				lines[a.Train] = append(lines[a.Train], adapter.BuildLine{ID: id})
+		switch e := ev.(type) {
+		case state.Offer:
+			offered[e.Line] = nil
+			for _, c := range e.Changes {
+				offered[e.Line] = append(offered[e.Line], c.ID)
+			}
+		case state.Assemble:
+			for _, id := range e.Lines {
+				bl := adapter.BuildLine{ID: id}
+				for _, c := range offered[id] {
+					bl.Changes = append(bl.Changes, state.Change{ID: c})
+				}
+				lines[e.Train] = append(lines[e.Train], bl)
 			}
 		}
 		for _, e := range fx {
@@ -261,7 +275,7 @@ func Run(ctx context.Context, in Input) Report {
 		if in.Landed != nil {
 			tr.Landed = in.Landed(o.pr)
 		}
-		r, err := read.status(ctx, state.TrainID(lg.Name), tr.Head, lines[state.TrainID(lg.Name)])
+		r, err := read.status(ctx, state.TrainID(lg.Name), tr.Head, read.heads(ctx, lines[state.TrainID(lg.Name)]))
 		if err != nil {
 			rep.ReadErrors = append(rep.ReadErrors, fmt.Sprintf("%s: checks on %s: %v", lg.Name, short(tr.Head), err))
 			tr.Shunter, tr.Kind = "unread", "unread"
@@ -284,47 +298,13 @@ func Run(ctx context.Context, in Input) Report {
 		rep.Trains = append(rep.Trains, tr)
 	}
 
-	// Now: the waiting lines through the gate, and the trains from them.
+	// Now: the lines the live queue holds, through the gate, then its holds
+	// and parks placed as an import places them (docs/cutover.md); then the
+	// trains from what is left waiting.
 	s := state.New("trunk", state.Config{Depth: max(in.Depth, 1)})
-	for _, ids := range in.Waiting {
-		ln := Line{Changes: ids}
-		info, err := read.describeAll(ctx, ids)
-		if err != nil {
-			ln.Gate, ln.Reason = "unread", err.Error()
-			if adapter.IsPermanent(err) {
-				ln.Gate = "refused"
-			}
-			rep.Waiting = append(rep.Waiting, ln)
-			continue
-		}
-		o := daemon.OfferFor(s, info, false)
-		next, _, err := state.Next(s, o)
-		if err != nil {
-			ln.Gate, ln.Reason = "refused", "the offer: "+err.Error()
-			rep.Waiting = append(rep.Waiting, ln)
-			continue
-		}
-		s = next
-		evs, err := daemon.Gate(ctx, read, *s.Lines[o.Line], daemon.LiveChanges(s, o.Line))
-		if err != nil {
-			ln.Gate, ln.Reason = "unread", err.Error()
-			rep.Waiting = append(rep.Waiting, ln)
-			continue
-		}
-		for _, ev := range evs {
-			if next, _, err := state.Next(s, ev); err == nil {
-				s = next
-			}
-		}
-		l := s.Lines[o.Line]
-		ln.Gate, ln.Reason = l.State.String(), l.Reason
-		if l.State == state.LineReturned {
-			ln.Gate = "refused"
-		}
-		rep.Waiting = append(rep.Waiting, ln)
-	}
+	s, rep.Waiting = gateLines(ctx, read, s, in.Lines)
 	for i := 0; i < max(in.Depth, 1); i++ {
-		take := daemon.Join(s, max(in.MaxLines, 1))
+		take := daemon.Join(s, daemon.Caps{Lines: max(in.MaxLines, 1), Changes: in.MaxChanges})
 		if len(take) == 0 {
 			break
 		}
@@ -341,6 +321,113 @@ func Run(ctx context.Context, in Input) Report {
 		s = next
 	}
 	return rep
+}
+
+// gateLines offers every line of lf, runs the gate on each from the forge,
+// and then places the holds and parks on the lines the gate accepted. A line
+// whose changes can't be read is reported, and the rest go on.
+func gateLines(ctx context.Context, read *cached, s state.State, lf store.LineFile) (state.State, []Line) {
+	var out []Line
+	idx := map[state.LineID]int{}
+	// Each line read first: one that can't be is reported and left out.
+	keep := func(pl store.PlainLine) bool {
+		if _, err := read.describeAll(ctx, pl.Changes); err != nil {
+			ln := Line{Changes: pl.Changes, Alone: pl.Alone, Gate: "unread", Reason: err.Error()}
+			if adapter.IsPermanent(err) {
+				ln.Gate = "refused"
+			}
+			out = append(out, ln)
+			return false
+		}
+		return true
+	}
+	var ok store.LineFile
+	for _, pl := range lf.Waiting {
+		if keep(pl) {
+			ok.Waiting = append(ok.Waiting, pl)
+		}
+	}
+	kept := map[string]bool{}
+	for _, pl := range ok.Waiting {
+		kept[fmt.Sprint(pl.Changes)] = true
+	}
+	for _, h := range lf.Held {
+		if kept[fmt.Sprint(h.Changes)] {
+			ok.Held = append(ok.Held, h)
+		}
+	}
+	for _, p := range lf.Parks {
+		q := p
+		q.Lines = nil
+		for _, pl := range p.Lines {
+			if keep(pl) {
+				q.Lines = append(q.Lines, pl)
+			}
+		}
+		ok.Parks = append(ok.Parks, q)
+	}
+	doc, err := store.FromLines(ok, func(ids []state.ChangeID) ([]store.Described, error) {
+		info, err := read.describeAll(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		d := make([]store.Described, len(info))
+		for i, c := range info {
+			d[i] = store.Described{ID: c.ID, Head: c.Head, Base: c.Base}
+		}
+		return d, nil
+	})
+	if err == nil {
+		var plan store.Plan
+		if plan, err = store.Import(doc); err == nil {
+			accepted := map[state.LineID]bool{}
+			for _, o := range plan.Offers {
+				ln := Line{Alone: o.Alone}
+				for _, c := range o.Changes {
+					ln.Changes = append(ln.Changes, c.ID)
+				}
+				next, _, err := state.Next(s, o)
+				if err != nil {
+					ln.Gate, ln.Reason = "refused", "the offer: "+err.Error()
+					out = append(out, ln)
+					continue
+				}
+				s = next
+				evs, err := daemon.Gate(ctx, read, *s.Lines[o.Line], daemon.LiveChanges(s, o.Line))
+				if err != nil {
+					ln.Gate, ln.Reason = "unread", err.Error()
+					out = append(out, ln)
+					continue
+				}
+				for _, ev := range evs {
+					if next, _, err := state.Next(s, ev); err == nil {
+						s = next
+					}
+				}
+				if s.Lines[o.Line].State != state.LineReturned {
+					accepted[o.Line] = true
+				}
+				idx[o.Line] = len(out)
+				out = append(out, ln)
+			}
+			for _, ev := range plan.After(accepted) {
+				if next, _, err := state.Next(s, ev); err == nil {
+					s = next
+				}
+			}
+		}
+	}
+	if err != nil {
+		out = append(out, Line{Gate: "unread", Reason: "the line files: " + err.Error()})
+	}
+	for id, i := range idx {
+		l := s.Lines[id]
+		out[i].Gate, out[i].Reason = l.State.String(), l.Reason
+		if l.State == state.LineReturned {
+			out[i].Gate = "refused"
+		}
+	}
+	return s, out
 }
 
 // cached is a read-only reader that reads each change once.
@@ -389,48 +476,26 @@ func (c *cached) ReadLanding(context.Context, state.TrainID, state.Head, []state
 	return adapter.Reading{}, adapter.Permanent(fmt.Errorf("shadow: not read this way"))
 }
 
-func (c *cached) status(ctx context.Context, t state.TrainID, h state.Head, lines []adapter.BuildLine) (adapter.Report, error) {
-	return c.r.Status(ctx, t, h, lines)
-}
-
-// ParseLines reads a line file: one line a row, "<tag> <change>...", where
-// the tag is any word that is not a change ("b"). Blank rows and rows
-// starting with # are skipped.
-func ParseLines(r io.Reader) ([][]state.ChangeID, error) {
-	var out [][]state.ChangeID
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) == 0 || strings.HasPrefix(f[0], "#") {
-			continue
-		}
-		if !isChange(f[0]) {
-			f = f[1:]
-		}
-		var ids []state.ChangeID
-		for _, x := range f {
-			if isChange(x) {
-				ids = append(ids, state.ChangeID(strings.TrimPrefix(x, "#")))
+// heads gives each change of the lines its head, for the blame hook. A
+// train log names changes, not their heads, so this is each change's head
+// now, read from the forge: the head that rode, unless the change was pushed
+// again since. A change that can't be read keeps no head, and blame answers
+// no verdict for its line rather than guess.
+func (c *cached) heads(ctx context.Context, lines []adapter.BuildLine) []adapter.BuildLine {
+	out := make([]adapter.BuildLine, len(lines))
+	for i, l := range lines {
+		out[i] = adapter.BuildLine{ID: l.ID, Changes: append([]state.Change(nil), l.Changes...)}
+		for j, ch := range out[i].Changes {
+			if info, err := c.Describe(ctx, []state.ChangeID{ch.ID}); err == nil {
+				out[i].Changes[j].Head = info[0].Head
 			}
 		}
-		if len(ids) > 0 {
-			out = append(out, ids)
-		}
 	}
-	return out, sc.Err()
+	return out
 }
 
-func isChange(s string) bool {
-	s = strings.TrimPrefix(s, "#")
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+func (c *cached) status(ctx context.Context, t state.TrainID, h state.Head, lines []adapter.BuildLine) (adapter.Report, error) {
+	return c.r.Status(ctx, t, h, lines)
 }
 
 func short(h state.Head) string {

@@ -3,7 +3,7 @@
 //
 //	shunter serve --config FILE
 //	shunter serve --store DIR [--socket PATH] [--trunk HEAD] [--depth N] --adapters fake
-//	shunter shadow --config FILE [--lines FILE] [--stats FILE] [--since 6h] [--effects OUT] [--verbose] TRAIN-LOG...
+//	shunter shadow --config FILE [--lines DIR|FILE] [--stats FILE] [--since 6h] [--effects OUT] [--verbose] TRAIN-LOG...
 //
 //	shunt queue <change>... [--alone]
 //	shunt hold <line|change> --reason WHY
@@ -16,7 +16,7 @@
 //	shunt status
 //	shunt export [--out FILE] [--line-files DIR]
 //	shunt import [--file FILE | --line-files DIR]
-//	shunter watch --config FILE [--state FILE] [--no-probe]
+//	shunter watch --config FILE [--state FILE] [--no-probe] [--no-notify]
 //
 // The CLI talks to the daemon on its socket (--socket, or $SHUNTER_SOCKET,
 // or DIR/shunter.sock with --store DIR). With --offline --store DIR it opens
@@ -54,7 +54,7 @@ import (
 // version is stamped at build time: -ldflags "-X main.version=...".
 var version = "dev"
 
-var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true, "no-probe": true}
+var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true, "no-probe": true, "no-notify": true}
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
 	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
 	"stats": true, "since": true, "effects": true, "line-files": true, "state": true}
@@ -321,7 +321,7 @@ func shadowRun(fl map[string]string, logs []string) error {
 	if err != nil {
 		return err
 	}
-	in := shadow.Input{Read: gh, Depth: f.Queue.Depth, MaxLines: f.Queue.MaxLines}
+	in := shadow.Input{Read: gh, Depth: f.Queue.Depth, MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges}
 	if in.MaxLines == 0 {
 		in.MaxLines = 8
 	}
@@ -362,14 +362,9 @@ func shadowRun(fl map[string]string, logs []string) error {
 		in.Landed = func(pr string) bool { return landed[pr] }
 	}
 	if p := fl["lines"]; p != "" {
-		r, err := os.Open(p)
+		in.Lines, err = readLineFiles(p)
 		if err != nil {
-			return err
-		}
-		in.Waiting, err = shadow.ParseLines(r)
-		r.Close()
-		if err != nil {
-			return err
+			return fmt.Errorf("shadow: --lines: %w", err)
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -390,8 +385,29 @@ func shadowRun(fl map[string]string, logs []string) error {
 	return nil
 }
 
+// readLineFiles reads the live queue's lines: a directory of line files
+// (waiting, held and parked, docs/cutover.md), or a waiting list alone.
+func readLineFiles(p string) (store.LineFile, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return store.LineFile{}, err
+	}
+	if fi.IsDir() {
+		return store.ReadLines(p)
+	}
+	r, err := os.Open(p)
+	if err != nil {
+		return store.LineFile{}, err
+	}
+	defer r.Close()
+	w, err := store.ParseWaiting(r)
+	return store.LineFile{Waiting: w}, err
+}
+
 // watchRun is the outside watcher: one check, its findings raised through
-// the notify hook, the report on stdout. Exit 0 healthy, 1 not, 2 when the
+// the notify hook, the report on stdout. With --no-notify the hook is not
+// called and the watch state is not changed: the notices that would have
+// been sent go to stderr (for checking a configuration, and for tests). Exit 0 healthy, 1 not, 2 when the
 // check itself failed.
 func watchRun(fl map[string]string) int {
 	if fl["config"] == "" {
@@ -422,7 +438,8 @@ func watchRun(fl map[string]string) int {
 	if s := fl["state"]; s != "" {
 		state = s
 	}
-	a := watch.Alerter{Hook: f.NotifyHook(), State: state, Realert: f.Watch.Realert.Duration, Out: os.Stderr}
+	a := watch.Alerter{Hook: f.NotifyHook(), State: state, Realert: f.Watch.Realert.Duration, Out: os.Stderr,
+		DryRun: fl["no-notify"] != ""}
 	if _, aerr := a.Raise(ctx, rep.Findings); aerr != nil {
 		fmt.Fprintln(os.Stderr, "shunter: watch: raising:", aerr)
 		return 2

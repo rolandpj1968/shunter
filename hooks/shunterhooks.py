@@ -142,10 +142,18 @@ class BlameRules:
 
     The failure text names things: files (a path with a slash and an
     extension), directories (from configured patterns, for example a test
-    runner's "FAIL <package>" line), and test files by name. Each line of the
-    train touches files. Then, in order:
+    runner's "FAIL <package>" line; with "subdirs", everything under one),
+    path prefixes (a "prefix" pattern, often with a fixed "path", for a
+    failure that names no file), test files by name, and things a change's
+    description says (a "description" pattern). Each line of the train
+    touches files, and may carry its changes' descriptions. Then, in order:
 
-    1. A line is named when it touches a file the failure names.
+    0. The most specific rule (PROTOCOL.md §5.6): a line is named when its
+       description matches what a "description" pattern finds in the
+       failure. If that names some lines, not every line of several, they
+       are the blame, and the rules below aren't asked.
+    1. A line is named when it touches a file the failure names, or a file
+       under a prefix it names.
     2. For each directory the failure names: if the failure also names
        test files by name, the lines touching one of those test files in
        the directory; else the lines touching the directory's other files
@@ -161,12 +169,33 @@ class BlameRules:
     line (bisection by line). A stack is one line, so it is never split.
     """
 
+    KINDS = ("file", "dir", "test", "prefix", "description")
+
     def __init__(self, cfg):
         cfg = cfg or {}
         self.patterns = []
+        self.subdirs = set()
+        self.path_of = {}
+        self.describes = []
         for p in cfg.get("patterns") or []:
-            self.patterns.append((re.compile(p["regex"], re.M), p.get("kind", "file"),
-                                  int(p.get("group", 1)), p.get("strip", ""), p.get("suffix", "")))
+            kind = p.get("kind", "file")
+            if kind not in self.KINDS:
+                raise ValueError("blame pattern %r: kind %r: one of %s" % (p.get("regex"), kind, ", ".join(self.KINDS)))
+            rx = re.compile(p["regex"], re.M)
+            if kind == "description":
+                # The failure names something ({} in "describes", from the
+                # regex's group); a line whose description matches is named.
+                self.describes.append((rx, int(p.get("group", 1)), p.get("describes", "{}")))
+                continue
+            # A pattern with a fixed "path" names that path whenever it
+            # matches, for failures that name no file (a count below its
+            # floor names the directory the count is of).
+            group = int(p.get("group", 1 if rx.groups else 0))
+            self.patterns.append((rx, kind, group, p.get("strip", ""), p.get("suffix", "")))
+            if p.get("path"):
+                self.path_of[rx.pattern] = p["path"]
+            if kind == "dir" and p.get("subdirs"):
+                self.subdirs.add(rx.pattern)
         if cfg.get("default_patterns", True):
             self.patterns.append((re.compile(DEFAULT_FILE, re.M), "file", 1, "", ""))
             self.patterns.append((re.compile(DEFAULT_TEST_REF, re.M), "test", 1, "", ""))
@@ -179,18 +208,21 @@ class BlameRules:
         return any(r.search(path) for r in self.test_files)
 
     def refs(self, text):
-        """The files, directories and test-file names a failure names."""
-        files, dirs, tests = set(), set(), set()
+        """The files, directories (each with whether its subdirectories
+        count), path prefixes and test-file names a failure names."""
+        files, dirs, tests, prefixes = set(), set(), set(), set()
         for rx, kind, group, strip, suffix in self.patterns:
             for m in rx.finditer(text):
-                v = m.group(group)
+                v = self.path_of.get(rx.pattern) or m.group(group)
                 if not v:
                     continue
                 if strip and v.startswith(strip):
                     v = v[len(strip):]
                 v = v.strip("/") + suffix
-                if kind == "dir":
-                    dirs.add(v)
+                if kind == "prefix":
+                    prefixes.add(v)
+                elif kind == "dir":
+                    dirs.add((v, rx.pattern in self.subdirs))
                 elif kind == "test":
                     if self.is_test(v):
                         tests.add(os.path.basename(v))
@@ -198,7 +230,24 @@ class BlameRules:
                     files.add(v)
                     if self.is_test(v):
                         tests.add(os.path.basename(v))
-        return files, dirs, tests
+        return files, dirs, tests, prefixes
+
+    def described(self, text, order, texts_of):
+        """The lines whose description matches what the failure names, by
+        the "description" patterns: the most specific rule (§5.6), a rule a
+        change's description breaks. Returns (named, why)."""
+        named, why = [], []
+        for rx, group, tmpl in self.describes:
+            for m in rx.finditer(text):
+                v = m.group(group)
+                if not v:
+                    continue
+                want = re.compile(tmpl.replace("{}", re.escape(v)), re.I | re.M)
+                for lid in order:
+                    if want.search(texts_of.get(lid) or "") and lid not in named:
+                        named.append(lid)
+                        why.append("line %s: its description matches %r, which the failure names" % (lid, v))
+        return named, why
 
     def kind(self, text):
         """flaky or deterministic, as the old queue judged a failure: a
@@ -212,10 +261,15 @@ class BlameRules:
             return "flaky"
         return "deterministic"
 
-    def blame(self, text, order, files_of):
+    def blame(self, text, order, files_of, texts_of=None):
         """order is the train's line ids in queue order; files_of maps each
-        to the set of files it touches. Returns (blamed, why)."""
-        files, dirs, tests = self.refs(text)
+        to the set of files it touches, and texts_of, optionally, to its
+        changes' descriptions. Returns (blamed, why)."""
+        if texts_of:
+            hit, why = self.described(text, order, texts_of)
+            if hit and not (len(order) > 1 and len(hit) == len(order)):
+                return [lid for lid in order if lid in hit], why
+        files, dirs, tests, prefixes = self.refs(text)
         named, why = [], []
 
         def add(lid, reason):
@@ -228,9 +282,17 @@ class BlameRules:
                 if f in files:
                     add(lid, "touches %s, which the failure names" % f)
                     break
-        for d in sorted(dirs):
+        for p in sorted(prefixes):
+            for lid in order:
+                hit = sorted(f for f in files_of.get(lid, ()) if f == p or f.startswith(p + "/"))
+                if hit:
+                    add(lid, "touches %s, under %s, which the failure names" % (hit[0], p))
+        for d, sub in sorted(dirs):
+            def within(f):
+                return os.path.dirname(f) == d or (sub and f.startswith(d + "/"))
+
             def touching(pred):
-                return [lid for lid in order if any(os.path.dirname(f) == d and pred(f) for f in files_of.get(lid, ()))]
+                return [lid for lid in order if any(within(f) and pred(f) for f in files_of.get(lid, ()))]
             if tests:
                 t1 = touching(lambda f: os.path.basename(f) in tests and self.is_test(f))
                 t2 = touching(lambda f: not self.is_test(f))
@@ -252,7 +314,7 @@ class BlameRules:
             if only and len(only) < len(order):
                 return [lid for lid in order if lid in only], why
         if not named:
-            return [], ["the failure names no file or directory a line of the train touches"]
+            return [], ["the failure names no file, directory or description of a line of the train"]
         if len(order) > 1 and len(named) == len(order):
             return [], why + ["blame names every line: no blame (J1 splits the train by line)"]
         return [lid for lid in order if lid in named], why

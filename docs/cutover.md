@@ -29,11 +29,11 @@ What makes a hard cut-over safe is that both queues move trunk only by fast-forw
 4. **Run in shadow.** For a few days Shunter reads the same inputs, lands nothing, and logs what it would have assembled, blamed and judged. Review the differences from what the old queue did, daily. Shadow mode must be unable to push: give it no credentials that can write trunk.
 
    ```
-   shunter shadow --config shunter.toml --lines waiting.list --stats stats.jsonl \
+   shunter shadow --config shunter.toml --lines lines/ --stats stats.jsonl \
        --since 6h --effects would-do.jsonl logs/*.out
    ```
 
-   It has no git adapter and no notifier, and its forge client refuses every request but a read before it is sent. The report counts, for every train that opened a pull request, whether Shunter's own reading of the checks on the train's head agrees with the outcome the old queue recorded, and names each divergence by kind: a landing whose head shows no passing verdict, a failure charged on a run that was cancelled, a failure split or returned with nobody named. It lists the effects the machine would have asked for, and puts the lines waiting now through Shunter's gate.
+   It has no git adapter and no notifier, and its forge client refuses every request but a read before it is sent. The report counts, for every train that opened a pull request, whether Shunter's own reading of the checks on the train's head agrees with the outcome the old queue recorded, and names each divergence by kind: a landing whose head shows no passing verdict, a failure charged on a run that was cancelled, a failure split or returned with nobody named. It lists the effects the machine would have asked for, and puts the lines waiting now through Shunter's gate. `--lines` takes a directory of [line files](#the-line-files) (or a waiting list alone): lines that must ride alone, held lines and parks are read as such and placed as an import places them, so the trains it says it would assemble leave them out as the live queue does.
 5. **Make both queues take the same lock.** One exclusive lock that either runner must hold to push trunk. Then both can never write, even by mistake. See [The trunk lock](#the-trunk-lock) below.
 6. **Write and test the export.** Shunter writes its queue at rest as plain line files ([The line files](#the-line-files) below), the shape a script queue keeps. Map them into the old queue's own files with a small script, and round-trip it: export, map, read back with the old queue's tools, and compare. Rollback depends on it, so prove it works before you need it.
 7. **Choose the moment.** A quiet hour with a short queue, with no park in force and no hold you don't understand.
@@ -134,7 +134,7 @@ A line is its changes in stack order; `alone` marks a line that must ride alone.
 
 ## Watching
 
-Run `shunter watch --config FILE` from a timer, every five minutes. It checks the daemon from outside, sharing no code path with its loop: the store's lock is held (a daemon runs); the daemon answers a status command on its socket (its loop turns); it hasn't restarted again and again; no effect is owed, and no live train has stayed in one state, past its deadline plus grace; lines aren't waiting with nothing in flight and nothing recorded; the trunk lock isn't stale. Each finding goes to the notify hook once, again every hour while it stands, and once more when it clears; the command exits 1 while anything is wrong. A finding is a reason to look, and the rollback triggers below still decide a rollback.
+Run `shunter watch --config FILE` from a timer, every five minutes. It checks the daemon from outside, sharing no code path with its loop: the store's lock is held (a daemon runs); the daemon answers a status command on its socket (its loop turns); it hasn't restarted again and again; no effect is owed, and no live train has stayed in one state, past its deadline plus grace; lines aren't waiting with nothing in flight and nothing recorded; the trunk lock isn't stale. Each finding goes to the notify hook once, again every hour while it stands, and once more when it clears; the command exits 1 while anything is wrong. To check a configuration without telling anyone, add `--no-notify`: the notices go to stderr, the hook isn't run, and the watch state isn't changed. A notify hook that delivers to people is reached by every run without it, test runs included. A finding is a reason to look, and the rollback triggers below still decide a rollback.
 
 ## After
 

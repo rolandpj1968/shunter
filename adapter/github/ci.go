@@ -23,14 +23,20 @@ type ghCheckRun struct {
 	HTMLURL     string     `json:"html_url"`
 	HeadSHA     string     `json:"head_sha"`
 	CompletedAt *time.Time `json:"completed_at"`
-	Output      struct {
+	CheckSuite  struct {
+		ID int64 `json:"id"`
+	} `json:"check_suite"`
+	Output struct {
 		Title   string `json:"title"`
 		Summary string `json:"summary"`
 	} `json:"output"`
 }
 
 // checks reads the check runs on head: the latest of each name, by its
-// started time. A rerun is a new run of the same name, started later.
+// started time. A rerun is a new run of the same name, started later. With
+// a Workflow configured, only the check suites of that workflow's runs on
+// the head are read: another workflow on the same commit (a nightly run on
+// a head that has landed, say) is not this train's CI.
 func (c *Client) checks(ctx context.Context, head state.Head) ([]adapter.Check, error) {
 	var page struct {
 		Total int          `json:"total_count"`
@@ -43,12 +49,19 @@ func (c *Client) checks(ctx context.Context, head state.Head) ([]adapter.Check, 
 	if err := c.do(ctx, http.MethodGet, c.repo("/commits/%s/check-runs?%s", url.PathEscape(string(head)), q.Encode()), nil, &page); err != nil {
 		return nil, err
 	}
+	suites, err := c.workflowSuites(ctx, head)
+	if err != nil {
+		return nil, err
+	}
 	latest := map[string]adapter.Check{}
 	for _, r := range page.Runs {
 		if r.HeadSHA != "" && r.HeadSHA != string(head) {
 			continue
 		}
-		ch := adapter.Check{Name: r.Name, Status: r.Status, URL: r.HTMLURL, Summary: strings.TrimSpace(r.Output.Title)}
+		if suites != nil && !suites[r.CheckSuite.ID] {
+			continue
+		}
+		ch := adapter.Check{Name: r.Name, Status: r.Status, URL: r.HTMLURL, Summary: strings.TrimSpace(r.Output.Title), Suite: r.CheckSuite.ID}
 		if ch.URL == "" {
 			ch.URL = r.DetailsURL
 		}
@@ -68,6 +81,60 @@ func (c *Client) checks(ctx context.Context, head state.Head) ([]adapter.Check, 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// workflowSuites is the check suites of the configured workflow's runs on
+// head, or nil (read every suite) when no workflow is configured or its runs
+// carry no suite. No run of the workflow on the head is an empty set: its
+// checks have not started.
+func (c *Client) workflowSuites(ctx context.Context, head state.Head) (map[int64]bool, error) {
+	if c.cfg.Workflow == "" {
+		return nil, nil
+	}
+	rs, err := c.runs(ctx, url.Values{"head_sha": {string(head)}})
+	if err != nil {
+		return nil, err
+	}
+	out := map[int64]bool{}
+	unknown := false
+	for _, r := range rs {
+		if r.HeadSHA != "" && r.HeadSHA != string(head) {
+			continue
+		}
+		if r.CheckSuiteID == 0 {
+			unknown = true
+			continue
+		}
+		out[r.CheckSuiteID] = true
+	}
+	if unknown && len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// scope is the checks that make a verdict's evidence: with required names,
+// those in the check suites of the required checks, so that another
+// workflow's checks on the same commit count for nothing; with none, all.
+// A required check with no suite known leaves the scope at all.
+func scope(checks, req []adapter.Check, names []string) []adapter.Check {
+	if len(names) == 0 {
+		return checks
+	}
+	suites := map[int64]bool{}
+	for _, ch := range req {
+		if ch.Suite == 0 {
+			return checks
+		}
+		suites[ch.Suite] = true
+	}
+	var out []adapter.Check
+	for _, ch := range checks {
+		if suites[ch.Suite] {
+			out = append(out, ch)
+		}
+	}
+	return out
 }
 
 // required picks the checks that make the verdict, and names any missing.
@@ -109,7 +176,8 @@ var noVerdict = map[string]bool{"cancelled": true, "skipped": true, "stale": tru
 // timeouts are timing (class 3); a cancelled or skipped required check with
 // nothing failed is no verdict (class 0). Until every required check has
 // completed, the run is pending: no fail-fast, so that blame sees every
-// failure.
+// failure. Only the checks in the required checks' suites count (scope):
+// a failure in another workflow on the same head is not this run's.
 func Classify(head state.Head, checks []adapter.Check, names []string) adapter.Report {
 	rep := adapter.Report{Head: head, Checks: checks}
 	req, missing := required(checks, names)
@@ -127,8 +195,9 @@ func Classify(head state.Head, checks []adapter.Check, names []string) adapter.R
 			return rep
 		}
 	}
+	rep.Checks = scope(checks, req, names)
 	var failed, timed, none []string
-	for _, ch := range checks {
+	for _, ch := range rep.Checks {
 		if ch.Status != "completed" {
 			continue
 		}
@@ -176,10 +245,13 @@ type BlameInput struct {
 	Evidence string          `json:"evidence"`
 }
 
-// BlameLine is one line of the train, for the blame hook.
+// BlameLine is one line of the train, for the blame hook. Text is its
+// changes' titles and descriptions, for a rule a description breaks
+// (§5.6); a change whose description can't be read adds nothing.
 type BlameLine struct {
 	ID      state.LineID   `json:"id"`
 	Changes []state.Change `json:"changes"`
+	Text    string         `json:"text,omitempty"`
 }
 
 // BlameAnswer is what the blame hook answers. Class is one of
@@ -201,7 +273,7 @@ func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report,
 	in := BlameInput{Train: t, Head: rep.Head, Checks: rep.Checks, Evidence: rep.Evidence}
 	member := map[state.LineID]bool{}
 	for _, l := range lines {
-		in.Lines = append(in.Lines, BlameLine{ID: l.ID, Changes: l.Changes})
+		in.Lines = append(in.Lines, BlameLine{ID: l.ID, Changes: l.Changes, Text: c.describeText(ctx, l.Changes)})
 		member[l.ID] = true
 	}
 	var a BlameAnswer
@@ -230,6 +302,26 @@ func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report,
 		rep.Evidence += fmt.Sprintf(" [the blame hook answered class %q, which is not one it may give]", a.Class)
 	}
 	return rep
+}
+
+// describeText is the changes' titles and descriptions, each read once.
+// Blame is advice, so a read that fails leaves that change out.
+func (c *Client) describeText(ctx context.Context, changes []state.Change) string {
+	var parts []string
+	for _, ch := range changes {
+		n, err := number(ch.ID)
+		if err != nil {
+			continue
+		}
+		p, err := c.pull(ctx, n)
+		if err != nil {
+			continue
+		}
+		if t := strings.TrimSpace(p.Title + "\n\n" + p.Body); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func orDefault(s, d string) string {
@@ -261,6 +353,8 @@ type ghRun struct {
 	Conclusion *string `json:"conclusion"`
 	HeadSHA    string  `json:"head_sha"`
 	HeadBranch string  `json:"head_branch"`
+	// CheckSuiteID is the check suite of the run's checks.
+	CheckSuiteID int64 `json:"check_suite_id"`
 }
 
 // runs lists the workflow runs that match q, limited to Workflow when it is

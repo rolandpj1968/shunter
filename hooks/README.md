@@ -18,17 +18,17 @@ In `shunter.toml`:
 
 ```toml
 [hooks.preflight]
-command = ["python3", "hooks/preflight.py", "--config", "hooks/preflight.json"]
+command = ["python3", "-B", "hooks/preflight.py", "--config", "hooks/preflight.json"]
 timeout = "20m"
 
 [hooks.conflict]
-command = ["python3", "hooks/conflict.py", "--config", "hooks/conflict.json"]
+command = ["python3", "-B", "hooks/conflict.py", "--config", "hooks/conflict.json"]
 
 [hooks.blame]
-command = ["python3", "hooks/blame.py", "--config", "hooks/blame.json"]
+command = ["python3", "-B", "hooks/blame.py", "--config", "hooks/blame.json"]
 ```
 
-Each script's docstring lists its configuration keys, with an example. Relative paths in a configuration are relative to that file.
+`-B`, and each script itself, keep Python from writing `__pycache__` into the directory the hook runs from, which for the pre-flight and conflict hooks is Shunter's clone. Each script's docstring lists its configuration keys, with an example. Relative paths in a configuration are relative to that file.
 
 ### pre-flight
 
@@ -37,7 +37,8 @@ Each script's docstring lists its configuration keys, with an example. Relative 
   "steps": [
     {"name": "generate", "command": ["make", "generate-check"], "timeout": "5m"},
     {"name": "lint", "command": ["make", "lint"]},
-    {"name": "ratchet", "command": ["./scripts/ratchet.sh"], "bisect": true}
+    {"name": "ratchet", "command": ["./scripts/ratchet.sh"], "blame": "bisect"},
+    {"name": "gate", "command": ["./scripts/gate.sh"], "blame": "none"}
   ],
   "always": ["generate"],
   "record": "/var/lib/shunter/preflight-steps.tsv",
@@ -50,8 +51,9 @@ Each script's docstring lists its configuration keys, with an example. Relative 
 - **Steps** run in order in Shunter's clone, at the train's head, and stop at the first failure. Each has `SHUNTER_TRAIN`, `SHUNTER_BASE` and `SHUNTER_HEAD` in its environment. A step must leave the tree as it found it, or commit what it changes.
 - **Per-step timing.** Every step run appends a row to `record`: time, train, step, seconds, exit code. That file is how a team finds the steps that never fail, to drop them, and the slow ones.
 - **The usefulness rule.** A step with no catch in the last `days`, at least `min_runs` runs in them, and a median over `min_seconds`, is skipped; CI still runs the check. A skipped step writes no row, so once it has been skipped for `days` it has no rows in the window and runs again, which samples it. `always` steps always run, `never` steps never run here, and a step named in the `recalled` file in the window runs whatever its record (write a row, `time<TAB>step<TAB>why`, when CI fails in what a skipped step covers).
-- **Blame by bisection.** A step marked `"bisect": true` is run again at each line's tip in the train (Shunter passes `tips`), by bisection, to find the first line at whose tip it fails. That line is blamed: with the lines before it, it tipped the check. A step that fails at the train's base too blames nobody, since trunk is broken. Use it for checks that measure the whole tree (a ratchet, a count, a registry), where the failure names no file.
-- **Blame by files.** Any other failing step's output is read for the files it names, with the rules below, against each line's files in the train.
+- **Blame, per step.** A step's `"blame"` says how its failure is blamed: `"files"` (the default), `"bisect"` or `"none"`. With `"none"` nobody is named, and J1 decides; its default splits the train in halves by line. Use it for a step whose failure says nothing about which line caused it, where the old queue split the batch, so that the rules move unchanged. Any other value is a configuration error: the hook answers nothing, which Shunter reads as no verdict.
+- **Blame by bisection.** A step with `"blame": "bisect"` (or the older `"bisect": true`) is run again at each line's tip in the train (Shunter passes `tips`), by bisection, to find the first line at whose tip it fails. That line is blamed: with the lines before it, it tipped the check. A step that fails at the train's base too blames nobody, since trunk is broken. Use it for checks that measure the whole tree (a ratchet, a count, a registry), where the failure names no file.
+- **Blame by files.** A `"files"` step's output is read for the files it names, with the rules below, against each line's files in the train.
 
 ### conflict
 
@@ -97,9 +99,16 @@ Generated files can also be stale only in combination, with nothing conflicting.
 
 ### The blame rules
 
-Shared by `blame.py` and `preflight.py` ([`shunterhooks.py`](shunterhooks.py), `BlameRules`). The failure names files (a path with a slash and an extension, not part of a URL), directories (from configured `patterns` of kind `dir`, such as a test runner's `FAIL <package>` line, with `strip` to drop a module prefix) and test files by bare name (`foo_test.go:88`). Then:
+Shared by `blame.py` and `preflight.py` ([`shunterhooks.py`](shunterhooks.py), `BlameRules`). The failure names files (a path with a slash and an extension, not part of a URL), directories (from configured `patterns` of kind `dir`, such as a test runner's `FAIL <package>` line, with `strip` to drop a module prefix, and `"subdirs": true` to take everything under the directory, not only its own files), path prefixes (kind `prefix`; give `"path"` for a failure that names no file, such as a count below its floor naming the directory it counts), test files by bare name (`foo_test.go:88`), and things a change's description says (kind `description`, below). Then:
 
-1. A line is named when it touches a file the failure names.
+0. **A description rule**, the most specific (PROTOCOL.md §5.6): a `description` pattern's group is what the failure names, and a line is named when its changes' title or description matches `describes`, with `{}` standing for that name:
+
+   ```json
+   {"regex": "issue #(\\d+) is still listed as open", "kind": "description", "describes": "(closes|fixes) #{}\\b"}
+   ```
+
+   Shunter gives each line its changes' titles and descriptions, as `text`. If this names some lines, but not every line of several, they are the blame and the rules below aren't asked.
+1. A line is named when it touches a file the failure names, or a file under a prefix it names.
 2. For each directory the failure names: the lines touching one of the failing test files there; else, the lines touching the directory's other files (the code under test); else, the lines touching any of its files. If the failure names no test file, the lines touching any file in the directory.
 3. If that names every line of a train of several: **a file the failure names that only one line touched** names that line alone.
 

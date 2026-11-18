@@ -27,6 +27,10 @@ type Alerter struct {
 	Out *os.File
 	// Now is the clock; time.Now when nil.
 	Now func() time.Time
+	// DryRun sends nothing through the hook and changes no State: each
+	// notice that would be sent goes to Out instead. For checks and tests
+	// whose hook would reach people.
+	DryRun bool
 }
 
 // Notice is what the hook reads: the shape of the daemon's notices, to the
@@ -105,7 +109,7 @@ func (a Alerter) Raise(ctx context.Context, fs []Finding) ([]Notice, error) {
 			delete(state, s)
 		}
 	}
-	if a.State != "" {
+	if a.State != "" && !a.DryRun {
 		b, _ := json.MarshalIndent(state, "", "  ")
 		if err := writeAtomic(a.State, b); err != nil {
 			errs = append(errs, err)
@@ -115,7 +119,7 @@ func (a Alerter) Raise(ctx context.Context, fs []Finding) ([]Notice, error) {
 }
 
 func (a Alerter) send(ctx context.Context, n Notice) error {
-	if !a.Hook.Configured() {
+	if !a.Hook.Configured() || a.DryRun {
 		o := a.Out
 		if o == nil {
 			o = os.Stdout
