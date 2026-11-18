@@ -354,3 +354,71 @@ func TestLandedClosesAndLabelsEachChange(t *testing.T) {
 		t.Fatalf("told the owner %d times", next.n)
 	}
 }
+
+func TestPruneRetargetsThenDeletesEndedTrainsBranches(t *testing.T) {
+	s, c := newServer(t)
+	s.refs["main"] = "m1"
+	s.refs["shunter/t1"] = "h1" // ended (landed): train 2's pull request is based on it
+	s.refs["shunter/t2"] = "h2" // live
+	s.refs["shunter/t3"] = "h3" // ended, but its pull request is still open: not yet
+	s.refs["feature"] = "f1"    // not Shunter's
+	s.pull(601, "closed", "h1", "shunter/t1", "main", "shunter-bot")
+	s.pull(602, "open", "h2", "shunter/t2", "shunter/t1", "shunter-bot")
+	s.pull(603, "open", "h3", "shunter/t3", "main", "shunter-bot")
+	if err := c.Prune(ctx, []state.TrainID{"t2"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.refs["shunter/t1"]; ok {
+		t.Fatal("the ended train's branch was kept")
+	}
+	if got := s.pulls[602]["base"].(map[string]any)["ref"]; got != "main" {
+		t.Fatalf("train 2's pull request is based on %v, not retargeted to trunk before its base went", got)
+	}
+	for _, b := range []string{"shunter/t2", "shunter/t3", "feature", "main"} {
+		if _, ok := s.refs[b]; !ok {
+			t.Fatalf("%s was deleted", b)
+		}
+	}
+	// Again, and with the branch already gone: no error, nothing more.
+	if err := c.Prune(ctx, []state.TrainID{"t2"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.count("DELETE", "/git/refs/"); n != 1 {
+		t.Fatalf("%d deletes", n)
+	}
+	// Read-only (shadow running) refuses the writes before they are sent.
+	s.refs["shunter/t9"] = "h9"
+	c.cfg.ReadOnly = true
+	if err := c.Prune(ctx, nil); err == nil {
+		t.Fatal("a read-only prune deleted")
+	}
+	if _, ok := s.refs["shunter/t9"]; !ok {
+		t.Fatal("a read-only prune deleted")
+	}
+}
+
+func TestRetargetAStackedChangeWhoseBaseLanded(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(21, "open", "aaa", "feat-a", "main", "alice")
+	s.pull(22, "open", "bbb", "feat-b", "feat-a", "alice")
+	s.pull(23, "open", "ccc", "feat-c", "feat-a", "alice")
+	n := Landed{Client: c, Next: &told{}}
+	// 21 lands alone: 22 and 23 are stacked on it and move to trunk first.
+	if err := n.Owner(ctx, "k", "21", []state.ChangeID{"21"}, "landed: in train t1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range []int{22, 23} {
+		if got := s.pulls[x]["base"].(map[string]any)["ref"]; got != "main" {
+			t.Fatalf("#%d is based on %v", x, got)
+		}
+	}
+	// Retarget by itself: idempotent, and a change on trunk is left alone.
+	s.pull(24, "open", "ddd", "feat-d", "feat-x", "alice")
+	if err := c.Retarget(ctx, "24"); err != nil || s.pulls[24]["base"].(map[string]any)["ref"] != "main" {
+		t.Fatalf("retarget: %v", err)
+	}
+	before := s.count("PATCH", "/pulls/24")
+	if err := c.Retarget(ctx, "24"); err != nil || s.count("PATCH", "/pulls/24") != before {
+		t.Fatalf("a second retarget patched again: %v", err)
+	}
+}

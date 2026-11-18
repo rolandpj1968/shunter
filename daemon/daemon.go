@@ -37,14 +37,18 @@ type Daemon struct {
 	quit    chan struct{}
 	wg      sync.WaitGroup
 
-	jobs     map[string]*job // effect key -> the call in flight
-	retry    map[string]retry
-	polls    map[state.TrainID]bool
-	polled   map[state.TrainID]time.Time
-	pollErrs map[state.TrainID]int
-	alerted  map[string]bool
-	fatal    error
-	online   bool
+	jobs        map[string]*job // effect key -> the call in flight
+	retry       map[string]retry
+	polls       map[state.TrainID]bool
+	polled      map[state.TrainID]time.Time
+	pollErrs    map[state.TrainID]int
+	alerted     map[string]bool
+	pruning     bool      // a prune of ended trains' branches is in flight
+	pruneFailed bool      // the last prune failed: the next waits a minute
+	pruned      string    // the live trains at the last prune that succeeded
+	prunedAt    time.Time // when it was tried last
+	fatal       error
+	online      bool
 }
 
 type job struct {
@@ -63,6 +67,7 @@ type retry struct {
 type result struct {
 	key    string // the effect, or "" for a CI poll
 	poll   state.TrainID
+	prune  bool // a prune's result
 	events []state.Event
 	actor  string
 	note   string
@@ -166,6 +171,9 @@ func (d *Daemon) Busy(ctx context.Context) (inflight int, due bool, err error) {
 	err = d.do(ctx, func() {
 		d.drive()
 		inflight, due = len(d.jobs)+len(d.polls), d.due()
+		if d.pruning {
+			inflight++
+		}
 	})
 	return
 }

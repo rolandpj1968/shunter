@@ -58,6 +58,10 @@ type World struct {
 	Acts  map[string]int
 	// Notices are the messages sent, in order.
 	Notices []Notice
+	// Pruned is the live trains each prune was told, in order.
+	Pruned [][]state.TrainID
+	// Retargeted is the changes moved onto trunk, in order.
+	Retargeted []state.ChangeID
 
 	// BuildHook, when set, decides a build. It may block on ctx.
 	BuildHook func(ctx context.Context, req adapter.BuildRequest) (adapter.BuildResult, error)
@@ -447,3 +451,36 @@ func (w *World) notice(n Notice) error {
 
 // ErrTransient is a fault that retrying clears.
 var ErrTransient = errors.New("the forge answered 502")
+
+// Prune implements adapter.Pruner: it records the live trains it was told.
+func (w *World) Prune(ctx context.Context, live []state.TrainID) error {
+	if err := w.enter(ctx, "prune"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Pruned = append(w.Pruned, append([]state.TrainID(nil), live...))
+	return nil
+}
+
+// Retarget implements adapter.Retargeter: the change is on trunk now.
+func (w *World) Retarget(ctx context.Context, id state.ChangeID) error {
+	if err := w.enter(ctx, "retarget"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if c := w.changes[id]; c != nil && c.Base != "" {
+		c.Base = ""
+		w.Retargeted = append(w.Retargeted, id)
+		w.Acts["retarget"]++
+	}
+	return nil
+}
+
+// Prunes returns a copy of the live trains each prune was told.
+func (w *World) Prunes() [][]state.TrainID {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([][]state.TrainID(nil), w.Pruned...)
+}

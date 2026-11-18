@@ -130,10 +130,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(map[string]string{"message": "Not Found"})
 	case r.Method == "GET" && path == "/pulls":
 		head := strings.TrimPrefix(q.Get("head"), "acme:")
+		base := q.Get("base")
 		out := []any{}
 		for n := 0; n < 10000; n++ {
 			p, ok := s.pulls[n]
-			if !ok || p["head"].(map[string]any)["ref"] != head {
+			if !ok || (head != "" && p["head"].(map[string]any)["ref"] != head) || (base != "" && p["base"].(map[string]any)["ref"] != base) {
 				continue
 			}
 			if st := q.Get("state"); st != "all" && p["state"] != st {
@@ -160,6 +161,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if st, ok := in["state"].(string); ok {
 			s.pulls[n]["state"] = st
 		}
+		if b, ok := in["base"].(string); ok {
+			s.pulls[n]["base"] = map[string]any{"ref": b, "sha": "b"}
+		}
 		reply(s.pulls[n])
 	case r.Method == "POST" && len(parts) == 3 && parts[0] == "issues" && parts[2] == "labels":
 		n, _ := strconv.Atoi(parts[1])
@@ -178,6 +182,15 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(map[string]any{"ref": "refs/heads/" + b, "object": map[string]any{"sha": sha}})
+	case r.Method == "DELETE" && strings.HasPrefix(path, "/git/refs/heads/"):
+		b := strings.TrimPrefix(path, "/git/refs/heads/")
+		if _, ok := s.refs[b]; !ok {
+			w.WriteHeader(422)
+			reply(map[string]string{"message": "Reference does not exist"})
+			return
+		}
+		delete(s.refs, b)
+		w.WriteHeader(204)
 	case r.Method == "GET" && strings.HasPrefix(path, "/git/matching-refs/heads/"):
 		pre := strings.TrimPrefix(path, "/git/matching-refs/heads/")
 		out := []any{}

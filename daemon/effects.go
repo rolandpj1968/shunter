@@ -224,6 +224,11 @@ func gate(ctx context.Context, f adapter.Forge, l state.Line, live map[state.Cha
 			if !base[0].Landed {
 				return refuse("change %s is stacked on %s, which has not landed and is in no live line", c.ID, c.Base)
 			}
+			// Its base has landed: move it onto trunk (open question 21).
+			// Advice only: the change is taken whether or not it takes.
+			if r, ok := f.(adapter.Retargeter); ok {
+				r.Retarget(ctx, c.ID)
+			}
 		default:
 			return refuse("change %s is stacked on %s, which is not its base in this line", c.ID, c.Base)
 		}
@@ -258,6 +263,10 @@ func built(req adapter.BuildRequest, r adapter.BuildResult) []state.Event {
 
 // complete takes a goroutine's result back into the loop.
 func (d *Daemon) complete(r result) {
+	if r.prune {
+		d.pruneDone(r)
+		return
+	}
 	if r.key == "" {
 		d.polled[r.poll] = d.now()
 		delete(d.polls, r.poll)

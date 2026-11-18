@@ -740,3 +740,40 @@ func TestSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEndedTrainsArePrunedAndALandedBaseIsRetargeted(t *testing.T) {
+	r := newRig(t)
+	r.open("a")
+	r.queue("a")
+	t1 := r.trainOf("a")
+	r.w.Pass(t1)
+	r.tick(time.Second)
+	r.wantTrain(t1, state.TrainLanded)
+	prunes := r.w.Prunes()
+	if len(prunes) == 0 {
+		t.Fatal("no prune after a train ended")
+	}
+	if last := prunes[len(prunes)-1]; len(last) != 0 {
+		t.Fatalf("the last prune kept %v live", last)
+	}
+	// Nothing changed: no second prune until pruneEvery has passed.
+	n := len(prunes)
+	r.tick(time.Second)
+	if len(r.w.Prunes()) != n {
+		t.Fatal("a prune with nothing changed")
+	}
+	r.tick(11 * time.Minute)
+	if len(r.w.Prunes()) != n+1 {
+		t.Fatal("no periodic prune")
+	}
+	// b is stacked on a, which has landed and is in no live line: the gate
+	// takes it and moves it onto trunk (open question 21).
+	r.w.Open("b", "b-1", "a")
+	r.queue("b")
+	if got := r.w.Retargeted; len(got) != 1 || got[0] != "b" {
+		t.Fatalf("retargeted: %v", got)
+	}
+	r.w.Pass(r.trainOf("b"))
+	r.tick(time.Second)
+	r.wantLine("b", state.LineLanded)
+}

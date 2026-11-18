@@ -120,6 +120,60 @@ func (d *Daemon) tick() {
 		}
 		d.poll(t.ID, t.Head, lines)
 	}
+	d.prune(now, s)
+}
+
+// pruneEvery is how often a prune runs when the live trains have not
+// changed, to catch a branch pushed after its train ended.
+const pruneEvery = 10 * time.Minute
+
+// prune deletes the branches of trains that have ended (open question 20),
+// through the forge when it can: whenever the live trains change, and every
+// pruneEvery. It is housekeeping, outside the machine: it is safe to repeat,
+// and a failure is logged and tried again later.
+func (d *Daemon) prune(now time.Time, s state.State) {
+	p, ok := d.ad.Forge.(adapter.Pruner)
+	if !ok || d.pruning {
+		return
+	}
+	live := strings.Join(trainIDs(s.Chain), " ")
+	due := live != d.pruned || now.Sub(d.prunedAt) >= pruneEvery
+	if d.pruneFailed && now.Sub(d.prunedAt) < time.Minute {
+		due = false
+	}
+	if !due {
+		return
+	}
+	d.pruning, d.prunedAt = true, now
+	ids := append([]state.TrainID(nil), s.Chain...)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), d.cfg.Call)
+		defer cancel()
+		err := p.Prune(ctx, ids)
+		select {
+		case d.results <- result{prune: true, note: live, err: err}:
+		case <-d.quit:
+		}
+	}()
+}
+
+func (d *Daemon) pruneDone(r result) {
+	d.pruning, d.pruneFailed = false, r.err != nil
+	if r.err != nil {
+		d.log.Printf("pruning ended trains' branches: %v", r.err)
+		return
+	}
+	d.pruned = r.note
+}
+
+func trainIDs(ids []state.TrainID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = string(id)
+	}
+	return out
 }
 
 // sameTest is J1's question: did the same test fail in the train before,

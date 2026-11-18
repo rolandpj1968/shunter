@@ -23,8 +23,14 @@ type Landed struct {
 // Owner implements adapter.Notifier.
 func (n Landed) Owner(ctx context.Context, key string, line state.LineID, changes []state.ChangeID, msg string) error {
 	if strings.HasPrefix(msg, state.LineLanded.String()+":") {
+		mine := map[int]bool{}
 		for _, id := range changes {
-			if err := n.markLanded(ctx, id, msg); err != nil {
+			if num, err := number(id); err == nil {
+				mine[num] = true
+			}
+		}
+		for _, id := range changes {
+			if err := n.markLanded(ctx, id, msg, mine); err != nil {
 				return err
 			}
 		}
@@ -37,7 +43,7 @@ func (n Landed) Judge(ctx context.Context, key, point string, t state.TrainID, m
 	return n.Next.Judge(ctx, key, point, t, msg)
 }
 
-func (c *Client) markLanded(ctx context.Context, id state.ChangeID, msg string) error {
+func (c *Client) markLanded(ctx context.Context, id state.ChangeID, msg string, line map[int]bool) error {
 	num, err := number(id)
 	if err != nil {
 		return err
@@ -48,6 +54,10 @@ func (c *Client) markLanded(ctx context.Context, id state.ChangeID, msg string) 
 	}
 	if p.State != "open" {
 		return nil
+	}
+	why := fmt.Sprintf("Its base #%d landed on `%s`; retargeted to `%s` by Shunter.", num, c.cfg.Trunk, c.cfg.Trunk)
+	if err := c.retargetFrom(ctx, p.Head.Ref, line, why); err != nil {
+		return err
 	}
 	if c.cfg.LandedLabel != "" && !p.labelled(c.cfg.LandedLabel) {
 		if err := c.do(ctx, http.MethodPost, c.repo("/issues/%d/labels", num), map[string][]string{"labels": {c.cfg.LandedLabel}}, nil); err != nil {
