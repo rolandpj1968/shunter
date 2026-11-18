@@ -39,6 +39,10 @@ func (d *Daemon) assemble() {
 	}
 }
 
+// Join is the joining rule: the lines the next train takes, in order. Shadow
+// running uses it to say what the runner would assemble.
+func Join(s state.State, max int) []state.LineID { return join(s, max) }
+
 // join is the joining rule.
 func join(s state.State, max int) []state.LineID {
 	var out []state.LineID
@@ -110,7 +114,11 @@ func (d *Daemon) tick() {
 		if last, ok := d.polled[id]; ok && now.Sub(last) < d.cfg.Poll {
 			continue
 		}
-		d.poll(t.ID, t.Head)
+		var lines []adapter.BuildLine
+		for _, l := range t.Lines {
+			lines = append(lines, adapter.BuildLine{ID: l, Changes: append([]state.Change(nil), s.Lines[l].Changes...)})
+		}
+		d.poll(t.ID, t.Head, lines)
 	}
 }
 
@@ -164,7 +172,7 @@ func (d *Daemon) restores(now time.Time) {
 	}
 }
 
-func (d *Daemon) poll(id state.TrainID, head state.Head) {
+func (d *Daemon) poll(id state.TrainID, head state.Head, lines []adapter.BuildLine) {
 	d.polls[id] = true
 	ci := d.ad.CI
 	d.wg.Add(1)
@@ -172,7 +180,7 @@ func (d *Daemon) poll(id state.TrainID, head state.Head) {
 		defer d.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), d.cfg.Call)
 		defer cancel()
-		rep, err := ci.Status(ctx, id, head)
+		rep, err := ci.Status(ctx, id, head, lines)
 		r := result{poll: id, actor: "ci", err: err}
 		if err == nil {
 			r.events = report(id, rep)

@@ -15,6 +15,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/rolandpj1968/shunter/state"
 )
@@ -98,12 +99,26 @@ type Report struct {
 	Blamed   []state.LineID // Failed: the lines blame names (§5.6), maybe none
 	Evidence string         // Failed: the evidence, naming the failing test
 	Why      string         // NoVerdict, Infra, Flaky: what happened
+	// Checks are the checks read, each the latest run of its name: the
+	// evidence behind the outcome, for the log and for shadow running.
+	Checks []Check
+}
+
+// Check is one check run on a head, as CI reports it.
+type Check struct {
+	Name       string
+	Status     string // queued, in_progress, completed
+	Conclusion string // success, failure, cancelled, skipped, timed_out, ...
+	Started    time.Time
+	URL        string
+	Summary    string
 }
 
 // CI runs a train's checks.
 type CI interface {
-	// Status reads the latest run on the train's head.
-	Status(ctx context.Context, train state.TrainID, head state.Head) (Report, error)
+	// Status reads the latest run on the train's head. The lines are the
+	// train's, for blame: a failure can name only lines of the train.
+	Status(ctx context.Context, train state.TrainID, head state.Head, lines []BuildLine) (Report, error)
 	// Rerun runs the train's failed jobs again.
 	Rerun(ctx context.Context, key string, train state.TrainID, head state.Head) error
 	// Cancel stops every run of the train. Cancelling nothing is no error.
