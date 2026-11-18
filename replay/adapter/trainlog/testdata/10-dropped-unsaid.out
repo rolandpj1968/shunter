@@ -1,0 +1,5 @@
+BATCH-IN 114 115
+BATCH-READY aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 114
+BATCH-BRANCH batch/day1-0010
+BATCH-OPENED 910 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+BATCH-GREEN 910 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
