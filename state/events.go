@@ -255,6 +255,8 @@ type EffectKind string
 
 const (
 	EffRecord    EffectKind = "record"         // append the transition to the log (I8)
+	EffGate      EffectKind = "gate"           // read what the gate needs about a line's changes (§5.2)
+	EffBuild     EffectKind = "build"          // merge the train's lines on Expect and run pre-flight (§5.4)
 	EffOpenPR    EffectKind = "open-pr"        // open the train's pull request and start CI
 	EffRerun     EffectKind = "rerun"          // run the train's failed jobs again
 	EffCancelRun EffectKind = "cancel-run"     // stop the train's CI
@@ -271,7 +273,7 @@ type Effect struct {
 	Line   LineID
 	Train  TrainID
 	Head   Head   // push: the head to land; open-pr: the train's head
-	Expect Head   // push: where trunk must be
+	Expect Head   // push: where trunk must be; build: the head to build on
 	From   string // record
 	To     string // record
 	Cause  Cause  // record

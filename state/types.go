@@ -144,7 +144,7 @@ type Train struct {
 	Reruns   int      // reruns after a flake or a timing failure
 	Judged   int      // reruns ordered at J1
 	Pushes   int      // transient push refusals
-	asked    bool     // the landing check has been asked for
+	Asked    bool     // the landing check has been asked for
 	Reason   string
 }
 
