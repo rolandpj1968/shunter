@@ -83,6 +83,10 @@ type Git struct {
 	ChangeRef    string   `toml:"change_ref"`
 	Strategy     string   `toml:"strategy"`
 	Env          []string `toml:"env"`
+	// TrunkLock is the trunk push lock every pusher holds (docs/cutover.md).
+	TrunkLock        string   `toml:"trunk_lock"`
+	TrunkLockWait    Duration `toml:"trunk_lock_wait"`
+	TrunkLockMaxHold Duration `toml:"trunk_lock_max_hold"`
 }
 
 // CI is how a train is tested and how its verdict is read.
@@ -198,6 +202,7 @@ func (f *File) defaults() {
 	f.Store = f.path(f.Store)
 	f.Socket = f.path(f.Socket)
 	f.Git.Dir = f.path(f.Git.Dir)
+	f.Git.TrunkLock = f.path(f.Git.TrunkLock)
 	f.Notify.Events = f.path(f.Notify.Events)
 	if f.Socket == "" && f.Store != "" {
 		f.Socket = filepath.Join(f.Store, "shunter.sock")
@@ -327,6 +332,7 @@ func (f *File) Adapters() (adapter.Set, *gitrepo.Repo, error) {
 		Dir: f.Git.Dir, Remote: f.Git.Remote, Trunk: f.Repo.Trunk, BranchPrefix: f.Git.BranchPrefix,
 		ChangeRef: f.Git.ChangeRef, Strategy: f.Git.Strategy, Env: f.Git.Env, Policy: f.policy(),
 		Preflight: f.hook(f.Hooks.Preflight, f.Git.Dir), Conflict: f.hook(f.Hooks.Conflict, f.Git.Dir),
+		TrunkLock: f.Git.TrunkLock, TrunkLockWait: f.Git.TrunkLockWait.Duration, TrunkLockMaxHold: f.Git.TrunkLockMaxHold.Duration,
 	})
 	if err != nil {
 		return adapter.Set{}, nil, err

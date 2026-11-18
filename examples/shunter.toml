@@ -41,6 +41,14 @@ change_ref = "refs/pull/{id}/head"
 strategy = "rebase"
 # Added to git's environment: the committer of rebased commits.
 env = ["GIT_COMMITTER_NAME=Shunter", "GIT_COMMITTER_EMAIL=shunter@example.com"]
+# The trunk push lock: a file every pusher of trunk holds with flock(2) to
+# push, Shunter and any other (a legacy queue during a cut-over, a person's
+# hotfix). A holder that dies frees it. One held past trunk_lock_max_hold,
+# or by an orphan child of a holder that died, is stale: reported, never
+# broken. See docs/cutover.md. Unset: no lock.
+trunk_lock = "/var/lib/shunter/trunk.lock"
+trunk_lock_wait = "2m"
+trunk_lock_max_hold = "15m"
 
 [ci]
 # "checks": the train's pull request starts CI. "dispatch": Shunter also

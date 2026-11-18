@@ -3,6 +3,7 @@ package gitrepo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter/bound"
 	"github.com/rolandpj1968/shunter/adapter/hook"
 	"github.com/rolandpj1968/shunter/state"
+	"github.com/rolandpj1968/shunter/trunklock"
 )
 
 var ident = []string{
@@ -468,5 +470,37 @@ func TestExampleConflictHookRegenerates(t *testing.T) {
 	}
 	if got := w.cat(res.Head, "gen.txt"); got != "a1\nb1" {
 		t.Fatalf("gen.txt is %q", got)
+	}
+}
+
+func TestPushHoldsTheTrunkLock(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "trunk.lock")
+	w := newWorld(t, Config{})
+	w.repo.cfg.TrunkLock, w.repo.cfg.TrunkLockWait = lock, 300*time.Millisecond
+	base := w.trunk()
+	h1 := w.change("1", "main", map[string]string{"one.txt": "1\n"})
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{line("1", ch("1", h1))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another pusher holds the lock: no push, and a failure the daemon
+	// retries, not a refusal.
+	other, err := trunklock.Acquire(ctx, lock, trunklock.Options{Who: "legacy queue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.repo.Push(ctx, "p1", res.Head, base)
+	if err == nil || adapter.IsPermanent(err) || !errors.Is(err, trunklock.ErrBusy) {
+		t.Fatalf("push while another holds the lock: %v", err)
+	}
+	if w.trunk() != base {
+		t.Fatal("trunk moved without the lock")
+	}
+	other.Release()
+	if err := w.repo.Push(ctx, "p1", res.Head, base); err != nil || w.trunk() != res.Head {
+		t.Fatalf("push with the lock free: %v", err)
+	}
+	if st, _ := trunklock.Inspect(lock, trunklock.Options{}); st.Held {
+		t.Fatal("the push kept the lock")
 	}
 }

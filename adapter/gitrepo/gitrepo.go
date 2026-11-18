@@ -35,6 +35,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter/hook"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
+	"github.com/rolandpj1968/shunter/trunklock"
 )
 
 // Config is the adapter's configuration.
@@ -65,6 +66,14 @@ type Config struct {
 	StateDir string
 	// Git is the git program. Default "git".
 	Git string
+	// TrunkLock is the trunk push lock's file (package trunklock), which
+	// every pusher of trunk holds to push. Empty: no lock.
+	TrunkLock string
+	// TrunkLockWait bounds the wait for the lock in one push. Default 2m.
+	TrunkLockWait time.Duration
+	// TrunkLockMaxHold is how long a holder may hold it before the lock is
+	// stale. Default 15m.
+	TrunkLockMaxHold time.Duration
 }
 
 // Repo is the git adapter. It implements adapter.Git.
@@ -456,9 +465,26 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine) 
 // fast-forward and under a lease, or not at all. Trunk already at head is
 // success. Trunk anywhere but expect, or a head that does not descend from
 // expect, is a permanent refusal.
+//
+// With a trunk lock configured, the whole push, from reading trunk to the
+// last reading after it, is made holding the lock: no other pusher moves
+// trunk in between. A lock not got in time is a transient failure.
 func (r *Repo) Push(ctx context.Context, key string, head, expect state.Head) error {
 	r.net.Lock()
 	defer r.net.Unlock()
+	if r.cfg.TrunkLock != "" {
+		wait := r.cfg.TrunkLockWait
+		if wait <= 0 {
+			wait = 2 * time.Minute
+		}
+		lctx, cancel := context.WithTimeout(ctx, wait)
+		l, err := trunklock.Acquire(lctx, r.cfg.TrunkLock, trunklock.Options{Who: "shunter", MaxHold: r.cfg.TrunkLockMaxHold})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("push: the trunk lock: %w", err)
+		}
+		defer l.Release()
+	}
 	ref := "refs/heads/" + r.cfg.Trunk
 	err := bound.Do(ctx, r.cfg.Policy, "push", func(ctx context.Context) error {
 		cur, err := r.trunk(ctx)
