@@ -123,6 +123,37 @@ func newRepo(t *testing.T) string {
 	return d
 }
 
+// TestHooksWriteNoBytecode: run as a configuration may run them, with no -B
+// and no PYTHONDONTWRITEBYTECODE, the hooks still write no __pycache__
+// beside themselves (Shunter runs them in its clone).
+func TestHooksWriteNoBytecode(t *testing.T) {
+	py := python(t)
+	dir := t.TempDir()
+	for _, f := range []string{"shunterhooks.py", "blame.py", "preflight.py", "conflict.py"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, dir, f, string(b))
+	}
+	var env []string
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "PYTHONDONTWRITEBYTECODE=") && !strings.HasPrefix(e, "PYTHONPYCACHEPREFIX=") {
+			env = append(env, e)
+		}
+	}
+	cmd := exec.Command(py, filepath.Join(dir, "blame.py"))
+	cmd.Dir = dir
+	cmd.Env = env
+	cmd.Stdin = strings.NewReader(`{"train":"t1","head":"h","evidence":"x","lines":[{"id":"1","files":["a/b.go"]}]}`)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "__pycache__")); !os.IsNotExist(err) {
+		t.Fatalf("the hook wrote __pycache__: %v", err)
+	}
+}
+
 // TestBlameFixtures runs the blame hook on each case in testdata/blame:
 // {"config", "input", "want": {"class", "blamed", "evidence_contains"}}.
 func TestBlameFixtures(t *testing.T) {

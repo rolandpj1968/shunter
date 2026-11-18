@@ -42,6 +42,8 @@ import os
 import subprocess
 import sys
 
+# Shunter runs a hook in its clone: never write __pycache__ beside it.
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shunterhooks as sh  # noqa: E402
 

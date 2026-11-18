@@ -18,17 +18,17 @@ In `shunter.toml`:
 
 ```toml
 [hooks.preflight]
-command = ["python3", "hooks/preflight.py", "--config", "hooks/preflight.json"]
+command = ["python3", "-B", "hooks/preflight.py", "--config", "hooks/preflight.json"]
 timeout = "20m"
 
 [hooks.conflict]
-command = ["python3", "hooks/conflict.py", "--config", "hooks/conflict.json"]
+command = ["python3", "-B", "hooks/conflict.py", "--config", "hooks/conflict.json"]
 
 [hooks.blame]
-command = ["python3", "hooks/blame.py", "--config", "hooks/blame.json"]
+command = ["python3", "-B", "hooks/blame.py", "--config", "hooks/blame.json"]
 ```
 
-Each script's docstring lists its configuration keys, with an example. Relative paths in a configuration are relative to that file.
+`-B`, and each script itself, keep Python from writing `__pycache__` into the directory the hook runs from, which for the pre-flight and conflict hooks is Shunter's clone. Each script's docstring lists its configuration keys, with an example. Relative paths in a configuration are relative to that file.
 
 ### pre-flight
 
