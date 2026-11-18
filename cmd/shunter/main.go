@@ -3,7 +3,7 @@
 //
 //	shunter serve --config FILE
 //	shunter serve --store DIR [--socket PATH] [--trunk HEAD] [--depth N] --adapters fake
-//	shunter shadow --config FILE [--lines FILE] [--stats FILE] [--since 6h] [--effects OUT] [--verbose] TRAIN-LOG...
+//	shunter shadow --config FILE [--lines DIR|FILE] [--stats FILE] [--since 6h] [--effects OUT] [--verbose] TRAIN-LOG...
 //
 //	shunt queue <change>... [--alone]
 //	shunt hold <line|change> --reason WHY
@@ -362,14 +362,9 @@ func shadowRun(fl map[string]string, logs []string) error {
 		in.Landed = func(pr string) bool { return landed[pr] }
 	}
 	if p := fl["lines"]; p != "" {
-		r, err := os.Open(p)
+		in.Lines, err = readLineFiles(p)
 		if err != nil {
-			return err
-		}
-		in.Waiting, err = shadow.ParseLines(r)
-		r.Close()
-		if err != nil {
-			return err
+			return fmt.Errorf("shadow: --lines: %w", err)
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -388,6 +383,25 @@ func shadowRun(fl map[string]string, logs []string) error {
 		return store.WriteFileAtomic(p, []byte(b.String()))
 	}
 	return nil
+}
+
+// readLineFiles reads the live queue's lines: a directory of line files
+// (waiting, held and parked, docs/cutover.md), or a waiting list alone.
+func readLineFiles(p string) (store.LineFile, error) {
+	fi, err := os.Stat(p)
+	if err != nil {
+		return store.LineFile{}, err
+	}
+	if fi.IsDir() {
+		return store.ReadLines(p)
+	}
+	r, err := os.Open(p)
+	if err != nil {
+		return store.LineFile{}, err
+	}
+	defer r.Close()
+	w, err := store.ParseWaiting(r)
+	return store.LineFile{Waiting: w}, err
 }
 
 // watchRun is the outside watcher: one check, its findings raised through

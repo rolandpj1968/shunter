@@ -13,6 +13,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter"
 	"github.com/rolandpj1968/shunter/replay/adapter/trainlog"
 	"github.com/rolandpj1968/shunter/state"
+	"github.com/rolandpj1968/shunter/store"
 )
 
 // reader is a read-only forge and CI with canned answers.
@@ -91,11 +92,11 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 			"26": {ID: "26", Head: "h26", Base: "99", Open: true, Approved: true},
 		},
 	}
-	waiting, err := ParseLines(strings.NewReader("b 21 22\n# a comment\n\nb 23\nb 24\nb #25\ns 26\n"))
+	waiting, err := store.ParseWaiting(strings.NewReader("b 21 22\n# a comment\n\nb 23\nb 24\nb #25\nb 26\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	rep := Run(context.Background(), Input{Logs: lgs, Landed: landed, Waiting: waiting, Read: r, Depth: 2, MaxLines: 1})
+	rep := Run(context.Background(), Input{Logs: lgs, Landed: landed, Lines: store.LineFile{Waiting: waiting}, Read: r, Depth: 2, MaxLines: 1})
 
 	got := map[string]string{}
 	for _, tr := range rep.Trains {
@@ -143,9 +144,45 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 	}
 }
 
-func TestParseLines(t *testing.T) {
-	got, err := ParseLines(strings.NewReader("b 1 2 3\n4 5\nx\n#\n"))
-	if err != nil || fmt.Sprint(got) != "[[1 2 3] [4 5]]" {
-		t.Fatalf("%v %v", got, err)
+// TestShadowReadsAloneHoldsAndParks: the live queue's lines come as line
+// files, and a line that must ride alone, a held line and a parked one are
+// read as such: none of them joins another line's train.
+func TestShadowReadsAloneHoldsAndParks(t *testing.T) {
+	r := &reader{changes: map[state.ChangeID]adapter.ChangeInfo{}}
+	for _, id := range []state.ChangeID{"31", "32", "33", "34", "35", "36", "37"} {
+		r.changes[id] = adapter.ChangeInfo{ID: id, Head: state.Head("h" + id), Open: true, Approved: true}
+	}
+	r.changes["38"] = adapter.ChangeInfo{ID: "38", Head: "h38", Open: false, Approved: true}
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		store.WaitingFile: "b 31\nb 32 alone\nb 33\nb 34\nb 38\nb 35\n",
+		store.HeldFile:    "b 33 -- waiting for a review\n",
+		store.ParkedFile:  "park p1 -- landed:99 -- trunk is red\nb 36\nb 37 alone\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lf, err := store.ReadLines(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep := Run(context.Background(), Input{Lines: lf, Read: r, Depth: 3, MaxLines: 8})
+	gates := map[string]string{}
+	for _, l := range rep.Waiting {
+		gates[fmt.Sprint(l.Changes)] = l.Gate
+		if fmt.Sprint(l.Changes) == "[32]" && !l.Alone {
+			t.Errorf("32 lost its alone flag")
+		}
+	}
+	want := map[string]string{"[31]": "waiting", "[32]": "waiting", "[33]": "held", "[34]": "waiting",
+		"[38]": "refused", "[35]": "waiting", "[36]": "parked", "[37]": "parked"}
+	if fmt.Sprint(gates) != fmt.Sprint(want) {
+		t.Errorf("gates %v, want %v", gates, want)
+	}
+	// 31, 34 and 35 ride together; 32 rides alone after them; 33 is held
+	// and 36, 37 are parked.
+	if fmt.Sprint(rep.Assemble) != "[[31 34 35] [32]]" {
+		t.Errorf("would assemble %v", rep.Assemble)
 	}
 }
