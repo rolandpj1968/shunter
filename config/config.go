@@ -56,6 +56,7 @@ type File struct {
 	Retry     Retry     `toml:"retry"`
 	Hooks     Hooks     `toml:"hooks"`
 	Notify    Notify    `toml:"notify"`
+	Watch     Watch     `toml:"watch"`
 
 	dir string // the file's directory: relative paths are relative to it
 }
@@ -147,6 +148,16 @@ type Notify struct {
 	Timeout Duration `toml:"timeout"`
 }
 
+// Watch is the outside watcher's (shunter watch) own bounds.
+type Watch struct {
+	// State remembers what was raised. Default <store>/watch.json.
+	State    string   `toml:"state"`
+	Grace    Duration `toml:"grace"`
+	Stall    Duration `toml:"stall"`
+	Realert  Duration `toml:"realert"`
+	Restarts int      `toml:"restarts"`
+}
+
 // Load reads and checks a configuration file. A key it does not know is an
 // error, so that a misspelt deadline is not silently the default.
 func Load(path string) (*File, error) {
@@ -204,6 +215,10 @@ func (f *File) defaults() {
 	f.Git.Dir = f.path(f.Git.Dir)
 	f.Git.TrunkLock = f.path(f.Git.TrunkLock)
 	f.Notify.Events = f.path(f.Notify.Events)
+	if f.Watch.State == "" && f.Store != "" {
+		f.Watch.State = filepath.Join(f.Store, "watch.json")
+	}
+	f.Watch.State = f.path(f.Watch.State)
 	if f.Socket == "" && f.Store != "" {
 		f.Socket = filepath.Join(f.Store, "shunter.sock")
 	}
@@ -289,6 +304,11 @@ func (f *File) hook(h Hook, dir string) hook.Hook {
 		out.Command = append([]string{f.path(out.Command[0])}, out.Command[1:]...)
 	}
 	return out
+}
+
+// NotifyHook is the notify hook, for the watcher.
+func (f *File) NotifyHook() hook.Hook {
+	return f.hook(Hook{Command: f.Notify.Command, Timeout: f.Notify.Timeout}, "")
 }
 
 // token returns the forge token, from the environment or a command. It is

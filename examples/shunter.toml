@@ -119,3 +119,17 @@ events = "/var/lib/shunter/events.jsonl"
 # Optional delivery: the notice as JSON on stdin.
 command = ["./hooks/notify"]
 timeout = "30s"
+
+# The outside watcher: `shunter watch --config FILE`, run from a timer (a
+# systemd timer or cron, every five minutes). It checks the daemon from
+# outside: the store's lock held, the socket answering, no restart loop, no
+# effect or train past its deadline plus grace, lines not stalled, the trunk
+# lock not stale. It raises each finding through [notify]'s command once,
+# again every realert while it stands, and says when it clears. It exits 1
+# while anything is wrong. Shown: the defaults.
+[watch]
+# state = "/var/lib/shunter/watch.json"   # default <store>/watch.json
+grace = "15m"     # added to every deadline
+stall = "30m"     # lines waiting, nothing in flight, nothing recorded
+realert = "1h"
+restarts = 3      # daemon starts in an hour that are too many

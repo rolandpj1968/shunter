@@ -48,6 +48,7 @@ import (
 	"github.com/rolandpj1968/shunter/shadow"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
+	"github.com/rolandpj1968/shunter/watch"
 )
 
 // version is stamped at build time: -ldflags "-X main.version=...".
@@ -72,6 +73,9 @@ func main() {
 	}
 	if verb == "shadow" {
 		fatal(shadowRun(fl, pos))
+	}
+	if verb == "watch" {
+		os.Exit(watchRun(fl))
 	}
 	if verb == "version" {
 		fmt.Println(version)
@@ -386,8 +390,54 @@ func shadowRun(fl map[string]string, logs []string) error {
 	return nil
 }
 
+// watchRun is the outside watcher: one check, its findings raised through
+// the notify hook, the report on stdout. Exit 0 healthy, 1 not, 2 when the
+// check itself failed.
+func watchRun(fl map[string]string) int {
+	if fl["config"] == "" {
+		fmt.Fprintln(os.Stderr, "shunter: watch: --config FILE is required")
+		return 2
+	}
+	f, err := config.Load(fl["config"])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shunter: watch:", err)
+		return 2
+	}
+	dl := f.Deadlines
+	c := watch.Config{
+		Store: f.Store, Socket: f.Socket, NoProbe: fl["no-probe"] != "",
+		TrunkLock: f.Git.TrunkLock, MaxHold: f.Git.TrunkLockMaxHold.Duration,
+		Deadlines: watch.Deadlines{Call: dl.Call.Duration, Build: dl.Build.Duration, Open: dl.Open.Duration,
+			CI: dl.CI.Duration, Push: dl.Push.Duration, J1: dl.J1.Duration},
+		Grace: f.Watch.Grace.Duration, Stall: f.Watch.Stall.Duration, Restarts: f.Watch.Restarts,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rep, err := watch.Check(ctx, c)
+	if err != nil {
+		rep.Findings = append(rep.Findings, watch.Finding{Subject: "watch", Message: err.Error()})
+	}
+	fmt.Print(rep)
+	state := f.Watch.State
+	if s := fl["state"]; s != "" {
+		state = s
+	}
+	a := watch.Alerter{Hook: f.NotifyHook(), State: state, Realert: f.Watch.Realert.Duration, Out: os.Stderr}
+	if _, aerr := a.Raise(ctx, rep.Findings); aerr != nil {
+		fmt.Fprintln(os.Stderr, "shunter: watch: raising:", aerr)
+		return 2
+	}
+	if err != nil {
+		return 2
+	}
+	if len(rep.Findings) > 0 {
+		return 1
+	}
+	return 0
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunt <queue|hold|release|cancel|withdraw|pause|resume|judge|status|export|import> ...")
+	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|hold|release|cancel|withdraw|pause|resume|judge|status|export|import> ...")
 	os.Exit(2)
 }
 
