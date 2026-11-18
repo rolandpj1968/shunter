@@ -1,7 +1,9 @@
 // Command shunter is the merge-queue daemon and its CLI. Linked or copied as
 // "shunt", it is the same program; the verbs are the same either way.
 //
+//	shunter serve --config FILE
 //	shunter serve --store DIR [--socket PATH] [--trunk HEAD] [--depth N] --adapters fake
+//	shunter shadow --config FILE [--lines FILE] [--stats FILE] [--since 6h] [--effects OUT] [--verbose] TRAIN-LOG...
 //
 //	shunt queue <change>... [--alone]
 //	shunt hold <line|change> --reason WHY
@@ -31,6 +33,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -38,7 +41,10 @@ import (
 
 	"github.com/rolandpj1968/shunter/adapter"
 	"github.com/rolandpj1968/shunter/adapter/fake"
+	"github.com/rolandpj1968/shunter/config"
 	"github.com/rolandpj1968/shunter/daemon"
+	"github.com/rolandpj1968/shunter/replay/adapter/trainlog"
+	"github.com/rolandpj1968/shunter/shadow"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
 )
@@ -46,9 +52,10 @@ import (
 // version is stamped at build time: -ldflags "-X main.version=...".
 var version = "dev"
 
-var boolFlags = map[string]bool{"alone": true, "offline": true}
+var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true}
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
-	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true}
+	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
+	"stats": true, "since": true, "effects": true}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -61,6 +68,9 @@ func main() {
 	}
 	if verb == "serve" {
 		fatal(serve(fl))
+	}
+	if verb == "shadow" {
+		fatal(shadowRun(fl, pos))
 	}
 	if verb == "version" {
 		fmt.Println(version)
@@ -142,6 +152,11 @@ func socketPath(fl map[string]string) string {
 	if s := os.Getenv("SHUNTER_SOCKET"); s != "" {
 		return s
 	}
+	if c := fl["config"]; c != "" {
+		if f, err := config.Load(c); err == nil {
+			return f.Socket
+		}
+	}
 	if d := fl["store"]; d != "" {
 		return filepath.Join(d, "shunter.sock")
 	}
@@ -186,12 +201,15 @@ func readDoc(path string) (*store.Document, error) {
 	return &d, nil
 }
 
-// serve runs the daemon. The only adapters so far are the in-memory fakes,
-// for trying the CLI: they land nothing anywhere.
+// serve runs the daemon: with --config, on the real adapters it names; with
+// --adapters fake, on in-memory fakes that land nothing anywhere.
 func serve(fl map[string]string) error {
+	if fl["config"] != "" {
+		return serveConfig(fl["config"], fl["socket"])
+	}
 	dir := fl["store"]
 	if dir == "" {
-		return errors.New("serve: --store DIR is required")
+		return errors.New("serve: --config FILE, or --store DIR with --adapters fake")
 	}
 	var ad adapter.Set
 	switch fl["adapters"] {
@@ -202,7 +220,7 @@ func serve(fl map[string]string) error {
 		}
 		ad = fake.New(trunk).Set()
 	default:
-		return errors.New("serve: --adapters fake is the only set so far; the forge, CI and git adapters are the next load")
+		return errors.New("serve: without --config, --adapters fake is the only set")
 	}
 	depth := 2
 	if s := fl["depth"]; s != "" {
@@ -216,16 +234,45 @@ func serve(fl map[string]string) error {
 	if trunk == "" {
 		trunk = "trunk-0"
 	}
-	st, err := store.Open(dir, store.Options{Init: &store.Init{Trunk: trunk, Config: state.Config{Depth: depth}}, Version: version, Actor: "daemon"})
+	return run(dir, socketPath(fl), ad, state.Config{Depth: depth}, trunk, daemon.Config{Version: version})
+}
+
+func serveConfig(path, sock string) error {
+	f, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	ad, g, err := f.Adapters()
+	if err != nil {
+		return err
+	}
+	if sock == "" {
+		sock = f.Socket
+	}
+	// A new store starts at trunk as the remote has it now.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	trunk, err := g.Trunk(ctx)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("serve: reading trunk: %w", err)
+	}
+	if err := os.MkdirAll(f.Store, 0o755); err != nil {
+		return err
+	}
+	return run(f.Store, sock, ad, f.State(), trunk, f.Daemon(version))
+}
+
+func run(dir, sock string, ad adapter.Set, sc state.Config, trunk state.Head, dc daemon.Config) error {
+	st, err := store.Open(dir, store.Options{Init: &store.Init{Trunk: trunk, Config: sc}, Version: version, Actor: "daemon"})
 	if err != nil {
 		return err
 	}
 	defer st.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	d := daemon.New(st, ad, daemon.Config{Version: version}, log.New(os.Stderr, "shunter: ", log.LstdFlags))
+	d := daemon.New(st, ad, dc, log.New(os.Stderr, "shunter: ", log.LstdFlags))
 	errs := make(chan error, 2)
-	go func() { errs <- d.Serve(ctx, socketPath(fl)) }()
+	go func() { errs <- d.Serve(ctx, sock) }()
 	go func() { errs <- d.Run(ctx) }()
 	err = <-errs
 	stop()
@@ -235,8 +282,92 @@ func serve(fl map[string]string) error {
 	return err
 }
 
+// shadowRun is shadow running: the forge and CI read-only, the live queue's
+// train logs and line file as the inputs, and a report on stdout. It has no
+// git adapter and no notifier: it cannot build, push or tell anyone.
+func shadowRun(fl map[string]string, logs []string) error {
+	if fl["config"] == "" {
+		return errors.New("shadow: --config FILE is required")
+	}
+	f, err := config.Load(fl["config"])
+	if err != nil {
+		return err
+	}
+	gh, err := f.GitHub(true)
+	if err != nil {
+		return err
+	}
+	in := shadow.Input{Read: gh, Depth: f.Queue.Depth, MaxLines: f.Queue.MaxLines}
+	if in.MaxLines == 0 {
+		in.MaxLines = 8
+	}
+	var since time.Time
+	if s := fl["since"]; s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("shadow: --since: %w", err)
+		}
+		since = time.Now().Add(-d)
+	}
+	sort.Slice(logs, func(i, j int) bool { return filepath.Base(logs[i]) < filepath.Base(logs[j]) })
+	for _, p := range logs {
+		if fi, err := os.Stat(p); err != nil || (!since.IsZero() && fi.ModTime().Before(since)) {
+			continue
+		}
+		r, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		lg, err := trainlog.Parse(filepath.Base(p), r)
+		r.Close()
+		if err != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		in.Logs = append(in.Logs, lg)
+	}
+	if p := fl["stats"]; p != "" {
+		r, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		landed, err := trainlog.LandedPRs(r)
+		r.Close()
+		if err != nil {
+			return err
+		}
+		in.Landed = func(pr string) bool { return landed[pr] }
+	}
+	if p := fl["lines"]; p != "" {
+		r, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		in.Waiting, err = shadow.ParseLines(r)
+		r.Close()
+		if err != nil {
+			return err
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	rep := shadow.Run(ctx, in)
+	rep.Write(os.Stdout, fl["verbose"] != "")
+	fmt.Printf("Forge requests: %v (read-only)\n", gh.Requests())
+	if p := fl["effects"]; p != "" {
+		var b strings.Builder
+		enc := json.NewEncoder(&b)
+		for _, e := range rep.Effect {
+			if err := enc.Encode(e); err != nil {
+				return err
+			}
+		}
+		return store.WriteFileAtomic(p, []byte(b.String()))
+	}
+	return nil
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: shunter serve --store DIR --adapters fake | shunt <queue|hold|release|cancel|withdraw|pause|resume|judge|status|export|import> ...")
+	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunt <queue|hold|release|cancel|withdraw|pause|resume|judge|status|export|import> ...")
 	os.Exit(2)
 }
 
