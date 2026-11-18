@@ -245,10 +245,13 @@ type BlameInput struct {
 	Evidence string          `json:"evidence"`
 }
 
-// BlameLine is one line of the train, for the blame hook.
+// BlameLine is one line of the train, for the blame hook. Text is its
+// changes' titles and descriptions, for a rule a description breaks
+// (§5.6); a change whose description can't be read adds nothing.
 type BlameLine struct {
 	ID      state.LineID   `json:"id"`
 	Changes []state.Change `json:"changes"`
+	Text    string         `json:"text,omitempty"`
 }
 
 // BlameAnswer is what the blame hook answers. Class is one of
@@ -270,7 +273,7 @@ func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report,
 	in := BlameInput{Train: t, Head: rep.Head, Checks: rep.Checks, Evidence: rep.Evidence}
 	member := map[state.LineID]bool{}
 	for _, l := range lines {
-		in.Lines = append(in.Lines, BlameLine{ID: l.ID, Changes: l.Changes})
+		in.Lines = append(in.Lines, BlameLine{ID: l.ID, Changes: l.Changes, Text: c.describeText(ctx, l.Changes)})
 		member[l.ID] = true
 	}
 	var a BlameAnswer
@@ -299,6 +302,26 @@ func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report,
 		rep.Evidence += fmt.Sprintf(" [the blame hook answered class %q, which is not one it may give]", a.Class)
 	}
 	return rep
+}
+
+// describeText is the changes' titles and descriptions, each read once.
+// Blame is advice, so a read that fails leaves that change out.
+func (c *Client) describeText(ctx context.Context, changes []state.Change) string {
+	var parts []string
+	for _, ch := range changes {
+		n, err := number(ch.ID)
+		if err != nil {
+			continue
+		}
+		p, err := c.pull(ctx, n)
+		if err != nil {
+			continue
+		}
+		if t := strings.TrimSpace(p.Title + "\n\n" + p.Body); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func orDefault(s, d string) string {

@@ -33,7 +33,8 @@ type ghPull struct {
 	Labels []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
-	Body string `json:"body"`
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
 func (p ghPull) labelled(name string) bool {

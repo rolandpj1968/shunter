@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -329,6 +330,35 @@ func TestBlameHookAdvisesButCannotPass(t *testing.T) {
 		if rep.Outcome != tc.want || blamed != tc.blamed {
 			t.Errorf("%s exit %d: outcome %d blamed %v (%s), want %d %s", tc.answer, tc.code, rep.Outcome, rep.Blamed, rep.Evidence, tc.want, tc.blamed)
 		}
+	}
+}
+
+// TestBlameHookReadsTheChangesDescriptions: each line comes to the blame
+// hook with its changes' titles and descriptions, for a rule a description
+// breaks (§5.6). A change that can't be read adds nothing.
+func TestBlameHookReadsTheChangesDescriptions(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(11, "open", "aaa", "feat-a", "main", "alice")
+	s.pulls[11]["title"], s.pulls[11]["body"] = "Tidy the list", "This closes #42."
+	s.check("h", "check", "completed", "failure", t0)
+	got := filepath.Join(t.TempDir(), "in.json")
+	p := filepath.Join(t.TempDir(), "blame.sh")
+	os.WriteFile(p, []byte("#!/bin/sh\ncat > "+got+"\necho '{\"class\":\"deterministic\"}'\n"), 0o755)
+	c.cfg.Blame = hook.Hook{Command: []string{p}, Timeout: 10 * time.Second}
+	lines := []adapter.BuildLine{{ID: "11", Changes: []state.Change{{ID: "11", Head: "aaa"}}}, {ID: "12", Changes: []state.Change{{ID: "12", Head: "bbb"}}}}
+	if _, err := c.Status(ctx, "t1", "h", lines); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in BlameInput
+	if err := json.Unmarshal(b, &in); err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Lines) != 2 || in.Lines[0].Text != "Tidy the list\n\nThis closes #42." || in.Lines[1].Text != "" {
+		t.Fatalf("the hook read %s", b)
 	}
 }
 

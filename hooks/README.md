@@ -99,9 +99,16 @@ Generated files can also be stale only in combination, with nothing conflicting.
 
 ### The blame rules
 
-Shared by `blame.py` and `preflight.py` ([`shunterhooks.py`](shunterhooks.py), `BlameRules`). The failure names files (a path with a slash and an extension, not part of a URL), directories (from configured `patterns` of kind `dir`, such as a test runner's `FAIL <package>` line, with `strip` to drop a module prefix) and test files by bare name (`foo_test.go:88`). Then:
+Shared by `blame.py` and `preflight.py` ([`shunterhooks.py`](shunterhooks.py), `BlameRules`). The failure names files (a path with a slash and an extension, not part of a URL), directories (from configured `patterns` of kind `dir`, such as a test runner's `FAIL <package>` line, with `strip` to drop a module prefix, and `"subdirs": true` to take everything under the directory, not only its own files), path prefixes (kind `prefix`; give `"path"` for a failure that names no file, such as a count below its floor naming the directory it counts), test files by bare name (`foo_test.go:88`), and things a change's description says (kind `description`, below). Then:
 
-1. A line is named when it touches a file the failure names.
+0. **A description rule**, the most specific (PROTOCOL.md §5.6): a `description` pattern's group is what the failure names, and a line is named when its changes' title or description matches `describes`, with `{}` standing for that name:
+
+   ```json
+   {"regex": "issue #(\\d+) is still listed as open", "kind": "description", "describes": "(closes|fixes) #{}\\b"}
+   ```
+
+   Shunter gives each line its changes' titles and descriptions, as `text`. If this names some lines, but not every line of several, they are the blame and the rules below aren't asked.
+1. A line is named when it touches a file the failure names, or a file under a prefix it names.
 2. For each directory the failure names: the lines touching one of the failing test files there; else, the lines touching the directory's other files (the code under test); else, the lines touching any of its files. If the failure names no test file, the lines touching any file in the directory.
 3. If that names every line of a train of several: **a file the failure names that only one line touched** names that line alone.
 
