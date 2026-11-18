@@ -21,6 +21,8 @@ type reader struct {
 	reports map[state.Head]adapter.Outcome
 	changes map[state.ChangeID]adapter.ChangeInfo
 	reads   int
+	// lines are the lines each Status call was given, by head.
+	lines map[state.Head][]adapter.BuildLine
 }
 
 func (r *reader) Describe(_ context.Context, ids []state.ChangeID) ([]adapter.ChangeInfo, error) {
@@ -36,8 +38,12 @@ func (r *reader) Describe(_ context.Context, ids []state.ChangeID) ([]adapter.Ch
 	return out, nil
 }
 
-func (r *reader) Status(_ context.Context, _ state.TrainID, head state.Head, _ []adapter.BuildLine) (adapter.Report, error) {
+func (r *reader) Status(_ context.Context, _ state.TrainID, head state.Head, lines []adapter.BuildLine) (adapter.Report, error) {
 	r.reads++
+	if r.lines == nil {
+		r.lines = map[state.Head][]adapter.BuildLine{}
+	}
+	r.lines[head] = lines
 	return adapter.Report{Outcome: r.reports[head], Head: head}, nil
 }
 
@@ -90,6 +96,7 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 			"24": {ID: "24", Head: "h24", Open: true, Approved: false},
 			"25": {ID: "25", Head: "h25", Open: true, Approved: true},
 			"26": {ID: "26", Head: "h26", Base: "99", Open: true, Approved: true},
+			"106": {ID: "106", Head: "h106", Open: false, Approved: true},
 		},
 	}
 	waiting, err := store.ParseWaiting(strings.NewReader("b 21 22\n# a comment\n\nb 23\nb 24\nb #25\nb 26\n"))
@@ -125,6 +132,18 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 		t.Errorf("effects %v", rep.Effects)
 	}
 
+	// The blame hook gets each line's changes, with their heads read from
+	// the forge where it can: a line id alone is nothing to blame by.
+	for head, ls := range r.lines {
+		for _, l := range ls {
+			if len(l.Changes) == 0 {
+				t.Errorf("head %s: line %s given to Status with no changes", head[:4], l.ID)
+			}
+		}
+	}
+	if got := fmt.Sprint(r.lines[h('3')]); got != "[{105 [{105 }]} {106 [{106 h106}]} {107 [{107 }]}]" {
+		t.Errorf("train 903's lines for blame: %s", got)
+	}
 	gates := []string{}
 	for _, l := range rep.Waiting {
 		gates = append(gates, l.Gate)

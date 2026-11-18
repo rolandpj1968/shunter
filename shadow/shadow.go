@@ -230,11 +230,22 @@ func Run(ctx context.Context, in Input) Report {
 
 	// The machine over the history: what Shunter would perform.
 	src := &trainlog.Source{Logs: in.Logs, Landed: in.Landed}
-	var lines map[state.TrainID][]adapter.BuildLine = map[state.TrainID][]adapter.BuildLine{}
+	lines := map[state.TrainID][]adapter.BuildLine{}
+	offered := map[state.LineID][]state.ChangeID{}
 	_, rr := replay.RunObserved(state.New("trunk-at-start", state.Config{Depth: max(in.Depth, 1)}), src, func(seg string, ev state.Event, fx []state.Effect) {
-		if a, ok := ev.(state.Assemble); ok {
-			for _, id := range a.Lines {
-				lines[a.Train] = append(lines[a.Train], adapter.BuildLine{ID: id})
+		switch e := ev.(type) {
+		case state.Offer:
+			offered[e.Line] = nil
+			for _, c := range e.Changes {
+				offered[e.Line] = append(offered[e.Line], c.ID)
+			}
+		case state.Assemble:
+			for _, id := range e.Lines {
+				bl := adapter.BuildLine{ID: id}
+				for _, c := range offered[id] {
+					bl.Changes = append(bl.Changes, state.Change{ID: c})
+				}
+				lines[e.Train] = append(lines[e.Train], bl)
 			}
 		}
 		for _, e := range fx {
@@ -264,7 +275,7 @@ func Run(ctx context.Context, in Input) Report {
 		if in.Landed != nil {
 			tr.Landed = in.Landed(o.pr)
 		}
-		r, err := read.status(ctx, state.TrainID(lg.Name), tr.Head, lines[state.TrainID(lg.Name)])
+		r, err := read.status(ctx, state.TrainID(lg.Name), tr.Head, read.heads(ctx, lines[state.TrainID(lg.Name)]))
 		if err != nil {
 			rep.ReadErrors = append(rep.ReadErrors, fmt.Sprintf("%s: checks on %s: %v", lg.Name, short(tr.Head), err))
 			tr.Shunter, tr.Kind = "unread", "unread"
@@ -463,6 +474,24 @@ func (c *cached) ClosePR(context.Context, string, state.TrainID, string) error {
 }
 func (c *cached) ReadLanding(context.Context, state.TrainID, state.Head, []state.ChangeID) (adapter.Reading, error) {
 	return adapter.Reading{}, adapter.Permanent(fmt.Errorf("shadow: not read this way"))
+}
+
+// heads gives each change of the lines its head, for the blame hook. A
+// train log names changes, not their heads, so this is each change's head
+// now, read from the forge: the head that rode, unless the change was pushed
+// again since. A change that can't be read keeps no head, and blame answers
+// no verdict for its line rather than guess.
+func (c *cached) heads(ctx context.Context, lines []adapter.BuildLine) []adapter.BuildLine {
+	out := make([]adapter.BuildLine, len(lines))
+	for i, l := range lines {
+		out[i] = adapter.BuildLine{ID: l.ID, Changes: append([]state.Change(nil), l.Changes...)}
+		for j, ch := range out[i].Changes {
+			if info, err := c.Describe(ctx, []state.ChangeID{ch.ID}); err == nil {
+				out[i].Changes[j].Head = info[0].Head
+			}
+		}
+	}
+	return out
 }
 
 func (c *cached) status(ctx context.Context, t state.TrainID, h state.Head, lines []adapter.BuildLine) (adapter.Report, error) {
