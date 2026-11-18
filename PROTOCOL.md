@@ -198,7 +198,7 @@ A line whose base is queued but not landed **waits for its base** and lines itse
 
 ### 5.3 Batches and speculation
 
-- **Joining:** the runner joins waiting lines into a batch, in order. It **skips** a line it can't take (it shares files with the batch, must run alone, or would exceed the caps) rather than stopping at it. Skipping is safe because no line is stacked on another line (§5.2).
+- **Joining:** the runner joins waiting lines into a batch, in order. It **skips** a line it can't take (it shares files with the batch, must run alone, or would exceed the caps: a number of lines, and a number of changes, a stack's every change counted) rather than stopping at it. A line that alone reaches the change cap rides alone, so that no line waits for ever. Skipping is safe because no line is stacked on another line (§5.2).
 - **Speculation, to depth D:** while batch 1 runs, the runner builds batch 2 on batch 1's exact head, batch 3 on batch 2's, and so on up to depth D. All D batches run CI at the same time (I5).
 - **Landing is in chain order:** when batch 1 lands, the chain shifts up, batch 2 becomes batch 1, and the runner extends the chain at its tail.
 - **When batch *j* ends without landing** (it fails, is void, or is aborted): batches *j+1…D* are void, because the head they were built on will never exist. They're rebuilt on trunk, minus whatever blame removed from batch *j*.

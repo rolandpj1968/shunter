@@ -40,6 +40,9 @@ type Config struct {
 
 	// MaxLines caps the lines of one train (J4's bounds). Default 8.
 	MaxLines int
+	// MaxChanges caps the changes of one train, every change of every
+	// line counted. Zero is no cap.
+	MaxChanges int
 	// Retries is how many times a transient failure of an effect is
 	// retried before it is escalated to J3. Default 3.
 	Retries int

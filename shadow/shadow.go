@@ -55,8 +55,9 @@ type Input struct {
 	Waiting [][]state.ChangeID
 	// Read is the read-only forge and CI.
 	Read Reader
-	// Depth and MaxLines shape the trains Shunter would assemble.
-	Depth, MaxLines int
+	// Depth, MaxLines and MaxChanges shape the trains Shunter would
+	// assemble.
+	Depth, MaxLines, MaxChanges int
 }
 
 // Train is one train of the history, as the live queue ran it and as
@@ -324,7 +325,7 @@ func Run(ctx context.Context, in Input) Report {
 		rep.Waiting = append(rep.Waiting, ln)
 	}
 	for i := 0; i < max(in.Depth, 1); i++ {
-		take := daemon.Join(s, max(in.MaxLines, 1))
+		take := daemon.Join(s, daemon.Caps{Lines: max(in.MaxLines, 1), Changes: in.MaxChanges})
 		if len(take) == 0 {
 			break
 		}

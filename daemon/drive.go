@@ -13,7 +13,7 @@ import (
 // assemble extends the chain with one train when it can (§5.3): not paused,
 // shorter than D, and the train at its tail has a head to build on. The
 // joining rule takes waiting lines in order and skips a line it cannot take:
-// one that must ride alone, one of another half of a split, or one past the
+// one that must ride alone, one of another half of a split, or one past a
 // cap. Conflicts are the builder's to find, as leave-outs.
 func (d *Daemon) assemble() {
 	for d.fatal == nil {
@@ -28,7 +28,7 @@ func (d *Daemon) assemble() {
 				return
 			}
 		}
-		lines := join(s, d.cfg.MaxLines)
+		lines := join(s, Caps{Lines: d.cfg.MaxLines, Changes: d.cfg.MaxChanges})
 		if len(lines) == 0 {
 			return
 		}
@@ -39,16 +39,25 @@ func (d *Daemon) assemble() {
 	}
 }
 
+// Caps bound one train (J4): at most Lines lines, and at most Changes
+// changes in all (a stack is several changes in one line). Zero is no cap.
+// A line that alone has more changes than the cap rides alone, first in
+// order, so that no line waits for ever.
+type Caps struct {
+	Lines, Changes int
+}
+
 // Join is the joining rule: the lines the next train takes, in order. Shadow
 // running uses it to say what the runner would assemble.
-func Join(s state.State, max int) []state.LineID { return join(s, max) }
+func Join(s state.State, c Caps) []state.LineID { return join(s, c) }
 
 // join is the joining rule.
-func join(s state.State, max int) []state.LineID {
+func join(s state.State, c Caps) []state.LineID {
 	var out []state.LineID
-	group := -1
+	group, changes := -1, 0
 	for _, id := range s.Waiting() {
 		l := s.Lines[id]
+		n := len(l.Changes)
 		switch {
 		case len(out) == 0 && l.Alone:
 			return []state.LineID{id}
@@ -56,10 +65,16 @@ func join(s state.State, max int) []state.LineID {
 			continue
 		case group >= 0 && l.Group != group:
 			continue
+		case len(out) == 0 && c.Changes > 0 && n >= c.Changes:
+			return []state.LineID{id}
+		case c.Changes > 0 && changes+n > c.Changes:
+			// Past the cap: skipped, as a line that must ride alone is.
+			continue
 		}
 		group = l.Group
 		out = append(out, id)
-		if len(out) >= max {
+		changes += n
+		if c.Lines > 0 && len(out) >= c.Lines {
 			break
 		}
 	}

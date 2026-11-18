@@ -321,7 +321,7 @@ func shadowRun(fl map[string]string, logs []string) error {
 	if err != nil {
 		return err
 	}
-	in := shadow.Input{Read: gh, Depth: f.Queue.Depth, MaxLines: f.Queue.MaxLines}
+	in := shadow.Input{Read: gh, Depth: f.Queue.Depth, MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges}
 	if in.MaxLines == 0 {
 		in.MaxLines = 8
 	}

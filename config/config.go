@@ -99,8 +99,9 @@ type CI struct {
 
 // Queue is the queue's shape.
 type Queue struct {
-	Depth    int `toml:"depth"`
-	MaxLines int `toml:"max_lines"`
+	Depth      int `toml:"depth"`
+	MaxLines   int `toml:"max_lines"`
+	MaxChanges int `toml:"max_changes"`
 }
 
 // Deadlines are every wait's bound; zero takes the daemon's default.
@@ -267,6 +268,9 @@ func (f *File) check() error {
 	if len(f.CI.Checks) == 0 {
 		errs = append(errs, errors.New("ci.checks: name the checks whose success is the verdict"))
 	}
+	if f.Queue.MaxChanges < 0 {
+		errs = append(errs, fmt.Errorf("queue.max_changes %d: 0 (no cap) or more", f.Queue.MaxChanges))
+	}
 	if f.Queue.Depth < 1 {
 		errs = append(errs, fmt.Errorf("queue.depth %d: at least 1", f.Queue.Depth))
 	}
@@ -284,7 +288,7 @@ func (f *File) Daemon(version string) daemon.Config {
 		Tick:    d.Tick.Duration, Poll: d.Poll.Duration, Call: d.Call.Duration,
 		Build: d.Build.Duration, Open: d.Open.Duration, CI: d.CI.Duration, Push: d.Push.Duration,
 		J1: d.J1.Duration, Park: d.Park.Duration,
-		MaxLines: f.Queue.MaxLines, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
+		MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
 	}
 }
 
