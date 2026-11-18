@@ -14,8 +14,9 @@
 //	shunt resume [TRUNK]
 //	shunt judge <train> charge|split|park|rerun --reason WHY [--lines a,b]
 //	shunt status
-//	shunt export [--out FILE]
-//	shunt import [--file FILE]
+//	shunt export [--out FILE] [--line-files DIR]
+//	shunt import [--file FILE | --line-files DIR]
+//	shunter watch --config FILE [--state FILE] [--no-probe]
 //
 // The CLI talks to the daemon on its socket (--socket, or $SHUNTER_SOCKET,
 // or DIR/shunter.sock with --store DIR). With --offline --store DIR it opens
@@ -47,15 +48,16 @@ import (
 	"github.com/rolandpj1968/shunter/shadow"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
+	"github.com/rolandpj1968/shunter/watch"
 )
 
 // version is stamped at build time: -ldflags "-X main.version=...".
 var version = "dev"
 
-var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true}
+var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true, "no-probe": true}
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
 	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
-	"stats": true, "since": true, "effects": true}
+	"stats": true, "since": true, "effects": true, "line-files": true, "state": true}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -72,6 +74,9 @@ func main() {
 	if verb == "shadow" {
 		fatal(shadowRun(fl, pos))
 	}
+	if verb == "watch" {
+		os.Exit(watchRun(fl))
+	}
 	if verb == "version" {
 		fmt.Println(version)
 		return
@@ -80,7 +85,13 @@ func main() {
 	if fl["lines"] != "" {
 		req.Lines = strings.Split(fl["lines"], ",")
 	}
-	if verb == "import" {
+	if verb == "import" && fl["line-files"] != "" {
+		lf, err := store.ReadLines(fl["line-files"])
+		if err != nil {
+			fatal(fmt.Errorf("import: %w", err))
+		}
+		req.Plain = &lf
+	} else if verb == "import" {
 		doc, err := readDoc(fl["file"])
 		if err != nil {
 			fatal(err)
@@ -93,6 +104,19 @@ func main() {
 	}
 	if resp.Error != "" {
 		fatal(errors.New(resp.Error))
+	}
+	if verb == "export" && resp.Doc != nil && fl["line-files"] != "" {
+		lf, err := store.ToLines(*resp.Doc)
+		if err != nil {
+			fatal(err)
+		}
+		if err := lf.Write(fl["line-files"]); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("%d waiting, %d held, %d parks, written to %s\n", len(lf.Waiting), len(lf.Held), len(lf.Parks), fl["line-files"])
+		if fl["out"] == "" {
+			return
+		}
 	}
 	if verb == "export" && resp.Doc != nil {
 		b, _ := json.MarshalIndent(resp.Doc, "", "  ")
@@ -366,8 +390,54 @@ func shadowRun(fl map[string]string, logs []string) error {
 	return nil
 }
 
+// watchRun is the outside watcher: one check, its findings raised through
+// the notify hook, the report on stdout. Exit 0 healthy, 1 not, 2 when the
+// check itself failed.
+func watchRun(fl map[string]string) int {
+	if fl["config"] == "" {
+		fmt.Fprintln(os.Stderr, "shunter: watch: --config FILE is required")
+		return 2
+	}
+	f, err := config.Load(fl["config"])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "shunter: watch:", err)
+		return 2
+	}
+	dl := f.Deadlines
+	c := watch.Config{
+		Store: f.Store, Socket: f.Socket, NoProbe: fl["no-probe"] != "",
+		TrunkLock: f.Git.TrunkLock, MaxHold: f.Git.TrunkLockMaxHold.Duration,
+		Deadlines: watch.Deadlines{Call: dl.Call.Duration, Build: dl.Build.Duration, Open: dl.Open.Duration,
+			CI: dl.CI.Duration, Push: dl.Push.Duration, J1: dl.J1.Duration},
+		Grace: f.Watch.Grace.Duration, Stall: f.Watch.Stall.Duration, Restarts: f.Watch.Restarts,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rep, err := watch.Check(ctx, c)
+	if err != nil {
+		rep.Findings = append(rep.Findings, watch.Finding{Subject: "watch", Message: err.Error()})
+	}
+	fmt.Print(rep)
+	state := f.Watch.State
+	if s := fl["state"]; s != "" {
+		state = s
+	}
+	a := watch.Alerter{Hook: f.NotifyHook(), State: state, Realert: f.Watch.Realert.Duration, Out: os.Stderr}
+	if _, aerr := a.Raise(ctx, rep.Findings); aerr != nil {
+		fmt.Fprintln(os.Stderr, "shunter: watch: raising:", aerr)
+		return 2
+	}
+	if err != nil {
+		return 2
+	}
+	if len(rep.Findings) > 0 {
+		return 1
+	}
+	return 0
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunt <queue|hold|release|cancel|withdraw|pause|resume|judge|status|export|import> ...")
+	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|hold|release|cancel|withdraw|pause|resume|judge|status|export|import> ...")
 	os.Exit(2)
 }
 

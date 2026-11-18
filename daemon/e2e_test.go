@@ -740,3 +740,78 @@ func TestSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEndedTrainsArePrunedAndALandedBaseIsRetargeted(t *testing.T) {
+	r := newRig(t)
+	r.open("a")
+	r.queue("a")
+	t1 := r.trainOf("a")
+	r.w.Pass(t1)
+	r.tick(time.Second)
+	r.wantTrain(t1, state.TrainLanded)
+	prunes := r.w.Prunes()
+	if len(prunes) == 0 {
+		t.Fatal("no prune after a train ended")
+	}
+	if last := prunes[len(prunes)-1]; len(last) != 0 {
+		t.Fatalf("the last prune kept %v live", last)
+	}
+	// Nothing changed: no second prune until pruneEvery has passed.
+	n := len(prunes)
+	r.tick(time.Second)
+	if len(r.w.Prunes()) != n {
+		t.Fatal("a prune with nothing changed")
+	}
+	r.tick(11 * time.Minute)
+	if len(r.w.Prunes()) != n+1 {
+		t.Fatal("no periodic prune")
+	}
+	// b is stacked on a, which has landed and is in no live line: the gate
+	// takes it and moves it onto trunk (open question 21).
+	r.w.Open("b", "b-1", "a")
+	r.queue("b")
+	if got := r.w.Retargeted; len(got) != 1 || got[0] != "b" {
+		t.Fatalf("retargeted: %v", got)
+	}
+	r.w.Pass(r.trainOf("b"))
+	r.tick(time.Second)
+	r.wantLine("b", state.LineLanded)
+}
+
+// The rollback path: export as line files, and import them into another
+// queue on the same forge. Heads and bases come from the forge again.
+func TestExportImportLineFiles(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "c")
+	r.w.Open("b", "b-1", "a") // b is stacked on a
+	r.exec(daemon.Request{Cmd: "pause", Reason: "cut-over"})
+	r.queue("a")
+	r.queue("b")
+	r.exec(daemon.Request{Cmd: "queue", Args: []string{"c"}, Alone: true})
+	r.exec(daemon.Request{Cmd: "hold", Args: []string{"a"}, Reason: "waits on a design call"})
+	resp := r.d.Exec(r.ctx, daemon.Request{Cmd: "export"})
+	lf, err := store.ToLines(*resp.Doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := lf.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	back, err := store.ReadLines(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := newRig(t)
+	r2.w = r.w
+	r2.restart()
+	r2.exec(daemon.Request{Cmd: "pause", Reason: "import"})
+	r2.exec(daemon.Request{Cmd: "import", Plain: &back})
+	r2.wantLine("a", state.LineHeld)
+	r2.wantLine("b", state.LineWaitingBase)
+	r2.wantLine("c", state.LineWaiting)
+	s := r2.state()
+	if s.Lines["b"].Base != "a" || !s.Lines["c"].Alone || s.Lines["a"].Reason != "waits on a design call" {
+		t.Fatalf("not carried: b on %q, c alone %v, a's reason %q", s.Lines["b"].Base, s.Lines["c"].Alone, s.Lines["a"].Reason)
+	}
+}

@@ -79,7 +79,7 @@ That's why Shunter treats flaky tests as part of the protocol, not as test hygie
 - [`state/`](state): the state machine as one pure Go function, `Next(state, event) (state, effects, error)`. Effects are data, illegal transitions are errors, and the protocol's transition tables are printed from its table.
 - [`replay/`](replay): a replayer that runs a recorded history through the state machine and reports what it refuses, with an adapter for the train logs of a script-driven queue. Try it: `go run ./cmd/shunter-replay -stats stats.jsonl logs/*.out`.
 - [`tla/Shunter.tla`](tla/Shunter.tla): the TLA+ skeleton, in which the judge is a nondeterministic choice within its menu, so model checking shows the invariants hold whatever the judge decides. [`tla/README.md`](tla/README.md) says how to run it.
-- [`store/`](store): the one record (I8). An append-only, checksummed log of the events the machine accepted, with atomic snapshots, a single-writer lock, replay on start, and export and import for a cut-over.
+- [`store/`](store): the one record (I8). An append-only, checksummed log of the events the machine accepted, with atomic snapshots, a single-writer lock, replay on start, and export and import for a cut-over, as a JSON document or as plain line files.
 - [`daemon/`](daemon) and [`cmd/shunter`](cmd/shunter): the runner. One loop takes events from adapters, timers and the CLI, applies them through the store, and performs the machine's effects through the adapters. Effects are keyed, so a restart mid-effect is safe. The deadlines of the judgement points are timers with their defaults. `shunter serve` runs it, and `shunt` (the same binary) commands it: `queue`, `hold`, `release`, `cancel`, `status`, `export`, `import` and more.
 - [`adapter/`](adapter): the interfaces to the forge, CI, git and notices, an in-memory fake world ([`adapter/fake`](adapter/fake)) for the daemon's end-to-end tests, and the real adapters:
   - [`adapter/github`](adapter/github): pull requests and CI over GitHub's REST API. CI's verdict is read from the check runs on the train's exact head; a cancelled or skipped run is no verdict, never a failure. A read-only mode refuses every write before it is sent.
@@ -87,13 +87,16 @@ That's why Shunter treats flaky tests as part of the protocol, not as test hygie
   - [`adapter/notify`](adapter/notify): an append-only events file, and an optional command that delivers each notice.
   - [`adapter/hook`](adapter/hook): the repository's own rules as commands in any language, JSON in and JSON out: pre-flight, conflict resolution and blame. A hook advises; it never gives a verdict.
   - [`adapter/bound`](adapter/bound): every call bounded and retried with backoff, and every error classed as transient or permanent.
+- [`hooks/`](hooks): generic example hooks, in Python, each tested with synthetic fixtures: a pre-flight of named, timed, recorded steps with a usefulness rule and blame by bisection over the train's lines; a conflict hook that regenerates the files a git attribute marks as generated; and blame by line from the files and directories a failure names. [`hooks/README.md`](hooks/README.md) says how a project plugs in its own.
+- [`trunklock/`](trunklock): the trunk push lock, one `flock` that Shunter and every other pusher hold to push trunk, with a stale-lock rule that reports and never breaks.
+- [`watch/`](watch): `shunter watch`, the outside watcher, run from a timer: is the daemon alive and making progress? It raises the notify hook when not.
 - [`config/`](config): the one configuration file, in TOML. [`examples/shunter.toml`](examples/shunter.toml) documents every key. `shunter serve --config FILE` runs the daemon on the real adapters.
 - [`shadow/`](shadow): `shunter shadow` runs beside a live queue with no side effect. It replays the live queue's train logs through the machine and logs what Shunter would have done, reads CI on each train's head through its own adapter and compares the outcome with what the live queue recorded, and puts the lines the live queue holds waiting through its own gate.
 - [`docs/open-questions.md`](docs/open-questions.md): the gaps in the protocol that the daemon brought out, and what the code does about each meanwhile.
 - [`docs/cutover.md`](docs/cutover.md): how a team moves from an ad-hoc script queue to Shunter by hard cut-over. [`docs/implementation-language.md`](docs/implementation-language.md): why the core is Go and the hooks are scripts.
 - **The first implementation** was a set of shell scripts in daily production use on a multi-agent codebase. The protocol was drawn from it, and 0.2 from a review of where it failed.
 - **CI** runs the Go tests, and TLC on the TLA+ model ([`.github/workflows`](.github/workflows)).
-- **Next:** days of shadow running beside a live queue, the repository's hooks moved out of the old queue, the cut-over, and trace validation of the Go function against the TLA+ model.
+- **Next:** days of shadow running beside a live queue with the repository's hooks configured, the cut-over, and trace validation of the Go function against the TLA+ model.
 
 ## Why "Shunter"
 

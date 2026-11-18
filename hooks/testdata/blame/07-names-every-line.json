@@ -1,0 +1,38 @@
+{
+  "config": {},
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "shared/common.go:4: unused",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "shared/common.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "shared/common.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": []
+  }
+}

@@ -2,6 +2,8 @@ package gitrepo
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter/bound"
 	"github.com/rolandpj1968/shunter/adapter/hook"
 	"github.com/rolandpj1968/shunter/state"
+	"github.com/rolandpj1968/shunter/trunklock"
 )
 
 var ident = []string{
@@ -400,5 +403,104 @@ func TestPushOfUnknownOutcomeIsSettledByReadingTrunk(t *testing.T) {
 	}
 	if w.trunk() != res.Head {
 		t.Fatal("trunk did not move")
+	}
+}
+
+func TestPreflightSeesEachLinesTip(t *testing.T) {
+	dir := t.TempDir()
+	saved := filepath.Join(dir, "in.json")
+	p := filepath.Join(dir, "preflight.sh")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\ncat > "+saved+"\necho '{\"pass\":true}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := newWorld(t, Config{})
+	w.repo.cfg.Preflight = hook.Hook{Command: []string{p}, Dir: w.repo.cfg.Dir, Timeout: time.Minute}
+	base := w.trunk()
+	h1 := w.change("1", "main", map[string]string{"one.txt": "1\n"})
+	h2 := w.change("2", "main", map[string]string{"two.txt": "2\n"})
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{line("1", ch("1", h1)), line("2", ch("2", h2))}})
+	if err != nil || res.Head == "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	b, err := os.ReadFile(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var in PreflightInput
+	if err := json.Unmarshal(b, &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Tips["2"] != res.Head || in.Tips["1"] == "" || in.Tips["1"] == in.Tips["2"] {
+		t.Fatalf("tips %v, head %s", in.Tips, res.Head)
+	}
+	if got := run(t, w.repo.cfg.Dir, "rev-parse", string(in.Tips["2"])+"^"); got != string(in.Tips["1"]) {
+		t.Fatalf("line 2's tip is not on line 1's: %s", got)
+	}
+}
+
+// The example conflict hook (hooks/conflict.py), driven by the adapter: two
+// changes that each regenerated a generated file both join the train.
+func TestExampleConflictHookRegenerates(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+	w := newWorld(t, Config{})
+	w.write(".gitattributes", "gen.txt merge=regenerate\n")
+	w.write("a.src", "a0\n")
+	w.write("b.src", "b0\n")
+	w.write("gen.txt", "a0\nb0\n")
+	run(t, w.dev, "add", ".")
+	run(t, w.dev, "commit", "--quiet", "-m", "generated")
+	run(t, w.dev, "push", "--quiet", "origin", "main")
+	base := w.trunk()
+	h1 := w.change("1", "main", map[string]string{"a.src": "a1\n", "gen.txt": "a1\nb0\n"})
+	h2 := w.change("2", "main", map[string]string{"b.src": "b1\n", "gen.txt": "a0\nb1\n"})
+	cfg := filepath.Join(t.TempDir(), "conflict.json")
+	if err := os.WriteFile(cfg, []byte(`{"command": ["sh", "-c", "cat a.src b.src > gen.txt"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script, _ := filepath.Abs("../../hooks/conflict.py")
+	w.repo.cfg.Conflict = hook.Hook{Command: []string{py, script, "--config", cfg}, Dir: w.repo.cfg.Dir, Timeout: time.Minute}
+	// A generated file always surfaces as a conflict: its driver is false.
+	w.repo.cfg.Env = append(w.repo.cfg.Env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=merge.regenerate.driver", "GIT_CONFIG_VALUE_0=false")
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{line("1", ch("1", h1)), line("2", ch("2", h2))}})
+	if err != nil || len(res.LeftOut) != 0 || res.Head == "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if got := w.cat(res.Head, "gen.txt"); got != "a1\nb1" {
+		t.Fatalf("gen.txt is %q", got)
+	}
+}
+
+func TestPushHoldsTheTrunkLock(t *testing.T) {
+	lock := filepath.Join(t.TempDir(), "trunk.lock")
+	w := newWorld(t, Config{})
+	w.repo.cfg.TrunkLock, w.repo.cfg.TrunkLockWait = lock, 300*time.Millisecond
+	base := w.trunk()
+	h1 := w.change("1", "main", map[string]string{"one.txt": "1\n"})
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{line("1", ch("1", h1))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Another pusher holds the lock: no push, and a failure the daemon
+	// retries, not a refusal.
+	other, err := trunklock.Acquire(ctx, lock, trunklock.Options{Who: "legacy queue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = w.repo.Push(ctx, "p1", res.Head, base)
+	if err == nil || adapter.IsPermanent(err) || !errors.Is(err, trunklock.ErrBusy) {
+		t.Fatalf("push while another holds the lock: %v", err)
+	}
+	if w.trunk() != base {
+		t.Fatal("trunk moved without the lock")
+	}
+	other.Release()
+	if err := w.repo.Push(ctx, "p1", res.Head, base); err != nil || w.trunk() != res.Head {
+		t.Fatalf("push with the lock free: %v", err)
+	}
+	if st, _ := trunklock.Inspect(lock, trunklock.Options{}); st.Held {
+		t.Fatal("the push kept the lock")
 	}
 }

@@ -21,7 +21,9 @@ type Request struct {
 	Reason string          `json:"reason,omitempty"`
 	Lines  []string        `json:"lines,omitempty"`
 	Doc    *store.Document `json:"doc,omitempty"`
-	Actor  string          `json:"actor,omitempty"`
+	// Plain is an import from line files (store.LineFile).
+	Plain *store.LineFile `json:"plain,omitempty"`
+	Actor string          `json:"actor,omitempty"`
 }
 
 // Response is a command's answer.
@@ -106,6 +108,13 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		doc := store.Export(d.st.State())
 		return Response{Doc: &doc, Output: fmt.Sprintf("%d lines, %d parks", len(doc.Lines), len(doc.Parks))}
 	case "import":
+		if req.Plain != nil {
+			doc, err := d.fromLines(ctx, *req.Plain)
+			if err != nil {
+				return errResp(err)
+			}
+			return d.importDoc(ctx, actor, &doc)
+		}
 		return d.importDoc(ctx, actor, req.Doc)
 	}
 	return errResp(fmt.Errorf("unknown command %q", req.Cmd))
@@ -297,6 +306,27 @@ func (d *Daemon) importDoc(ctx context.Context, actor string, doc *store.Documen
 	}
 	d.drive()
 	return Response{Output: strings.Join(out, "\n")}
+}
+
+// fromLines reads each line's heads and base from the forge, and so turns
+// line files into a document.
+func (d *Daemon) fromLines(ctx context.Context, lf store.LineFile) (store.Document, error) {
+	if d.ad.Forge == nil {
+		return store.Document{}, errors.New("import needs the forge, for the heads and the gate: run it against the daemon")
+	}
+	return store.FromLines(lf, func(ids []state.ChangeID) ([]store.Described, error) {
+		cctx, cancel := context.WithTimeout(ctx, d.cfg.Call)
+		defer cancel()
+		info, err := d.ad.Forge.Describe(cctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]store.Described, len(info))
+		for i, c := range info {
+			out[i] = store.Described{ID: c.ID, Head: c.Head, Base: c.Base}
+		}
+		return out, nil
+	})
 }
 
 // gateNow performs a line's gate effect at once, in the loop.

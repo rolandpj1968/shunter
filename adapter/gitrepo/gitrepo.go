@@ -35,6 +35,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter/hook"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
+	"github.com/rolandpj1968/shunter/trunklock"
 )
 
 // Config is the adapter's configuration.
@@ -65,6 +66,14 @@ type Config struct {
 	StateDir string
 	// Git is the git program. Default "git".
 	Git string
+	// TrunkLock is the trunk push lock's file (package trunklock), which
+	// every pusher of trunk holds to push. Empty: no lock.
+	TrunkLock string
+	// TrunkLockWait bounds the wait for the lock in one push. Default 2m.
+	TrunkLockWait time.Duration
+	// TrunkLockMaxHold is how long a holder may hold it before the lock is
+	// stale. Default 15m.
+	TrunkLockMaxHold time.Duration
 }
 
 // Repo is the git adapter. It implements adapter.Git.
@@ -206,6 +215,11 @@ type PreflightInput struct {
 	Base  state.Head          `json:"base"`
 	Head  state.Head          `json:"head"`
 	Lines []adapter.BuildLine `json:"lines"`
+	// Tips is each line's last commit in the train, in the order of Lines:
+	// the train as it stood after that line. A hook bisects with it, and
+	// reads each line's files in the train as the difference from the tip
+	// before (Base for the first).
+	Tips map[state.LineID]state.Head `json:"tips"`
 }
 
 // PreflightAnswer is the pre-flight hook's answer. A failure may name the
@@ -293,6 +307,7 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	}
 	res := adapter.BuildResult{LeftOut: map[state.LineID]string{}}
 	var kept []adapter.BuildLine
+	tips := map[state.LineID]state.Head{}
 	for _, l := range req.Lines {
 		why, err := r.apply(ctx, req.Train, l)
 		if err != nil {
@@ -304,6 +319,11 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 			continue
 		}
 		kept = append(kept, l)
+		tip, err := r.git(ctx, "rev-parse", "HEAD")
+		if err != nil {
+			return adapter.BuildResult{}, err
+		}
+		tips[l.ID] = state.Head(tip)
 	}
 	if len(kept) == 0 {
 		return res, r.remember(key, res)
@@ -313,7 +333,7 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 		return adapter.BuildResult{}, err
 	}
 	if r.cfg.Preflight.Configured() {
-		in := PreflightInput{Dir: r.cfg.Dir, Train: req.Train, Base: req.Base, Head: state.Head(head), Lines: kept}
+		in := PreflightInput{Dir: r.cfg.Dir, Train: req.Train, Base: req.Base, Head: state.Head(head), Lines: kept, Tips: tips}
 		var a PreflightAnswer
 		hr, err := r.cfg.Preflight.Run(ctx, in, &a)
 		if err != nil {
@@ -445,9 +465,26 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine) 
 // fast-forward and under a lease, or not at all. Trunk already at head is
 // success. Trunk anywhere but expect, or a head that does not descend from
 // expect, is a permanent refusal.
+//
+// With a trunk lock configured, the whole push, from reading trunk to the
+// last reading after it, is made holding the lock: no other pusher moves
+// trunk in between. A lock not got in time is a transient failure.
 func (r *Repo) Push(ctx context.Context, key string, head, expect state.Head) error {
 	r.net.Lock()
 	defer r.net.Unlock()
+	if r.cfg.TrunkLock != "" {
+		wait := r.cfg.TrunkLockWait
+		if wait <= 0 {
+			wait = 2 * time.Minute
+		}
+		lctx, cancel := context.WithTimeout(ctx, wait)
+		l, err := trunklock.Acquire(lctx, r.cfg.TrunkLock, trunklock.Options{Who: "shunter", MaxHold: r.cfg.TrunkLockMaxHold})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("push: the trunk lock: %w", err)
+		}
+		defer l.Release()
+	}
 	ref := "refs/heads/" + r.cfg.Trunk
 	err := bound.Do(ctx, r.cfg.Policy, "push", func(ctx context.Context) error {
 		cur, err := r.trunk(ctx)

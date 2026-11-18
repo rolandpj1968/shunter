@@ -56,6 +56,7 @@ type File struct {
 	Retry     Retry     `toml:"retry"`
 	Hooks     Hooks     `toml:"hooks"`
 	Notify    Notify    `toml:"notify"`
+	Watch     Watch     `toml:"watch"`
 
 	dir string // the file's directory: relative paths are relative to it
 }
@@ -83,6 +84,10 @@ type Git struct {
 	ChangeRef    string   `toml:"change_ref"`
 	Strategy     string   `toml:"strategy"`
 	Env          []string `toml:"env"`
+	// TrunkLock is the trunk push lock every pusher holds (docs/cutover.md).
+	TrunkLock        string   `toml:"trunk_lock"`
+	TrunkLockWait    Duration `toml:"trunk_lock_wait"`
+	TrunkLockMaxHold Duration `toml:"trunk_lock_max_hold"`
 }
 
 // CI is how a train is tested and how its verdict is read.
@@ -143,6 +148,16 @@ type Notify struct {
 	Timeout Duration `toml:"timeout"`
 }
 
+// Watch is the outside watcher's (shunter watch) own bounds.
+type Watch struct {
+	// State remembers what was raised. Default <store>/watch.json.
+	State    string   `toml:"state"`
+	Grace    Duration `toml:"grace"`
+	Stall    Duration `toml:"stall"`
+	Realert  Duration `toml:"realert"`
+	Restarts int      `toml:"restarts"`
+}
+
 // Load reads and checks a configuration file. A key it does not know is an
 // error, so that a misspelt deadline is not silently the default.
 func Load(path string) (*File, error) {
@@ -198,7 +213,12 @@ func (f *File) defaults() {
 	f.Store = f.path(f.Store)
 	f.Socket = f.path(f.Socket)
 	f.Git.Dir = f.path(f.Git.Dir)
+	f.Git.TrunkLock = f.path(f.Git.TrunkLock)
 	f.Notify.Events = f.path(f.Notify.Events)
+	if f.Watch.State == "" && f.Store != "" {
+		f.Watch.State = filepath.Join(f.Store, "watch.json")
+	}
+	f.Watch.State = f.path(f.Watch.State)
 	if f.Socket == "" && f.Store != "" {
 		f.Socket = filepath.Join(f.Store, "shunter.sock")
 	}
@@ -286,6 +306,11 @@ func (f *File) hook(h Hook, dir string) hook.Hook {
 	return out
 }
 
+// NotifyHook is the notify hook, for the watcher.
+func (f *File) NotifyHook() hook.Hook {
+	return f.hook(Hook{Command: f.Notify.Command, Timeout: f.Notify.Timeout}, "")
+}
+
 // token returns the forge token, from the environment or a command. It is
 // never logged.
 func (f *File) token() (string, error) {
@@ -327,6 +352,7 @@ func (f *File) Adapters() (adapter.Set, *gitrepo.Repo, error) {
 		Dir: f.Git.Dir, Remote: f.Git.Remote, Trunk: f.Repo.Trunk, BranchPrefix: f.Git.BranchPrefix,
 		ChangeRef: f.Git.ChangeRef, Strategy: f.Git.Strategy, Env: f.Git.Env, Policy: f.policy(),
 		Preflight: f.hook(f.Hooks.Preflight, f.Git.Dir), Conflict: f.hook(f.Hooks.Conflict, f.Git.Dir),
+		TrunkLock: f.Git.TrunkLock, TrunkLockWait: f.Git.TrunkLockWait.Duration, TrunkLockMaxHold: f.Git.TrunkLockMaxHold.Duration,
 	})
 	if err != nil {
 		return adapter.Set{}, nil, err

@@ -41,6 +41,14 @@ change_ref = "refs/pull/{id}/head"
 strategy = "rebase"
 # Added to git's environment: the committer of rebased commits.
 env = ["GIT_COMMITTER_NAME=Shunter", "GIT_COMMITTER_EMAIL=shunter@example.com"]
+# The trunk push lock: a file every pusher of trunk holds with flock(2) to
+# push, Shunter and any other (a legacy queue during a cut-over, a person's
+# hotfix). A holder that dies frees it. One held past trunk_lock_max_hold,
+# or by an orphan child of a holder that died, is stale: reported, never
+# broken. See docs/cutover.md. Unset: no lock.
+trunk_lock = "/var/lib/shunter/trunk.lock"
+trunk_lock_wait = "2m"
+trunk_lock_max_hold = "15m"
 
 [ci]
 # "checks": the train's pull request starts CI. "dispatch": Shunter also
@@ -78,9 +86,12 @@ effect_backoff = "5s"
 
 # Hooks: the repository's own rules, in any language. Each reads one JSON
 # document on stdin and answers one on stdout. A hook advises; no hook can
-# make a train pass. Verdicts come only from CI's checks.
+# make a train pass. Verdicts come only from CI's checks. hooks/ has generic
+# examples (pre-flight steps, regenerating generated files, blame by line);
+# hooks/README.md says how to plug them in.
 [hooks.preflight]
-# In: {"dir","train","base","head","lines":[{"ID","Changes":[{"ID","Head"}]}]}
+# In: {"dir","train","base","head","lines":[{"ID","Changes":[{"ID","Head"}]}],
+#      "tips":{"<line>":"<its last commit in the train>"}}
 # Out: {"pass":true} or {"pass":false,"blamed":["<line>"],"evidence":"..."}
 # A crash, a timeout or no JSON is no verdict, never a charge.
 command = ["./hooks/preflight"]
@@ -108,3 +119,17 @@ events = "/var/lib/shunter/events.jsonl"
 # Optional delivery: the notice as JSON on stdin.
 command = ["./hooks/notify"]
 timeout = "30s"
+
+# The outside watcher: `shunter watch --config FILE`, run from a timer (a
+# systemd timer or cron, every five minutes). It checks the daemon from
+# outside: the store's lock held, the socket answering, no restart loop, no
+# effect or train past its deadline plus grace, lines not stalled, the trunk
+# lock not stale. It raises each finding through [notify]'s command once,
+# again every realert while it stands, and says when it clears. It exits 1
+# while anything is wrong. Shown: the defaults.
+[watch]
+# state = "/var/lib/shunter/watch.json"   # default <store>/watch.json
+grace = "15m"     # added to every deadline
+stall = "30m"     # lines waiting, nothing in flight, nothing recorded
+realert = "1h"
+restarts = 3      # daemon starts in an hour that are too many

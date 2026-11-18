@@ -1,0 +1,44 @@
+{
+  "config": {
+    "log_command": [
+      "sh",
+      "-c",
+      "exit 3"
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "x",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "b/y.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "no-verdict",
+    "blamed": []
+  }
+}

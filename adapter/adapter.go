@@ -160,6 +160,20 @@ type Git interface {
 	Push(ctx context.Context, key string, head, expect state.Head) error
 }
 
+// Pruner tidies what the forge holds for trains that have ended: their
+// branches (open question 20). Optional. Prune is told the trains still
+// live and removes what belongs to any other; it is safe to repeat.
+type Pruner interface {
+	Prune(ctx context.Context, live []state.TrainID) error
+}
+
+// Retargeter moves a change stacked on a change that has landed onto trunk
+// (open question 21). Optional, and advisory: the gate accepts such a change
+// whether or not the retarget takes.
+type Retargeter interface {
+	Retarget(ctx context.Context, id state.ChangeID) error
+}
+
 // Notifier tells people.
 type Notifier interface {
 	// Owner tells a line's owner what became of it.
