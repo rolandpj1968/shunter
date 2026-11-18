@@ -277,3 +277,32 @@ func TestAlerterRaisesOnceRemindsAndClears(t *testing.T) {
 		t.Fatalf("not tried again: %v %v", n, err)
 	}
 }
+
+// TestAlerterDryRunSendsNothing: a dry run neither calls the hook nor
+// remembers what it would have raised; the notices go to Out.
+func TestAlerterDryRunSendsNothing(t *testing.T) {
+	dir := t.TempDir()
+	got := filepath.Join(dir, "got.jsonl")
+	script := filepath.Join(dir, "notify.sh")
+	os.WriteFile(script, []byte("#!/bin/sh\ncat >> "+got+"\n"), 0o755)
+	out, err := os.Create(filepath.Join(dir, "out.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	state := filepath.Join(dir, "watch.json")
+	a := Alerter{Hook: hook.Hook{Command: []string{script}, Timeout: time.Minute}, State: state, Out: out, DryRun: true}
+	n, err := a.Raise(context.Background(), []Finding{{Subject: "daemon-down", Message: "no daemon"}})
+	if err != nil || len(n) != 1 {
+		t.Fatalf("%v %v", n, err)
+	}
+	if _, err := os.Stat(got); !os.IsNotExist(err) {
+		t.Fatalf("the hook ran in a dry run: %v", err)
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatalf("a dry run wrote the state: %v", err)
+	}
+	if b, _ := os.ReadFile(out.Name()); !strings.Contains(string(b), "no daemon") {
+		t.Fatalf("the notice did not go to Out: %q", b)
+	}
+}

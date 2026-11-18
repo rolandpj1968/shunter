@@ -16,7 +16,7 @@
 //	shunt status
 //	shunt export [--out FILE] [--line-files DIR]
 //	shunt import [--file FILE | --line-files DIR]
-//	shunter watch --config FILE [--state FILE] [--no-probe]
+//	shunter watch --config FILE [--state FILE] [--no-probe] [--no-notify]
 //
 // The CLI talks to the daemon on its socket (--socket, or $SHUNTER_SOCKET,
 // or DIR/shunter.sock with --store DIR). With --offline --store DIR it opens
@@ -54,7 +54,7 @@ import (
 // version is stamped at build time: -ldflags "-X main.version=...".
 var version = "dev"
 
-var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true, "no-probe": true}
+var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true, "no-probe": true, "no-notify": true}
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
 	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
 	"stats": true, "since": true, "effects": true, "line-files": true, "state": true}
@@ -405,7 +405,9 @@ func readLineFiles(p string) (store.LineFile, error) {
 }
 
 // watchRun is the outside watcher: one check, its findings raised through
-// the notify hook, the report on stdout. Exit 0 healthy, 1 not, 2 when the
+// the notify hook, the report on stdout. With --no-notify the hook is not
+// called and the watch state is not changed: the notices that would have
+// been sent go to stderr (for checking a configuration, and for tests). Exit 0 healthy, 1 not, 2 when the
 // check itself failed.
 func watchRun(fl map[string]string) int {
 	if fl["config"] == "" {
@@ -436,7 +438,8 @@ func watchRun(fl map[string]string) int {
 	if s := fl["state"]; s != "" {
 		state = s
 	}
-	a := watch.Alerter{Hook: f.NotifyHook(), State: state, Realert: f.Watch.Realert.Duration, Out: os.Stderr}
+	a := watch.Alerter{Hook: f.NotifyHook(), State: state, Realert: f.Watch.Realert.Duration, Out: os.Stderr,
+		DryRun: fl["no-notify"] != ""}
 	if _, aerr := a.Raise(ctx, rep.Findings); aerr != nil {
 		fmt.Fprintln(os.Stderr, "shunter: watch: raising:", aerr)
 		return 2
