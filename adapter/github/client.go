@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,17 @@ type Config struct {
 	// whoever wrote it.
 	Authors       []string
 	ApprovedLabel string
+	// AuthorBranches limits an author to changes from branches whose name
+	// matches a regular expression (a bot that may only offer its own
+	// refresh branches, say). An author named here is approved by its
+	// branch alone; every other author is as Authors says.
+	AuthorBranches map[string]string
+	// ApprovedFile names a file of changes approved whoever wrote them:
+	// one or more change ids a line, a leading # on an id dropped; a line
+	// is read up to its first word that is not an id, so "# ..." is a
+	// comment. It is read at every gate, so an edit counts at once. A
+	// missing file approves nothing.
+	ApprovedFile string
 	// LandedLabel marks a change that landed in a train and was closed, not
 	// merged, by the forge. A merged change is landed whatever its labels.
 	LandedLabel string
@@ -82,6 +94,8 @@ type Config struct {
 // Client is a GitHub adapter: it implements adapter.Forge and adapter.CI.
 type Client struct {
 	cfg Config
+	// branchRule is AuthorBranches, compiled.
+	branchRule map[string]*regexp.Regexp
 
 	tokenOnce sync.Once
 	token     string
@@ -116,7 +130,15 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Policy.Timeout <= 0 {
 		cfg.Policy.Timeout = 60 * time.Second
 	}
-	return &Client{cfg: cfg, requests: map[string]int{}}, nil
+	c := &Client{cfg: cfg, requests: map[string]int{}, branchRule: map[string]*regexp.Regexp{}}
+	for author, rx := range cfg.AuthorBranches {
+		re, err := regexp.Compile(rx)
+		if err != nil {
+			return nil, fmt.Errorf("github: author_branches %s: %w", author, err)
+		}
+		c.branchRule[author] = re
+	}
+	return c, nil
 }
 
 // Requests returns how many requests were sent, by method.

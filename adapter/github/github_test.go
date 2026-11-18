@@ -51,6 +51,50 @@ func TestDescribe(t *testing.T) {
 	}
 }
 
+// TestGateProducerRules: an approval file approves a change whoever wrote
+// it, and an author with a branch rule is approved only from a branch the
+// rule matches.
+func TestGateProducerRules(t *testing.T) {
+	s, c := newServer(t)
+	dir := t.TempDir()
+	list := filepath.Join(dir, "approved.list")
+	c.cfg.ApprovedFile = list
+	c2, err := New(Config{Owner: "acme", Repo: "widgets", Trunk: "main", AuthorBranches: map[string]string{"refresh-bot": "^refresh/", "alice": "^feat-"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.branchRule = c2.branchRule
+	s.pull(21, "open", "a21", "refresh/weights", "main", "refresh-bot")
+	s.pull(22, "open", "a22", "fix-everything", "main", "refresh-bot")
+	s.pull(23, "open", "a23", "contrib", "main", "mallory")
+	s.pull(24, "open", "a24", "feat-x", "main", "alice")
+	s.pull(25, "open", "a25", "other", "main", "alice")
+	s.pull(26, "open", "a26", "b", "main", "bob")
+	approved := func() string {
+		got, err := c.Describe(ctx, []state.ChangeID{"21", "22", "23", "24", "25", "26"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, ch := range got {
+			if ch.Approved {
+				out = append(out, string(ch.ID))
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	if got := approved(); got != "21 24 26" {
+		t.Fatalf("no approval file: approved %s", got)
+	}
+	os.WriteFile(list, []byte("# changes approved by hand\n#23 reviewed\n22 25\n"), 0o644)
+	if got := approved(); got != "21 22 23 24 25 26" {
+		t.Fatalf("with the approval file: approved %s", got)
+	}
+	if _, err := New(Config{Owner: "o", Repo: "r", Trunk: "main", AuthorBranches: map[string]string{"x": "("}}); err == nil {
+		t.Fatal("a bad branch rule was taken")
+	}
+}
+
 func TestTransientFaultsAreRetriedAndEmptyIsNoAnswer(t *testing.T) {
 	s, c := newServer(t)
 	s.pull(11, "open", "aaa", "feat-a", "main", "alice")

@@ -22,6 +22,13 @@ token_command = ["gh", "auth", "token"]
 # approved_label. Empty: every author.
 authors = ["example-bot", "example-dev"]
 approved_label = "queue-approved"
+# A file of changes approved whoever wrote them, one or more ids a line,
+# read at every gate. Missing: none. Relative to this file.
+# approved_file = "approved-changes.list"
+# An author approved only for changes from branches matching a regular
+# expression; every other author is as `authors` says.
+# [repo.author_branches]
+# example-refresh-bot = "^refresh/"
 # A change that landed in a train is closed with this label: the forge does
 # not see it as merged. A merged change is landed whatever its labels.
 landed_label = "landed"

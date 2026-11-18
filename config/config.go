@@ -70,8 +70,10 @@ type Repo struct {
 	Trunk         string   `toml:"trunk"`
 	TokenEnv      string   `toml:"token_env"`
 	TokenCommand  []string `toml:"token_command"`
-	Authors       []string `toml:"authors"`
-	ApprovedLabel string   `toml:"approved_label"`
+	Authors        []string          `toml:"authors"`
+	AuthorBranches map[string]string `toml:"author_branches"`
+	ApprovedFile   string            `toml:"approved_file"`
+	ApprovedLabel  string            `toml:"approved_label"`
 	LandedLabel   string   `toml:"landed_label"`
 	MinGap        Duration `toml:"min_gap"`
 }
@@ -339,7 +341,8 @@ func (f *File) token() (string, error) {
 func (f *File) GitHub(readOnly bool) (*github.Client, error) {
 	return github.New(github.Config{
 		API: f.Repo.API, Owner: f.Repo.Owner, Repo: f.Repo.Name, Trunk: f.Repo.Trunk, Token: f.token,
-		BranchPrefix: f.Git.BranchPrefix, Authors: f.Repo.Authors, ApprovedLabel: f.Repo.ApprovedLabel, LandedLabel: f.Repo.LandedLabel,
+		BranchPrefix: f.Git.BranchPrefix, Authors: f.Repo.Authors, ApprovedLabel: f.Repo.ApprovedLabel,
+		AuthorBranches: f.Repo.AuthorBranches, ApprovedFile: f.path(f.Repo.ApprovedFile), LandedLabel: f.Repo.LandedLabel,
 		Checks: f.CI.Checks, Workflow: f.CI.Workflow, Dispatch: f.CI.Mode == "dispatch",
 		Blame:    f.hook(f.Hooks.Blame, ""),
 		ReadOnly: readOnly, MinGap: f.Repo.MinGap.Duration, Policy: f.policy(),

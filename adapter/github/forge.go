@@ -2,9 +2,11 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -104,11 +106,45 @@ func pathRef(branch string) string {
 	return strings.Join(parts, "/")
 }
 
-func (c *Client) approved(p ghPull) bool {
-	if len(c.cfg.Authors) == 0 || p.labelled(c.cfg.ApprovedLabel) {
+// approved is the gate's producer rule: labelled ApprovedLabel, or listed
+// in ApprovedFile, whoever wrote it; else an author with a branch rule only
+// from a branch the rule matches; else an author in Authors, or any author
+// when Authors is empty.
+func (c *Client) approved(p ghPull, listed map[int]bool) bool {
+	if p.labelled(c.cfg.ApprovedLabel) || listed[p.Number] {
 		return true
 	}
-	return slices.Contains(c.cfg.Authors, p.User.Login)
+	if re, ok := c.branchRule[p.User.Login]; ok {
+		return re.MatchString(p.Head.Ref)
+	}
+	return len(c.cfg.Authors) == 0 || slices.Contains(c.cfg.Authors, p.User.Login)
+}
+
+// approvedList reads ApprovedFile: the changes it lists. A missing file, or
+// none configured, lists nothing; one that can't be read is a transient
+// failure, so the gate asks again rather than refuse.
+func (c *Client) approvedList() (map[int]bool, error) {
+	out := map[int]bool{}
+	if c.cfg.ApprovedFile == "" {
+		return out, nil
+	}
+	b, err := os.ReadFile(c.cfg.ApprovedFile)
+	if errors.Is(err, os.ErrNotExist) {
+		return out, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("the approved file: %w", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		for _, w := range strings.Fields(line) {
+			n, err := strconv.Atoi(strings.TrimPrefix(w, "#"))
+			if err != nil || n <= 0 {
+				break
+			}
+			out[n] = true
+		}
+	}
+	return out, nil
 }
 
 // Describe implements adapter.Forge. A change stacked on a branch that is
@@ -116,6 +152,10 @@ func (c *Client) approved(p ghPull) bool {
 // first); a base branch with no pull request is named "branch:<name>", which
 // the gate cannot find, and so refuses.
 func (c *Client) Describe(ctx context.Context, ids []state.ChangeID) ([]adapter.ChangeInfo, error) {
+	listed, err := c.approvedList()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]adapter.ChangeInfo, 0, len(ids))
 	for _, id := range ids {
 		n, err := number(id)
@@ -136,7 +176,7 @@ func (c *Client) Describe(ctx context.Context, ids []state.ChangeID) ([]adapter.
 			ID:       id,
 			Head:     state.Head(p.Head.SHA),
 			Open:     p.State == "open",
-			Approved: c.approved(p),
+			Approved: c.approved(p, listed),
 			Landed:   p.Merged || p.MergedAt != nil || (p.State == "closed" && p.labelled(c.cfg.LandedLabel)),
 		}
 		if p.Base.Ref != c.cfg.Trunk {
