@@ -777,3 +777,41 @@ func TestEndedTrainsArePrunedAndALandedBaseIsRetargeted(t *testing.T) {
 	r.tick(time.Second)
 	r.wantLine("b", state.LineLanded)
 }
+
+// The rollback path: export as line files, and import them into another
+// queue on the same forge. Heads and bases come from the forge again.
+func TestExportImportLineFiles(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "c")
+	r.w.Open("b", "b-1", "a") // b is stacked on a
+	r.exec(daemon.Request{Cmd: "pause", Reason: "cut-over"})
+	r.queue("a")
+	r.queue("b")
+	r.exec(daemon.Request{Cmd: "queue", Args: []string{"c"}, Alone: true})
+	r.exec(daemon.Request{Cmd: "hold", Args: []string{"a"}, Reason: "waits on a design call"})
+	resp := r.d.Exec(r.ctx, daemon.Request{Cmd: "export"})
+	lf, err := store.ToLines(*resp.Doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := lf.Write(dir); err != nil {
+		t.Fatal(err)
+	}
+	back, err := store.ReadLines(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := newRig(t)
+	r2.w = r.w
+	r2.restart()
+	r2.exec(daemon.Request{Cmd: "pause", Reason: "import"})
+	r2.exec(daemon.Request{Cmd: "import", Plain: &back})
+	r2.wantLine("a", state.LineHeld)
+	r2.wantLine("b", state.LineWaitingBase)
+	r2.wantLine("c", state.LineWaiting)
+	s := r2.state()
+	if s.Lines["b"].Base != "a" || !s.Lines["c"].Alone || s.Lines["a"].Reason != "waits on a design call" {
+		t.Fatalf("not carried: b on %q, c alone %v, a's reason %q", s.Lines["b"].Base, s.Lines["c"].Alone, s.Lines["a"].Reason)
+	}
+}

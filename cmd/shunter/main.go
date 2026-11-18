@@ -14,8 +14,9 @@
 //	shunt resume [TRUNK]
 //	shunt judge <train> charge|split|park|rerun --reason WHY [--lines a,b]
 //	shunt status
-//	shunt export [--out FILE]
-//	shunt import [--file FILE]
+//	shunt export [--out FILE] [--line-files DIR]
+//	shunt import [--file FILE | --line-files DIR]
+//	shunter watch --config FILE [--state FILE] [--no-probe]
 //
 // The CLI talks to the daemon on its socket (--socket, or $SHUNTER_SOCKET,
 // or DIR/shunter.sock with --store DIR). With --offline --store DIR it opens
@@ -52,10 +53,10 @@ import (
 // version is stamped at build time: -ldflags "-X main.version=...".
 var version = "dev"
 
-var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true}
+var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true, "no-probe": true}
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
 	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
-	"stats": true, "since": true, "effects": true}
+	"stats": true, "since": true, "effects": true, "line-files": true, "state": true}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -80,7 +81,13 @@ func main() {
 	if fl["lines"] != "" {
 		req.Lines = strings.Split(fl["lines"], ",")
 	}
-	if verb == "import" {
+	if verb == "import" && fl["line-files"] != "" {
+		lf, err := store.ReadLines(fl["line-files"])
+		if err != nil {
+			fatal(fmt.Errorf("import: %w", err))
+		}
+		req.Plain = &lf
+	} else if verb == "import" {
 		doc, err := readDoc(fl["file"])
 		if err != nil {
 			fatal(err)
@@ -93,6 +100,19 @@ func main() {
 	}
 	if resp.Error != "" {
 		fatal(errors.New(resp.Error))
+	}
+	if verb == "export" && resp.Doc != nil && fl["line-files"] != "" {
+		lf, err := store.ToLines(*resp.Doc)
+		if err != nil {
+			fatal(err)
+		}
+		if err := lf.Write(fl["line-files"]); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("%d waiting, %d held, %d parks, written to %s\n", len(lf.Waiting), len(lf.Held), len(lf.Parks), fl["line-files"])
+		if fl["out"] == "" {
+			return
+		}
 	}
 	if verb == "export" && resp.Doc != nil {
 		b, _ := json.MarshalIndent(resp.Doc, "", "  ")
