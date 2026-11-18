@@ -299,7 +299,7 @@ func (w *World) ReadLanding(ctx context.Context, t state.TrainID, head state.Hea
 }
 
 // Status implements adapter.CI.
-func (w *World) Status(ctx context.Context, t state.TrainID, head state.Head) (adapter.Report, error) {
+func (w *World) Status(ctx context.Context, t state.TrainID, head state.Head, _ []adapter.BuildLine) (adapter.Report, error) {
 	if err := w.enter(ctx, "status"); err != nil {
 		return adapter.Report{}, err
 	}

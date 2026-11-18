@@ -1,12 +1,12 @@
 # Open questions from the daemon
 
-*Ambiguities and gaps in [`PROTOCOL.md`](../PROTOCOL.md) that writing the store and the daemon brought out. Each says what the code does today, so that nothing was decided silently. None of them is settled; each is for the protocol to answer.*
+*Ambiguities and gaps in [`PROTOCOL.md`](../PROTOCOL.md) that writing the store, the daemon and the adapters brought out. Each says what the code does today, so that nothing was decided silently. A question marked **Answered** is settled in code, with the reason; the protocol should state the answer. One marked **For the owner** is a choice the code has made provisionally and the owner should make.*
 
 ## The state machine
 
 1. **A green train whose landing check can't be read.** T12 and T23 cover a reading that matches and one that doesn't. They don't cover no reading at all, when the forge keeps failing. **Today:** the daemon retries with backoff, escalates to J3 after its budget, and keeps retrying. The train stays green and holds the chain. Should T23 also void it at a deadline, as no verdict?
 
-2. **A push whose deadline passes with its outcome unknown.** §5.1 says landing "is bounded by the push's deadline", but not what happens at that deadline. A push that timed out may have taken. **Today:** it is a transient refusal (T13's default). The next push finds trunk already at the head, the git adapter counts that as success, and the train lands. The protocol could state that a push is idempotent, and that a lander resolves an unknown outcome by reading trunk.
+2. **A push whose deadline passes with its outcome unknown.** **Answered.** A push is idempotent, and a lander settles an unknown outcome by reading trunk. The git adapter reads trunk before each try and after the last one: trunk at the head is success, trunk anywhere but the expected base is a permanent refusal, and only then does it push, under a lease on the base and only when the head descends from it. A push whose answer was lost is therefore success on the next read, and never a second, different landing. The protocol should say so in §5.1 "landing".
 
 3. **A second flake.** §5.5 allows a known flake or a timing failure one rerun. It doesn't say what follows when the rerun fails the same way. **Today:** the daemon sends it to J1 as a failure that blame can't attribute.
 
@@ -16,11 +16,11 @@
 
 ## Judgement points and deadlines
 
-6. **Deadlines with no number.** The protocol gives J1 10 minutes, J2 15 minutes and J5 one day. T2 ("the builder's deadline"), T6 (the pull request), T7 ("no verdict at the deadline") and the push have none. **Today's defaults:** builder 30 minutes, pull request 10 minutes, CI 90 minutes, push 5 minutes. All are configurable.
+6. **Deadlines with no number.** **Answered, with defaults the owner may change.** The protocol gives J1 10 minutes, J2 15 minutes and J5 one day. T2 ("the builder's deadline"), T6 (the pull request), T7 ("no verdict at the deadline") and the push had none. They are now keys of the configuration file ([`examples/shunter.toml`](../examples/shunter.toml), `[deadlines]`), with these defaults: builder 30 minutes, pull request 10 minutes, CI 90 minutes, push 5 minutes, one adapter call 2 minutes, a park that can't be tested 24 hours. Each adapter call is also bounded inside itself: a few tries with backoff (`[retry]`), each with its own deadline, before the daemon's own retry and J3. The protocol should give T2, T6, T7 and the push a default each.
 
 7. **Does a rerun restart the CI deadline?** A rerun ordered at J1 (T11) re-enters testing, so its clock restarts. A rerun after a flake stays in testing, so its clock doesn't restart. Should it?
 
-8. **"The same test failed in the previous batch, with unrelated changes"** (J1's default). The machine records a failure's evidence as one string. **Today:** "the same test" means the same evidence string. "The previous batch" means the failure recorded just before, kept in the store. "Unrelated" means no line in common. Real blame adapters will need a structured identity for a failing test.
+8. **"The same test failed in the previous batch, with unrelated changes"** (J1's default). The machine records a failure's evidence as one string. **Today:** "the same test" means the same evidence string. "The previous batch" means the failure recorded just before, kept in the store. "Unrelated" means no line in common. The CI adapter now gives the blame hook the structured check runs (name, conclusion, started time, link), and the hook may answer the evidence; a structured identity for a failing test is still the protocol's to define.
 
 9. **Parks whose condition can't be tested.** §6.4 says such a park "carries a deadline", but names none. J1's default park has the condition "deadline: the judge reviews", with no time. **Today:** a condition `landed:<line>` is tested, and every other park is restored after 24 hours, with an alert. Should the protocol require every park to state its deadline as a time?
 
@@ -36,4 +36,22 @@
 
 13. **A log written by an older version.** At start, the store replays the log after its last snapshot through the current `Next`. If the current version refuses an event the old one accepted, or decides different effects for it, the store refuses to start, with an error naming the cause. A clean stop always writes a snapshot, so an upgrade after a clean stop replays nothing. §7 says a new version is "checked before it's started". Is refusing to start the right reading of that, or should the snapshot win?
 
-14. **Watching the daemon itself (L3).** The daemon records alerts in the store and sends them to the judge. Nothing yet watches the daemon's own loop from outside: its tick, its poll errors, its fatal stop. That belongs with the real adapters and shadow running.
+14. **Watching the daemon itself (L3).** The daemon records alerts in the store and sends them to the judge, and the notifier appends every notice, alerts included, to an events file that an outside watcher can read. Nothing yet watches the daemon's own loop from outside: its tick, its poll errors, its fatal stop.
+
+## From the adapters
+
+15. **A cancelled run.** **Answered.** A check run that ends cancelled, skipped, stale, neutral or needing action, with no check failed, is no verdict (§5.5 class 0): the train is void and its lines go back, nobody charged. This is the old queue's charged-on-a-cancelled-run defect, closed by construction: a cancel can't become a failure, because a failure needs a check that concluded `failure`. A run with only timeouts is timing (class 3), one rerun. The protocol's §5.5 should name these conclusions.
+
+16. **No fail-fast.** The CI adapter reads a run as pending until every required check has completed, so that blame sees every failure, not the first. The cost is the time the rest of the run takes after the first failure. The old queue made the same choice.
+
+17. **A hook is advice, and silence from it is no verdict.** A pre-flight hook that crashes, hangs past its deadline, or prints no JSON has caught nothing: the build fails as infrastructure, the daemon retries it, and in the end the train is void with no verdict. It never charges a line. A blame hook that fails leaves the failure unblamed, which goes to J1. A blame hook can say a failure is a flake, infrastructure or no verdict, or name lines of the train; it can't make a failed run pass, and lines it names that aren't in the train are ignored. The protocol could state, in §5.4 and §5.6, that hooks are advisory in exactly this way.
+
+18. **Rebase or merge.** **For the owner.** A train is built by replaying each change's own commits onto the train (`strategy = "rebase"`, the default: a linear trunk, as the old queue did) or by merging each change's head (`"merge"`: the change's commits land unchanged, with a merge commit each). Either way trunk only fast-forwards to the train's tested head. Rebase gives a linear trunk but new commit ids, so the forge doesn't see a change as merged: the forge adapter labels and closes each change of a landed line itself. Merge keeps the ids, and the forge marks the change merged on its own.
+
+19. **The rerun's key.** A rerun's key can't be stored on the forge, so the CI adapter takes a run on the head that is already going as this rerun (asked twice, or started by hand), and reruns only completed, unsuccessful runs. A rerun whose answer was lost, and whose run then completed again before the retry, is rerun a second time. That costs a CI run and judges nothing wrongly.
+
+20. **Train branches are never deleted.** Shunter force-pushes `<prefix><train>` and leaves it. A train 2's pull request is based on train 1's branch, and deleting that branch would close it. **For the owner:** whether to delete a train's branch when the train ends, and how long after.
+
+21. **The changes of a stack before the base lands.** The forge names a change's base by its branch. A change stacked on a branch with no pull request is described as based on `branch:<name>`, which the gate can't find, so it refuses the line with that reason. The old queue retargeted a change to trunk when its base's pull request had closed; Shunter refuses instead and lets the owner retarget. **For the owner:** whether the gate should retarget.
+
+22. **What shadow running can't see.** Shadow reads the forge now, not as it was. Its comparison of CI outcomes is sound for history, because the checks on a head don't change once complete. Its gate is sound only for the lines waiting now. It has no record of when the live queue took each line, so it can't compare the joining rule's choices with the live queue's for past trains; it reports which trains Shunter would assemble from the lines waiting now.

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rolandpj1968/shunter/adapter"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
 )
@@ -162,20 +163,28 @@ func (d *Daemon) queue(ctx context.Context, actor string, req Request) Response 
 	if len(info) != len(ids) {
 		return errResp(fmt.Errorf("the forge described %d of %d changes", len(info), len(ids)))
 	}
-	o := state.Offer{Line: state.LineID(ids[0]), Alone: req.Alone}
-	for _, c := range info {
-		o.Changes = append(o.Changes, state.Change{ID: c.ID, Head: c.Head})
-	}
-	if b := info[0].Base; b != "" {
-		if line, ok := liveChanges(d.st.State(), o.Line)[b]; ok {
-			o.Base = line
-		}
-	}
+	o := OfferFor(d.st.State(), info, req.Alone)
 	msg := fmt.Sprintf("line %s offered (%d changes)", o.Line, len(o.Changes))
 	if o.Base != "" {
 		msg += ", stacked on line " + string(o.Base)
 	}
 	return d.act(actor, o, msg)
+}
+
+// OfferFor is the offer of a line made of the changes described, in stack
+// order: named by its first change, at the heads the forge gave, and stacked
+// on the live line that holds the first change's base, if one does.
+func OfferFor(s state.State, info []adapter.ChangeInfo, alone bool) state.Offer {
+	o := state.Offer{Line: state.LineID(info[0].ID), Alone: alone}
+	for _, c := range info {
+		o.Changes = append(o.Changes, state.Change{ID: c.ID, Head: c.Head})
+	}
+	if b := info[0].Base; b != "" {
+		if line, ok := liveChanges(s, o.Line)[b]; ok {
+			o.Base = line
+		}
+	}
+	return o
 }
 
 // cancel aborts a train (§5.9), named by itself or by one of its lines. The

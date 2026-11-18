@@ -1,0 +1,110 @@
+# Shunter's configuration: one file, read by `shunter serve --config` and
+# `shunter shadow --config`. Every value here is an example. A key Shunter
+# does not know is an error, so a misspelt deadline is never silently the
+# default. Relative paths are relative to this file.
+
+# The store: the queue's one record (I8). One daemon owns it at a time.
+store = "/var/lib/shunter/store"
+# The CLI's socket. Default: <store>/shunter.sock.
+# socket = "/run/shunter/shunter.sock"
+
+[repo]
+forge = "github"                   # the only forge so far
+# api = "https://api.github.com"   # or a GitHub Enterprise root
+owner = "example-org"
+name = "example-repo"
+trunk = "main"
+# The token: from this environment variable (default GH_TOKEN), else from
+# the command's output. It is never logged.
+token_env = "GH_TOKEN"
+token_command = ["gh", "auth", "token"]
+# The gate (§5.2) accepts changes from these authors, or labelled
+# approved_label. Empty: every author.
+authors = ["example-bot", "example-dev"]
+approved_label = "queue-approved"
+# A change that landed in a train is closed with this label: the forge does
+# not see it as merged. A merged change is landed whatever its labels.
+landed_label = "landed"
+# The least time between two API requests.
+min_gap = "200ms"
+
+[git]
+# A clone Shunter owns. Nothing else works in it.
+dir = "/var/lib/shunter/clone"
+remote = "origin"
+# Train branches: <branch_prefix><train>. Shunter force-pushes them.
+branch_prefix = "shunter/"
+# Where the forge keeps a change's head; {id} is the change.
+change_ref = "refs/pull/{id}/head"
+# "rebase" replays each change's own commits onto the train: a linear trunk.
+# "merge" merges each change's head with a merge commit.
+strategy = "rebase"
+# Added to git's environment: the committer of rebased commits.
+env = ["GIT_COMMITTER_NAME=Shunter", "GIT_COMMITTER_EMAIL=shunter@example.com"]
+
+[ci]
+# "checks": the train's pull request starts CI. "dispatch": Shunter also
+# dispatches the workflow on the train's branch.
+mode = "checks"
+workflow = "ci.yml"
+# The checks whose success, on exactly the train's head, is the verdict
+# (I1, I9). Every one must have completed with success.
+checks = ["check"]
+
+[queue]
+depth = 2       # the speculation chain: trains in flight at once
+max_lines = 8   # lines in one train (J4)
+
+[deadlines]
+# Every wait has one (§2.5). Shown: the defaults.
+tick = "5s"     # how often timers run
+poll = "30s"    # how often a testing train's CI is read
+call = "2m"     # one adapter call that is not a build or a push
+build = "30m"   # assembly and pre-flight; past it: void, no verdict (T2)
+open = "10m"    # a built train waiting for its pull request (T6)
+ci = "90m"      # a train in testing; past it: void, no verdict (T7)
+push = "5m"     # one push to trunk; an unknown outcome is settled by reading trunk
+j1 = "10m"      # J1's deadline, then its default
+park = "24h"    # a park whose condition cannot be tested is restored then
+
+[retry]
+# Inside one adapter call: tries, and the waits between them.
+attempts = 3
+backoff = "2s"
+max_backoff = "30s"
+# Across calls, in the daemon: tries of one effect before J3 is alerted.
+effects = 3
+effect_backoff = "5s"
+
+# Hooks: the repository's own rules, in any language. Each reads one JSON
+# document on stdin and answers one on stdout. A hook advises; no hook can
+# make a train pass. Verdicts come only from CI's checks.
+[hooks.preflight]
+# In: {"dir","train","base","head","lines":[{"ID","Changes":[{"ID","Head"}]}]}
+# Out: {"pass":true} or {"pass":false,"blamed":["<line>"],"evidence":"..."}
+# A crash, a timeout or no JSON is no verdict, never a charge.
+command = ["./hooks/preflight"]
+timeout = "20m"
+
+[hooks.conflict]
+# In: {"dir","train","line","change","files":[...]}, with the conflict in
+# the tree. Out: {"resolved":true} with every file staged, or
+# {"resolved":false,"reason":"..."}.
+command = ["./hooks/resolve-conflict"]
+timeout = "5m"
+
+[hooks.blame]
+# In: {"train","head","lines":[...],"checks":[...],"evidence":"..."}
+# Out: {"class":"deterministic","blamed":["<line>"],"evidence":"..."}, or
+# class "flaky", "infra" or "no-verdict". Lines not in the train are
+# ignored. A failure nobody is named for goes to J1 (I6).
+command = ["./hooks/blame"]
+timeout = "2m"
+
+[notify]
+# Every notice to an owner or the judge, one JSON line each. Default:
+# <store>/events.jsonl.
+events = "/var/lib/shunter/events.jsonl"
+# Optional delivery: the notice as JSON on stdin.
+command = ["./hooks/notify"]
+timeout = "30s"

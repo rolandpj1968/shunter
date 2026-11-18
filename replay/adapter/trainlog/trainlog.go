@@ -21,6 +21,7 @@
 //	BATCH-INFRA                      infrastructure failed; nothing judged
 //	BATCH-SPEC-FAILED                the train ahead failed
 //	BATCH-CANCELLED                  the train was cancelled
+//	BATCH-RUN-CANCELLED              its CI run was cancelled or skipped, no job failed
 //
 // The log says less than the state machine needs. It has no offers, no gate,
 // no judge and no landing, so the adapter supplies them. A line is a stack
@@ -424,6 +425,13 @@ func (src *Source) open(lg Log) bool {
 					return nil
 				}
 				return []state.Event{state.CINoVerdict{Train: train, Infra: m.Word == "BATCH-INFRA", Why: why}}
+			}
+		case "BATCH-RUN-CANCELLED":
+			step = func(s state.State) []state.Event {
+				if live(s) == nil {
+					return nil
+				}
+				return []state.Event{state.CINoVerdict{Train: train, Why: "the run was cancelled or skipped, with no job failed"}}
 			}
 		case "BATCH-CANCELLED":
 			step = func(state.State) []state.Event {

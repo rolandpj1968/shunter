@@ -1,0 +1,356 @@
+package github
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/rolandpj1968/shunter/adapter"
+	"github.com/rolandpj1968/shunter/adapter/hook"
+	"github.com/rolandpj1968/shunter/state"
+)
+
+var (
+	ctx = context.Background()
+	t0  = time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC)
+)
+
+func TestDescribe(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(11, "open", "aaa", "feat-a", "main", "alice")
+	s.pull(12, "open", "bbb", "feat-b", "feat-a", "alice")
+	s.pull(13, "closed", "ccc", "feat-c", "main", "bob", "landed")
+	s.pull(14, "open", "ddd", "feat-d", "main", "mallory")
+	s.pull(15, "open", "eee", "feat-e", "gone-branch", "alice")
+	got, err := c.Describe(ctx, []state.ChangeID{"11", "12", "13", "14", "15"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []adapter.ChangeInfo{
+		{ID: "11", Head: "aaa", Open: true, Approved: true},
+		{ID: "12", Head: "bbb", Base: "11", Open: true, Approved: true},
+		{ID: "13", Head: "ccc", Open: false, Approved: true, Landed: true},
+		{ID: "14", Head: "ddd", Open: true, Approved: false},
+		{ID: "15", Head: "eee", Base: "branch:gone-branch", Open: true, Approved: true},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("change %s: %+v, want %+v", want[i].ID, got[i], want[i])
+		}
+	}
+	if _, err := c.Describe(ctx, []state.ChangeID{"99"}); !adapter.IsPermanent(err) {
+		t.Fatalf("a missing change: %v, want permanent", err)
+	}
+	if _, err := c.Describe(ctx, []state.ChangeID{"not-a-number"}); !adapter.IsPermanent(err) {
+		t.Fatalf("a bad id: %v, want permanent", err)
+	}
+}
+
+func TestTransientFaultsAreRetriedAndEmptyIsNoAnswer(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(11, "open", "aaa", "feat-a", "main", "alice")
+	s.faults["/pulls/11"] = []int{502, 503}
+	if _, err := c.Describe(ctx, []state.ChangeID{"11"}); err != nil {
+		t.Fatalf("two 5xx then an answer: %v", err)
+	}
+	s.faults["/pulls/11"] = []int{502, 502, 502}
+	_, err := c.Describe(ctx, []state.ChangeID{"11"})
+	if err == nil || adapter.IsPermanent(err) {
+		t.Fatalf("three 5xx: %v, want transient", err)
+	}
+	s.empty["/pulls/11"] = true
+	if _, err := c.Describe(ctx, []state.ChangeID{"11"}); err != nil {
+		t.Fatalf("one empty answer then a real one: %v", err)
+	}
+	if n := s.count("GET", "/pulls/11"); n != 8 {
+		t.Fatalf("%d reads, want 8", n)
+	}
+}
+
+func TestReadOnlyRefusesWritesBeforeSending(t *testing.T) {
+	s, c := newServer(t)
+	c.cfg.ReadOnly = true
+	s.refs["main"] = "trunk1"
+	s.refs["shunter/t1"] = "h1"
+	_, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	if !errors.Is(err, errReadOnly) || !adapter.IsPermanent(err) {
+		t.Fatalf("open in read-only: %v", err)
+	}
+	if err := c.Cancel(ctx, "k2", "t1"); err != nil {
+		t.Fatalf("cancel with nothing to cancel is a read: %v", err)
+	}
+	s.run(7, "h1", "shunter/t1", "in_progress", "")
+	if err := c.Cancel(ctx, "k3", "t1"); !errors.Is(err, errReadOnly) {
+		t.Fatalf("cancel in read-only: %v", err)
+	}
+	for _, l := range s.log {
+		if !strings.HasPrefix(l, "GET ") {
+			t.Fatalf("a write reached the forge: %s", l)
+		}
+	}
+}
+
+func TestOpenPRIsIdempotentAndFindsItsBase(t *testing.T) {
+	s, c := newServer(t)
+	s.refs["main"] = "trunk1"
+	s.refs["shunter/t1"] = "h1"
+	pr, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	if err != nil || again != pr || s.count("POST", "/pulls") != 1 {
+		t.Fatalf("again: %s %v (posts %d)", again, err, s.count("POST", "/pulls"))
+	}
+	if base := s.pulls[501]["base"].(map[string]any)["ref"]; base != "main" {
+		t.Fatalf("train 1's base %v", base)
+	}
+	// Train 2 is built on train 1's head: its pull request goes to train
+	// 1's branch.
+	s.refs["shunter/t2"] = "h2"
+	if _, err := c.OpenPR(ctx, "k2", "t2", "h2", "h1"); err != nil {
+		t.Fatal(err)
+	}
+	if base := s.pulls[502]["base"].(map[string]any)["ref"]; base != "shunter/t1" {
+		t.Fatalf("train 2's base %v", base)
+	}
+	// A branch not at the built head is refused, permanently.
+	s.refs["shunter/t3"] = "other"
+	if _, err := c.OpenPR(ctx, "k3", "t3", "h3", "trunk1"); !adapter.IsPermanent(err) {
+		t.Fatalf("branch elsewhere: %v", err)
+	}
+	// A base that is nothing known is refused.
+	s.refs["shunter/t4"] = "h4"
+	if _, err := c.OpenPR(ctx, "k4", "t4", "h4", "nowhere"); !adapter.IsPermanent(err) {
+		t.Fatalf("unknown base: %v", err)
+	}
+}
+
+func TestDispatchMode(t *testing.T) {
+	s, c := newServer(t)
+	c.cfg.Dispatch, c.cfg.Workflow = true, "ci.yml"
+	s.refs["main"] = "trunk1"
+	s.refs["shunter/t1"] = "h1"
+	if _, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.count("POST", "/actions/workflows/ci.yml/dispatches"); n != 1 {
+		t.Fatalf("%d dispatches", n)
+	}
+	s.run(1, "h1", "shunter/t1", "queued", "")
+	if _, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.count("POST", "/actions/workflows/ci.yml/dispatches"); n != 1 {
+		t.Fatalf("a run on the head already: %d dispatches, want still 1", n)
+	}
+}
+
+func TestClosePR(t *testing.T) {
+	s, c := newServer(t)
+	s.refs["main"] = "trunk1"
+	s.refs["shunter/t1"] = "h1"
+	pr, _ := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	if err := c.ClosePR(ctx, "k2", "t1", "void: a head moved"); err != nil {
+		t.Fatal(err)
+	}
+	if s.pulls[501]["state"] != "closed" || pr != "501" {
+		t.Fatalf("not closed")
+	}
+	if err := c.ClosePR(ctx, "k2", "t1", "void: a head moved"); err != nil {
+		t.Fatalf("closing a closed one: %v", err)
+	}
+	if n := s.count("POST", "/issues/501/comments"); n != 1 {
+		t.Fatalf("%d comments", n)
+	}
+	if err := c.ClosePR(ctx, "k3", "never", "x"); err != nil {
+		t.Fatalf("closing one never opened: %v", err)
+	}
+}
+
+func TestStatusClassifies(t *testing.T) {
+	cases := []struct {
+		name   string
+		checks func(s *server)
+		want   adapter.Outcome
+		why    string
+	}{
+		{"nothing yet", func(s *server) {}, adapter.Pending, ""},
+		{"running", func(s *server) { s.check("h", "check", "in_progress", "", t0) }, adapter.Pending, "check is in_progress"},
+		{"passed", func(s *server) {
+			s.check("h", "test (1)", "completed", "success", t0)
+			s.check("h", "check", "completed", "success", t0)
+		}, adapter.Passed, ""},
+		{"failed", func(s *server) {
+			s.check("h", "test (1)", "completed", "failure", t0)
+			s.check("h", "check", "completed", "failure", t0)
+		}, adapter.Failed, ""},
+		{"cancelled by hand", func(s *server) {
+			s.check("h", "test (1)", "completed", "cancelled", t0)
+			s.check("h", "check", "completed", "cancelled", t0)
+		}, adapter.NoVerdict, "no verdict: check cancelled"},
+		{"skipped", func(s *server) { s.check("h", "check", "completed", "skipped", t0) }, adapter.NoVerdict, "no verdict: check skipped"},
+		{"timed out only", func(s *server) {
+			s.check("h", "test (1)", "completed", "timed_out", t0)
+			s.check("h", "check", "completed", "failure", t0)
+		}, adapter.Failed, ""},
+		{"timeout alone", func(s *server) {
+			s.check("h", "test (1)", "completed", "timed_out", t0)
+			s.check("h", "check", "completed", "cancelled", t0)
+		}, adapter.Flaky, "only timeouts: test (1)"},
+		{"a rerun passed", func(s *server) {
+			s.check("h", "test (1)", "completed", "failure", t0)
+			s.check("h", "check", "completed", "failure", t0)
+			s.check("h", "test (1)", "completed", "success", t0.Add(time.Hour))
+			s.check("h", "check", "completed", "success", t0.Add(time.Hour))
+		}, adapter.Passed, ""},
+		{"a rerun runs", func(s *server) {
+			s.check("h", "check", "completed", "failure", t0)
+			s.check("h", "check", "queued", "", t0.Add(time.Hour))
+		}, adapter.Pending, "check is queued"},
+	}
+	for _, tc := range cases {
+		s, c := newServer(t)
+		tc.checks(s)
+		rep, err := c.Status(ctx, "t1", "h", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Outcome != tc.want || (tc.why != "" && rep.Why != tc.why) {
+			t.Errorf("%s: outcome %d why %q, want %d %q", tc.name, rep.Outcome, rep.Why, tc.want, tc.why)
+		}
+	}
+}
+
+func blameHook(t *testing.T, answer string, code int) hook.Hook {
+	p := filepath.Join(t.TempDir(), "blame.sh")
+	body := "#!/bin/sh\ncat > /dev/null\necho '" + answer + "'\nexit " + string(rune('0'+code)) + "\n"
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return hook.Hook{Command: []string{p}, Timeout: 10 * time.Second}
+}
+
+func TestBlameHookAdvisesButCannotPass(t *testing.T) {
+	lines := []adapter.BuildLine{{ID: "11", Changes: []state.Change{{ID: "11", Head: "aaa"}}}, {ID: "12"}}
+	failed := func(s *server) {
+		s.check("h", "test (1)", "completed", "failure", t0)
+		s.check("h", "check", "completed", "failure", t0)
+	}
+	cases := []struct {
+		answer string
+		code   int
+		want   adapter.Outcome
+		blamed string
+	}{
+		{`{"class":"deterministic","blamed":["11","99"],"evidence":"TestX in a.go"}`, 0, adapter.Failed, "[11]"},
+		{`{"class":"flaky","why":"TestY is a known flake"}`, 0, adapter.Flaky, "[]"},
+		{`{"class":"infra"}`, 0, adapter.Infra, "[]"},
+		{`{"class":"passed"}`, 0, adapter.Failed, "[]"},
+		{`{"class":"deterministic","blamed":["11"]}`, 1, adapter.Failed, "[]"},
+		{`not json`, 0, adapter.Failed, "[]"},
+	}
+	for _, tc := range cases {
+		s, c := newServer(t)
+		c.cfg.Blame = blameHook(t, tc.answer, tc.code)
+		failed(s)
+		rep, err := c.Status(ctx, "t1", "h", lines)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blamed := "[]"
+		if len(rep.Blamed) > 0 {
+			blamed = "[" + string(rep.Blamed[0]) + "]"
+		}
+		if rep.Outcome != tc.want || blamed != tc.blamed {
+			t.Errorf("%s exit %d: outcome %d blamed %v (%s), want %d %s", tc.answer, tc.code, rep.Outcome, rep.Blamed, rep.Evidence, tc.want, tc.blamed)
+		}
+	}
+}
+
+func TestReadLandingReadsTheVerdictItself(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(11, "open", "aaa", "feat-a", "main", "alice")
+	s.refs["main"] = "trunk1"
+	r, err := c.ReadLanding(ctx, "t1", "h", []state.ChangeID{"11"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Verdict != "" || r.Trunk != "trunk1" || r.Heads["11"] != "aaa" {
+		t.Fatalf("no checks yet: %+v", r)
+	}
+	s.check("h", "check", "completed", "success", t0)
+	s.check("other", "check", "completed", "success", t0)
+	if r, _ = c.ReadLanding(ctx, "t1", "h", []state.ChangeID{"11"}); r.Verdict != "h" {
+		t.Fatalf("passed: %+v", r)
+	}
+	// A check that names another head is not a verdict on this one.
+	s.checks["h2"] = append(s.checks["h2"], s.checks["other"]...)
+	if r, _ = c.ReadLanding(ctx, "t2", "h2", nil); r.Verdict != "" {
+		t.Fatalf("a check on another head counted: %+v", r)
+	}
+}
+
+func TestRerunAndCancel(t *testing.T) {
+	s, c := newServer(t)
+	s.run(1, "h", "shunter/t1", "completed", "failure")
+	s.run(2, "h", "shunter/t1", "completed", "success")
+	if err := c.Rerun(ctx, "k1", "t1", "h"); err != nil {
+		t.Fatal(err)
+	}
+	if s.count("POST", "/actions/runs/1/rerun-failed-jobs") != 1 || s.count("POST", "/actions/runs/2/") != 0 {
+		t.Fatalf("reran %v", s.log)
+	}
+	// Now run 1 is queued again: a second rerun is the same rerun.
+	if err := c.Rerun(ctx, "k1", "t1", "h"); err != nil || s.count("POST", "/actions/runs/1/rerun-failed-jobs") != 1 {
+		t.Fatalf("a rerun asked twice: %v", err)
+	}
+	if err := c.Rerun(ctx, "k2", "t1", "nothing-here"); !adapter.IsPermanent(err) {
+		t.Fatalf("nothing to rerun: %v", err)
+	}
+	if err := c.Cancel(ctx, "k3", "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if s.count("POST", "/actions/runs/1/cancel") != 1 || s.count("POST", "/actions/runs/2/cancel") != 0 {
+		t.Fatalf("cancelled %v", s.log)
+	}
+	if err := c.Cancel(ctx, "k3", "t1"); err != nil {
+		t.Fatalf("cancelling nothing: %v", err)
+	}
+}
+
+type told struct{ n int }
+
+func (t *told) Owner(context.Context, string, state.LineID, []state.ChangeID, string) error {
+	t.n++
+	return nil
+}
+func (t *told) Judge(context.Context, string, string, state.TrainID, string) error { return nil }
+
+func TestLandedClosesAndLabelsEachChange(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(11, "open", "aaa", "feat-a", "main", "alice")
+	s.pull(12, "open", "bbb", "feat-b", "feat-a", "alice")
+	next := &told{}
+	n := Landed{Client: c, Next: next}
+	if err := n.Owner(ctx, "k1", "11", []state.ChangeID{"11", "12"}, "returned: conflict"); err != nil || s.pulls[11]["state"] != "open" {
+		t.Fatalf("a return closed the change: %v", err)
+	}
+	if err := n.Owner(ctx, "k2", "11", []state.ChangeID{"11", "12"}, "landed: in train t1"); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := c.Describe(ctx, []state.ChangeID{"11", "12"})
+	if !info[0].Landed || !info[1].Landed || info[0].Open {
+		t.Fatalf("after landing: %+v", info)
+	}
+	if err := n.Owner(ctx, "k2", "11", []state.ChangeID{"11", "12"}, "landed: in train t1"); err != nil || s.count("PATCH", "/pulls/") != 2 {
+		t.Fatalf("again: %v, %d closes", err, s.count("PATCH", "/pulls/"))
+	}
+	if next.n != 3 {
+		t.Fatalf("told the owner %d times", next.n)
+	}
+}
