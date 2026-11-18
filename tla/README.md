@@ -2,7 +2,7 @@
 
 [`Shunter.tla`](Shunter.tla) is a skeleton of the state machine of [`PROTOCOL.md`](../PROTOCOL.md) §5.1. Its header says what it models and what it leaves out.
 
-**Status: the module parses and passes SANY's semantic check. It has not been model-checked yet.** Treat every property below as a claim until TLC has run.
+**Status: the module parses and passes SANY's semantic check.** TLC runs on it in CI ([`.github/workflows/tlc.yml`](../.github/workflows/tlc.yml)), on `Shunter.cfg`, with a pinned `tla2tools.jar` and a time limit. Until that job has passed, treat every property below as a claim.
 
 ## What it checks
 
@@ -37,7 +37,7 @@ You need Java 11 or later and `tla2tools.jar` from the [TLA+ releases](https://g
 
 ```
 cd tla
-java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC -workers auto -config Shunter.cfg Shunter.tla
+java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC -workers auto -deadlock -config Shunter.cfg Shunter.tla
 ```
 
 To check syntax and semantics only, which takes a second:
@@ -47,6 +47,8 @@ java -cp tla2tools.jar tla2sany.SANY Shunter.tla
 ```
 
 [`Shunter.cfg`](Shunter.cfg) is the small configuration: two lines, depth 2, one fault. Liveness checking is the costly part. For a quicker safety-only run, remove `EveryLineIsSpent` from `PROPERTIES`. For more confidence, raise the constants one at a time (three lines; two faults; depth 3), keeping `MaxTrains` at the bound above.
+
+`-deadlock` turns off TLC's deadlock check: a queue whose lines are all spent has nothing left to do, which is its proper end. The CI job passes it.
 
 **Run TLC where memory is plentiful,** such as a CI job. It keeps its state queue on disk under `states/`, and on a machine where that directory is in RAM a larger configuration can exhaust it.
 

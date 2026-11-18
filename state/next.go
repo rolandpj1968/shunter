@@ -194,8 +194,8 @@ func (m *machine) askVerify() {
 		return
 	}
 	t := m.s.Trains[m.s.Chain[0]]
-	if t.State == TrainGreen && !t.asked {
-		t.asked = true
+	if t.State == TrainGreen && !t.Asked {
+		t.Asked = true
 		m.emit(Effect{Kind: EffVerify, Train: t.ID, Head: t.Head})
 	}
 }
@@ -484,6 +484,7 @@ func (m *machine) offer(e Offer) error {
 	m.s.NextSeq++
 	m.s.Lines[e.Line] = l
 	m.setLine(l, LineOffered, CauseOffer, "")
+	m.emit(Effect{Kind: EffGate, Line: l.ID})
 	return nil
 }
 
@@ -646,6 +647,7 @@ func (m *machine) assemble(e Assemble) error {
 		m.setLine(l, LineRiding, CauseJoin, "")
 		l.Train = t.ID
 	}
+	m.emit(Effect{Kind: EffBuild, Train: t.ID, Expect: base})
 	return nil
 }
 
