@@ -27,6 +27,13 @@ What makes a hard cut-over safe is that both queues move trunk only by fast-forw
    - something the adapter can't see in your logs: note it and move on.
 3. **Cut the repository's own rules out as hooks.** Conflict resolution, the pre-flight steps and the blame heuristics stay yours, in whatever language they're in ([`implementation-language.md`](implementation-language.md)). On day one they should be the same code the old queue ran, moved and not rewritten, so that only one thing changes.
 4. **Run in shadow.** For a few days Shunter reads the same inputs, lands nothing, and logs what it would have assembled, blamed and judged. Review the differences from what the old queue did, daily. Shadow mode must be unable to push: give it no credentials that can write trunk.
+
+   ```
+   shunter shadow --config shunter.toml --lines waiting.list --stats stats.jsonl \
+       --since 6h --effects would-do.jsonl logs/*.out
+   ```
+
+   It has no git adapter and no notifier, and its forge client refuses every request but a read before it is sent. The report counts, for every train that opened a pull request, whether Shunter's own reading of the checks on the train's head agrees with the outcome the old queue recorded, and names each divergence by kind: a landing whose head shows no passing verdict, a failure charged on a run that was cancelled, a failure split or returned with nobody named. It lists the effects the machine would have asked for, and puts the lines waiting now through Shunter's gate.
 5. **Make both queues take the same lock.** One exclusive lock that either runner must hold to push. Then both can never write, even by mistake.
 6. **Write and test the export.** A command that writes Shunter's waiting lines in the old queue's own format. Rollback depends on it, so prove it works before you need it.
 7. **Choose the moment.** A quiet hour with a short queue, with no park in force and no hold you don't understand.
@@ -54,7 +61,7 @@ The rule: **drain what is in motion; carry what is at rest; drop what is only me
 ## The day
 
 1. **Announce the stop.** Producers keep working. They can't land for about two hours.
-2. **Drain.** Stop whatever feeds the old queue, then move its waiting list aside under its own lock. The old runner finishes what rides and stops on an empty list. Allow one CI run, plus one rerun.
+2. **Drain.** Stop whatever feeds the old queue, then move its waiting list aside under its own lock. The old runner finishes what rides and stops on an empty list. Allow one CI run, plus one rerun. **A line the old runner puts back during the drain goes into the list you moved aside from, not the one you hold:** a train that fails while draining returns its lines to the old list. Copy the waiting list before the drain and again after the runner stops, and carry the union, less what landed. A script queue that rewrites its list in place can lose a line put back in that window, and nothing records the loss.
 3. **Snapshot.** Archive every state file of the old queue as it stands.
 4. **Stop the old services.** Stop them; don't remove them.
 5. **Import.** Offer the carried lines in order, then place the holds and parks. Compare Shunter's status with the snapshot line by line. Every line of the old queue must be accounted for: waiting, held, parked, or deliberately returned with a reason. This is I8's first test.
