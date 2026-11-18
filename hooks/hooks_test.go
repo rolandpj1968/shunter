@@ -292,6 +292,42 @@ func TestPreflightBisectsByLine(t *testing.T) {
 	}
 }
 
+// TestPreflightBlameIsSetPerStep: "blame": "none" names nobody even when
+// the output names a file one line touched; "files" (the default) names
+// that line; an unknown mode is a configuration error, not an answer.
+func TestPreflightBlameIsSetPerStep(t *testing.T) {
+	tr := newTrain(t, map[string]string{"one.txt": "1\n"}, map[string]string{"src/b.go": "package src\n"})
+	step := func(mode string) map[string]any {
+		st := map[string]any{"name": "gate", "command": []string{"sh", "-c", "echo 'src/b.go:1:1: bad'; exit 1"}}
+		if mode != "" {
+			st["blame"] = mode
+		}
+		return map[string]any{"steps": []any{st}}
+	}
+	a, stderr := hook(t, "preflight.py", step("none"), tr.input())
+	if a["pass"] != false || len(strs(a["blamed"])) != 0 || !strings.Contains(fmt.Sprint(a["evidence"]), "blame: none") {
+		t.Fatalf("none: %v\n%s", a, stderr)
+	}
+	for _, mode := range []string{"", "files"} {
+		if a, stderr := hook(t, "preflight.py", step(mode), tr.input()); !slices.Equal(strs(a["blamed"]), []string{"2"}) {
+			t.Fatalf("%q: %v\n%s", mode, a, stderr)
+		}
+	}
+	// An unknown mode: the hook exits non-zero with no answer, which
+	// Shunter reads as no verdict.
+	py := python(t)
+	cfg := filepath.Join(t.TempDir(), "c.json")
+	b, _ := json.Marshal(step("blame-everyone"))
+	os.WriteFile(cfg, b, 0o644)
+	in, _ := json.Marshal(tr.input())
+	cmd := exec.Command(py, "-B", "preflight.py", "--config", cfg)
+	cmd.Stdin = bytes.NewReader(in)
+	out, err := cmd.Output()
+	if err == nil || len(bytes.TrimSpace(out)) != 0 {
+		t.Fatalf("an unknown blame mode answered %q (%v)", out, err)
+	}
+}
+
 func TestPreflightUsefulnessRule(t *testing.T) {
 	tr := newTrain(t, map[string]string{"one.txt": "1\n"}, map[string]string{"two.txt": "2\n"})
 	dir := t.TempDir()
