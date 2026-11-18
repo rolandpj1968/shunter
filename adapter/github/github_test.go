@@ -226,6 +226,66 @@ func TestStatusClassifies(t *testing.T) {
 	}
 }
 
+// TestStatusCountsOnlyItsOwnWorkflow: another workflow's failed checks on
+// the same commit (a nightly run on a head that has landed) are not the
+// train's CI. With a workflow configured, only its runs' check suites are
+// read; with required checks named, only the suites holding them count.
+func TestStatusCountsOnlyItsOwnWorkflow(t *testing.T) {
+	world := func(s *server) {
+		s.refs["main"] = "trunk1"
+		s.runOf("ci.yml", 10, 1, "h", "shunter/t1", "completed", "success")
+		s.runOf("nightly.yml", 20, 2, "h", "main", "completed", "failure")
+		s.checkIn(10, "h", "test (1)", "completed", "success", t0)
+		s.checkIn(10, "h", "check", "completed", "success", t0)
+		s.checkIn(20, "h", "e2e", "completed", "failure", t0.Add(time.Hour))
+		s.checkIn(20, "h", "mutation", "completed", "timed_out", t0.Add(time.Hour))
+	}
+	for _, tc := range []struct {
+		name     string
+		workflow string
+		checks   []string
+	}{
+		{"by workflow", "ci.yml", []string{"check"}},
+		{"by the required check's suite", "", []string{"check"}},
+		{"by workflow, no check named", "ci.yml", nil},
+	} {
+		s, c := newServer(t)
+		c.cfg.Workflow, c.cfg.Checks = tc.workflow, tc.checks
+		world(s)
+		rep, err := c.Status(ctx, "t1", "h", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Outcome != adapter.Passed {
+			t.Errorf("%s: outcome %d (%s %s), want passed", tc.name, rep.Outcome, rep.Evidence, rep.Why)
+		}
+		for _, ch := range rep.Checks {
+			if ch.Suite == 20 {
+				t.Errorf("%s: the report carries another workflow's check %s", tc.name, ch.Name)
+			}
+		}
+		if r, err := c.ReadLanding(ctx, "t1", "h", nil); err != nil || r.Verdict != "h" {
+			t.Errorf("%s: the lander reads %+v %v", tc.name, r, err)
+		}
+	}
+	// A failure in the train's own workflow still fails it.
+	s, c := newServer(t)
+	c.cfg.Workflow = "ci.yml"
+	world(s)
+	s.checkIn(10, "h", "test (2)", "completed", "failure", t0)
+	if rep, _ := c.Status(ctx, "t1", "h", nil); rep.Outcome != adapter.Failed || !strings.Contains(rep.Evidence, "test (2)") || strings.Contains(rep.Evidence, "e2e") {
+		t.Errorf("its own failure: outcome %d evidence %q", rep.Outcome, rep.Evidence)
+	}
+	// No run of the workflow on the head yet: nothing read, pending.
+	s, c = newServer(t)
+	c.cfg.Workflow = "ci.yml"
+	s.runOf("nightly.yml", 20, 2, "h", "main", "completed", "failure")
+	s.checkIn(20, "h", "check", "completed", "failure", t0)
+	if rep, _ := c.Status(ctx, "t1", "h", nil); rep.Outcome != adapter.Pending {
+		t.Errorf("no run of the workflow: outcome %d, want pending", rep.Outcome)
+	}
+}
+
 func blameHook(t *testing.T, answer string, code int) hook.Hook {
 	p := filepath.Join(t.TempDir(), "blame.sh")
 	body := "#!/bin/sh\ncat > /dev/null\necho '" + answer + "'\nexit " + string(rune('0'+code)) + "\n"
