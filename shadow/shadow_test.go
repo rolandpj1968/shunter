@@ -90,12 +90,12 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 			h('7'): adapter.Pending, h('d'): adapter.Pending, h('e'): adapter.Pending,
 		},
 		changes: map[state.ChangeID]adapter.ChangeInfo{
-			"21": {ID: "21", Head: "h21", Open: true, Approved: true},
-			"22": {ID: "22", Head: "h22", Base: "21", Open: true, Approved: true},
-			"23": {ID: "23", Head: "h23", Open: false, Approved: true},
-			"24": {ID: "24", Head: "h24", Open: true, Approved: false},
-			"25": {ID: "25", Head: "h25", Open: true, Approved: true},
-			"26": {ID: "26", Head: "h26", Base: "99", Open: true, Approved: true},
+			"21":  {ID: "21", Head: "h21", Open: true, Approved: true},
+			"22":  {ID: "22", Head: "h22", Base: "21", Open: true, Approved: true},
+			"23":  {ID: "23", Head: "h23", Open: false, Approved: true},
+			"24":  {ID: "24", Head: "h24", Open: true, Approved: false},
+			"25":  {ID: "25", Head: "h25", Open: true, Approved: true},
+			"26":  {ID: "26", Head: "h26", Base: "99", Open: true, Approved: true},
 			"106": {ID: "106", Head: "h106", Open: false, Approved: true},
 		},
 	}

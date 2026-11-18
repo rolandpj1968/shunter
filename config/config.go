@@ -63,19 +63,19 @@ type File struct {
 
 // Repo is the forge and the repository.
 type Repo struct {
-	Forge         string   `toml:"forge"` // "github"
-	API           string   `toml:"api"`
-	Owner         string   `toml:"owner"`
-	Name          string   `toml:"name"`
-	Trunk         string   `toml:"trunk"`
-	TokenEnv      string   `toml:"token_env"`
-	TokenCommand  []string `toml:"token_command"`
+	Forge          string            `toml:"forge"` // "github"
+	API            string            `toml:"api"`
+	Owner          string            `toml:"owner"`
+	Name           string            `toml:"name"`
+	Trunk          string            `toml:"trunk"`
+	TokenEnv       string            `toml:"token_env"`
+	TokenCommand   []string          `toml:"token_command"`
 	Authors        []string          `toml:"authors"`
 	AuthorBranches map[string]string `toml:"author_branches"`
 	ApprovedFile   string            `toml:"approved_file"`
 	ApprovedLabel  string            `toml:"approved_label"`
-	LandedLabel   string   `toml:"landed_label"`
-	MinGap        Duration `toml:"min_gap"`
+	LandedLabel    string            `toml:"landed_label"`
+	MinGap         Duration          `toml:"min_gap"`
 }
 
 // Git is the clone trains are built in.
