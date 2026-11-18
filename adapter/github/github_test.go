@@ -64,7 +64,7 @@ func TestGateProducerRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.branchRule = c2.branchRule
-	s.pull(21, "open", "a21", "refresh/weights", "main", "refresh-bot")
+	s.pull(21, "open", "a21", "refresh/deps", "main", "refresh-bot")
 	s.pull(22, "open", "a22", "fix-everything", "main", "refresh-bot")
 	s.pull(23, "open", "a23", "contrib", "main", "mallory")
 	s.pull(24, "open", "a24", "feat-x", "main", "alice")
