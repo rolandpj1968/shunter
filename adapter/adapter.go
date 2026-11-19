@@ -177,6 +177,17 @@ type Git interface {
 	Push(ctx context.Context, key string, head, expect state.Head) error
 }
 
+// Ancestry reads the commit graph, so that a need read from the forge's
+// declared base can be checked against the heads (PROTOCOL.md §5.2: where
+// the two disagree, the line is stale). Optional: without it, no line is
+// found stale.
+type Ancestry interface {
+	// Contains reports whether head contains ancestor: ancestor is head, or
+	// is in its history. ids are the changes whose heads these are, which
+	// the reader may fetch first.
+	Contains(ctx context.Context, head, ancestor state.Head, ids []state.ChangeID) (bool, error)
+}
+
 // Pruner tidies what the forge holds for trains that have ended: their
 // branches (open question 20). Optional. Prune is told the trains still
 // live and removes what belongs to any other; it is safe to repeat.

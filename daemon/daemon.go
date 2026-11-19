@@ -44,6 +44,8 @@ type Daemon struct {
 	pollErrs    map[state.TrainID]int
 	alerted     map[string]bool
 	pruning     bool      // a prune of ended trains' branches is in flight
+	restacking  bool      // a re-read of stacked lines' needs is in flight
+	restackedAt time.Time // when one was started last
 	pruneFailed bool      // the last prune failed: the next waits a minute
 	pruned      string    // the live trains at the last prune that succeeded
 	prunedAt    time.Time // when it was tried last
@@ -65,13 +67,15 @@ type retry struct {
 
 // result is what a goroutine brings back to the loop.
 type result struct {
-	key    string // the effect, or "" for a CI poll
-	poll   state.TrainID
-	prune  bool // a prune's result
-	events []state.Event
-	actor  string
-	note   string
-	err    error
+	key   string // the effect, or "" for a CI poll
+	poll  state.TrainID
+	prune bool // a prune's result
+	// restack is a re-read of stacked and stale lines' needs (§5.2).
+	restack bool
+	events  []state.Event
+	actor   string
+	note    string
+	err     error
 }
 
 // New returns a daemon over an open store. It owns the store from here.

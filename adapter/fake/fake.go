@@ -19,8 +19,12 @@ import (
 
 // Change is a change on the fake forge.
 type Change struct {
-	Head     state.Head
-	Base     state.ChangeID
+	Head state.Head
+	Base state.ChangeID
+	// Parent is the head this change was built on: its base's head when it
+	// was opened. Moving the base's head leaves it, as a push to the base
+	// leaves a change stacked on it until it is rebased.
+	Parent   state.Head
 	Open     bool
 	Approved bool
 	Landed   bool
@@ -105,7 +109,11 @@ func (w *World) Set() adapter.Set { return adapter.Set{Forge: w, CI: w, Git: w, 
 func (w *World) Open(id state.ChangeID, head state.Head, base state.ChangeID) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.changes[id] = &Change{Head: head, Base: base, Open: true, Approved: true}
+	c := &Change{Head: head, Base: base, Open: true, Approved: true}
+	if b := w.changes[base]; b != nil {
+		c.Parent = b.Head
+	}
+	w.changes[id] = c
 }
 
 // Change edits a change.
@@ -344,6 +352,29 @@ func (w *World) Reblame(ctx context.Context, t state.TrainID, rep adapter.Report
 		return rep, nil
 	}
 	return h(t, rep, lines), nil
+}
+
+// Contains implements adapter.Ancestry: a change's head contains itself,
+// its Parent, and what its Parent contains.
+func (w *World) Contains(ctx context.Context, head, ancestor state.Head, _ []state.ChangeID) (bool, error) {
+	if err := w.enter(ctx, "contains"); err != nil {
+		return false, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for seen := 0; head != "" && seen <= len(w.changes); seen++ {
+		if head == ancestor {
+			return true, nil
+		}
+		var next state.Head
+		for _, c := range w.changes {
+			if c.Head == head {
+				next = c.Parent
+			}
+		}
+		head = next
+	}
+	return false, nil
 }
 
 // Cancel implements adapter.CI.

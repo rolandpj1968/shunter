@@ -1032,3 +1032,59 @@ func TestSecondFlakeThatNamesNobodyGoesToJ1(t *testing.T) {
 		t.Fatalf("the failure's evidence is %q", tr.Reason)
 	}
 }
+
+// TestStaleWhenItsBaseIsPushed: a push to a base leaves the line stacked on
+// it holding the base's old head. The runner reads the needs again, finds
+// the line stale, tells its owner, and keeps it out of trains; a rebase
+// onto the new head clears it (§5.2).
+func TestStaleWhenItsBaseIsPushed(t *testing.T) {
+	r := newRig(t)
+	r.open("a")
+	r.stack("b", "a")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("a")
+	r.queue("b")
+	r.w.Change("a", func(c *fake.Change) { c.Head = "a-2" })
+	r.tick(time.Minute)
+	s := r.state()
+	if s.Lines["a"].Changes[0].Head != "a-2" || !strings.Contains(s.Lines["b"].Stale, "doesn't contain its base a") {
+		t.Fatalf("a at %s; b stale %q", s.Lines["a"].Changes[0].Head, s.Lines["b"].Stale)
+	}
+	if len(r.w.NoticesTo("owner", "stale, waits for a rebase")) != 1 {
+		t.Fatal("b's owner was not told")
+	}
+	r.exec(daemon.Request{Cmd: "resume"})
+	ta := r.trainOf("a")
+	r.wantLine("b", state.LineWaiting)
+	// b is rebased onto a's new head: fresh, and it rides behind a.
+	r.w.Change("b", func(c *fake.Change) { c.Head, c.Parent = "b-2", "a-2" })
+	r.tick(time.Minute)
+	if st := r.state().Lines["b"]; st.Stale != "" || st.Changes[0].Head != "b-2" {
+		t.Fatalf("b is still stale (%q) at %s", st.Stale, st.Changes[0].Head)
+	}
+	tb := r.trainOf("b")
+	if tb == ta || r.train(tb).BaseHead != r.train(ta).Head {
+		t.Fatalf("b rides %s on %s", tb, r.train(tb).BaseHead)
+	}
+}
+
+// TestStaleAtTheGateWhenItCarriesALiveChange: a change that targets trunk
+// but carries a live change's commits is taken stale at the gate.
+func TestStaleAtTheGateWhenItCarriesALiveChange(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "b")
+	r.w.Change("b", func(c *fake.Change) { c.Parent = "a-1" })
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("a")
+	r.queue("b")
+	if s := r.state().Lines["b"].Stale; !strings.Contains(s, "carries change a's commits") {
+		t.Fatalf("b's staleness: %q", s)
+	}
+	r.exec(daemon.Request{Cmd: "resume"})
+	if r.trainOf("a") == "" || r.line("b") != state.LineWaiting {
+		t.Fatalf("b is %s", r.line("b"))
+	}
+	if st := r.exec(daemon.Request{Cmd: "status"}); !strings.Contains(st, "STALE") {
+		t.Fatalf("the status doesn't show b stale:\n%s", st)
+	}
+}

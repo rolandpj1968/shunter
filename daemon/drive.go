@@ -122,6 +122,7 @@ func (d *Daemon) tick() {
 		}
 	}
 	d.restores(now)
+	d.restack(now, d.st.State())
 	rerunning := map[state.TrainID]bool{}
 	for _, k := range d.st.Pending() {
 		if k.Kind == state.EffRerun || k.Kind == state.EffOpenPR {
