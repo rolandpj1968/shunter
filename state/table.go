@@ -81,7 +81,7 @@ func buildTable() []Row {
 
 		lr(LineWaitingBase, LineWaiting, CauseBaseLanded, "push-ok (of its base)", "no park covers it", oGate, dRequeue),
 		lr(LineWaitingBase, LineParked, CauseBaseLanded, "push-ok (of its base)", "a park covers it", oGate, dRequeue),
-		lr(LineWaitingBase, LineReturned, CauseBaseLost, "its base is returned or dropped", "always", "rule: a stack lands whole (I3)", "returned with the reason"),
+		lr(LineWaitingBase, LineReturned, CauseBaseLost, "its base is returned or dropped", "always", "rule: bases first (I3)", "returned with the reason"),
 
 		lr(LineOffered, LineDropped, CauseWithdraw, "withdraw", "", oOwner, dStay),
 		lr(LineWaiting, LineDropped, CauseWithdraw, "withdraw", "", oOwner, dStay),

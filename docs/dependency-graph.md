@@ -13,7 +13,7 @@ Most stacks need only the first job. A producer stacks change B on change A beca
 
 So the line is an inaccurate dependency graph. It records "these go together" where the truth is usually "this one goes after that one".
 
-The interim rule, now in force as a producer obligation in §3: **lines are minimal.** A line is one change. A stack is offered as a sequence of lines, base first, and a line stacked on another waits for its base (`waiting-for-base`). Changes share a line only when neither can pass CI without the other, and the offer says why. A second producer obligation goes with it: **stack only when necessary.** A producer branches each change from trunk unless it builds on an unlanded change's code, and the offer says why.
+The interim rule, now producer obligation P1 in §3: **lines are minimal.** A line is one change. A stack is offered as a sequence of lines, base first, and a line stacked on another waits for its base (`waiting-for-base`). Changes share a line only when neither can pass CI without the other, and the offer says why. A second obligation, P2, goes with it: **stack only when necessary.** A producer branches each change from trunk unless it builds on an unlanded change's code, and the offer says why.
 
 Under the interim rule, ordering and atomicity are already separate: ordering is the base link between lines, atomicity is the line. What it doesn't do is let a stacked line ride before its base has *landed*. B waits a full train behind A, even when both could ride in one train with A first. This note asks how far to take the separation.
 
@@ -73,7 +73,7 @@ The smallest set of changes that makes the model the protocol. Each would be one
 | §5.1, new row | none | **waiting → returned**: a line it needs is returned or dropped (L28, extended from waiting-for-base to waiting) |
 | §5.1, new row | none | **riding → returned**: a line it needs in the same train is returned (charged, left out, or by abort), reason "its base didn't land", uncharged |
 | §5.1, L17 (join) | not held, not parked; alone if it must be | adds: every line it needs is landed, rides earlier in the chain, or is earlier in this train |
-| **I3** | stacks are whole: a stack lands entirely or not at all, and never before its base | **needs first:** no change lands before a change it needs, and a group lands entirely or not at all |
+| **I3** | lines are whole; bases first: a line lands entirely or not at all, and no change before its base | **needs first:** no change lands before a change it needs, and a group lands entirely or not at all |
 | §5.3, skipping | "safe because no line is stacked on another line" | safe because a line is taken only after its needs, and a line whose need is skipped is skipped too |
 | §5.6, blame | "a stack is charged or cleared together" | a group is charged or cleared together; a line that needs a returned line goes with it, uncharged |
 | J1, split | whole stacks; halves ride apart | whole lines, each half needs-closed; the halves ride as consecutive trains |
@@ -110,7 +110,7 @@ Unchanged: I1, I2, I4–I9, every train state and transition, abort, retry budge
 
 A derived edge is only as true as the producer's stacking. A change stacked for convenience (neighbouring files, one session, one author) carries a false edge that no queue can see past: B waits for A, and goes back when A does, for no reason.
 
-**(a) Producer guidance** (the second interim producer obligation, §3). Branch each change from trunk, unless it builds on an unlanded change's code: it calls, edits or tests something that change adds. When a change is stacked, the offer says why, in one line: "needs A's *X*". Neighbouring files, a shared session or a shared author are no reason. The reason is recorded with the line and shown when the edge delays it.
+**(a) Producer guidance** (P2, §3). Branch each change from trunk, unless it builds on an unlanded change's code: it calls, edits or tests something that change adds. When a change is stacked, the offer says why, in one line: "needs A's *X*". Neighbouring files, a shared session or a shared author are no reason. The reason is recorded with the line and shown when the edge delays it.
 
 **(b) Can the runner detect a likely-false edge?** Cheaply, in tiers:
 

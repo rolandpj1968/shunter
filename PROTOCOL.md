@@ -20,10 +20,17 @@ Pure mechanism handles the common case and fails the rest badly. A rule like "sp
 
 ## 3. Actors
 
-- **Producers** (agents) write changes, run cheap local checks, and offer a change for landing as a **line**: one change, or a stack of changes that must land together.
+- **Producers** (agents) write changes, run cheap local checks, and offer each change for landing as a **line**. A line is one change; it holds several only when they must land together (P1 below). A **stack**, changes each built on the one before, is offered as a sequence of lines, base first.
 - **The runner** is the only actor that writes trunk. It builds batches, runs CI and lands. A batch that has taken its lines is called a **train**, from then until it ends.
 - **The judge** decides at the judgement points. Today that's the coordinator, an AI session; any actor that meets §6's contract will do.
 - **The forge and CI** (for example, GitHub and its runners) are external and fallible.
+
+**Producer obligations.** Two owner rules bind producers. A line does two jobs, ordering changes and landing them all or none, and most stacks need only the first; joining changes that need only an order into one line made older, independent changes wait on failures in newer ones. [`docs/dependency-graph.md`](docs/dependency-graph.md) evaluates a possible successor model, in which the order is derived from ancestry.
+
+- **P1, lines are minimal.** A line is one change. A stack is offered as a sequence of lines, base first, and a stacked line waits for its base (§5.1, waiting-for-base) while the base is waiting or riding. Changes share one line only when neither can pass CI without the other, and the offer says why.
+- **P2, stack only when necessary.** A producer branches each change from trunk, unless it builds on an unlanded change's code: it calls, edits or tests something that change adds. A stacked change's offer says why ("needs A's *X*"). Neighbouring files, a shared session or a shared author are no reason.
+
+The reasons are recorded with the line and shown to the judge. The gate doesn't judge them: a wrong reason costs time, never a wrong landing (I1).
 
 ## 4. Invariants
 
@@ -31,7 +38,7 @@ These are safety properties. Every reachable state must satisfy them, whatever t
 
 - **I1, tested trunk.** Every commit trunk points to was the head of a CI run that passed with exactly that tree.
 - **I2, fast-forward only.** Trunk's history only grows. No landing rewrites or drops a commit already on trunk.
-- **I3, stacks are whole.** A stack lands entirely or not at all, and never in an order that lands a change before its base.
+- **I3, lines are whole; bases first.** A line lands entirely or not at all. No change lands before its base, whether the base is earlier in the same line or another line (P1).
 - **I4, frozen while riding.** A change's head doesn't move while it rides a batch. If it moves, the batch is void and doesn't land. The test is made at landing, not only when CI passes: a batch that waits behind another in a speculation chain is tested again when its turn comes.
 - **I5, speculation is exact.** In a speculation chain (§5.3), batch *k* is built on the exact head of batch *k−1*, and lands only if batches 1…*k−1* all landed at exactly the heads it was built on. Batches land in chain order.
 - **I6, blame needs evidence.** A change goes back to its owner as charged only when a blame rule or a recorded judgement names it.
@@ -62,7 +69,7 @@ A line and a train are each in exactly one state (I8). The tables below are the 
 |---|---|
 | **offered** | A producer has put it forward. The gate (§5.2) hasn't answered. |
 | **waiting** | Queued. It may join a train. Lines wait in the order they were offered, and a line that comes back takes the place it had. |
-| **waiting-for-base** | Queued behind the line it is stacked on. It lines itself when that line lands. |
+| **waiting-for-base** | Queued, stacked on another line (its base) that is waiting, riding, held or parked (P1). It joins no train until its base lands, and then it is waiting, in the place it had (L26). |
 | **held** | A recorded judgement keeps this one line out of trains. It stays visible to its owner, with the reason. A hold on a riding line voids its train, and the rest of the train goes again. Lifting the hold sends the line through the gate again, to the place it had. A held line is never spent. |
 | **parked** | Moved aside under a park (§6.4) that has a restore condition. Restored by the runner when the condition holds. |
 | **riding** | In a live train. Its stage is the train's state, below: a line "rides as train 1 or 2" by its train's place in the chain, and is "green" or "landing" when its train is. Its heads are frozen (I4). |
@@ -121,7 +128,7 @@ Live trains form the **chain**, in landing order: train 1 is built on trunk, and
 | L25 | riding | landed | push-ok | its train is landing | the runner | none: the push decided |
 | L26 | waiting-for-base | waiting | push-ok (of its base) | no park covers it | the gate (§5.2) | the gate decides again |
 | L27 | waiting-for-base | parked | push-ok (of its base) | a park covers it | the gate (§5.2) | the gate decides again |
-| L28 | waiting-for-base | returned | its base is returned or dropped | always | rule: a stack lands whole (I3) | returned with the reason |
+| L28 | waiting-for-base | returned | its base is returned or dropped | always | rule: bases first (I3) | returned with the reason |
 | L29 | offered | dropped | withdraw | none | its owner | refused; the line stays where it is |
 | L30 | waiting | dropped | withdraw | none | its owner | refused; the line stays where it is |
 | L31 | waiting-for-base | dropped | withdraw | none | its owner | refused; the line stays where it is |
@@ -189,7 +196,7 @@ Reading the tables:
 
 A line is accepted when:
 - its changes are open and from approved producers;
-- each change's base has landed, or is earlier in the same line;
+- each change's base has landed, or is earlier in the same line, or is in another live line (then it waits for its base);
 - it isn't already waiting or riding.
 
 A line whose base is queued but not landed **waits for its base** and lines itself when the base lands. Nobody polls. If its base is returned or withdrawn instead, the line returns too, with that reason (I3).
@@ -198,7 +205,7 @@ A line whose base is queued but not landed **waits for its base** and lines itse
 
 ### 5.3 Batches and speculation
 
-- **Joining:** the runner joins waiting lines into a batch, in order. It **skips** a line it can't take (it shares files with the batch, must run alone, or would exceed the caps: a number of lines, and a number of changes, a stack's every change counted) rather than stopping at it. A line that alone reaches the change cap rides alone, so that no line waits for ever. Skipping is safe because no line is stacked on another line (§5.2).
+- **Joining:** the runner joins waiting lines into a batch, in order. It **skips** a line it can't take (it shares files with the batch, must run alone, or would exceed the caps: a number of lines, and a number of changes, a stack's every change counted) rather than stopping at it. A line that alone reaches the change cap rides alone, so that no line waits for ever. Skipping is safe because no waiting line is stacked on a line that hasn't landed: a stacked line waits for its base outside the queue (§5.2).
 - **Speculation, to depth D:** while batch 1 runs, the runner builds batch 2 on batch 1's exact head, batch 3 on batch 2's, and so on up to depth D. All D batches run CI at the same time (I5).
 - **Landing is in chain order:** when batch 1 lands, the chain shifts up, batch 2 becomes batch 1, and the runner extends the chain at its tail.
 - **When batch *j* ends without landing** (it fails, is void, or is aborted): batches *j+1…D* are void, because the head they were built on will never exist. They're rebuilt on trunk, minus whatever blame removed from batch *j*.
@@ -268,7 +275,7 @@ The outcomes:
 - **Blame names some lines, but not all:** those return to their owners, and the rest go again whole. A batch of one line that blame names, with evidence, is this case too.
 - **Blame names none, or all of several:** that's not a decision blame can make → **judgement point J1** (§6.1).
 
-Blame works in whole lines: a stack is charged or cleared together (I3).
+Blame works in whole lines: a line is charged or cleared together (I3). Lines stacked on a returned line go back with it, uncharged, with that reason (L28).
 
 Returning a line **includes telling its owner**, in the same recorded act, with the evidence. A line isn't "returned" until the telling is recorded as delivered or as owed.
 
@@ -309,7 +316,7 @@ Each point defines what the judge **sees**, what it **may choose**, the **deadli
 - **Sees:** the failure, the batch's changes, the last N batches' results, trunk's recent health (nightly runs, other batches failing on the same test), and the changes' descriptions.
 - **May choose:**
   - charge changes X (stating the evidence);
-  - split the batch (whole stacks);
+  - split the batch (whole lines);
   - **park** (§6.4): the failure isn't the batch's, trunk or a shared fixture is broken;
   - rerun once (stating why it might differ).
 - **May not choose:** to return a line with no evidence (I6). A batch of one line can't be split, so for it the menu is charge with evidence, park, or rerun.
@@ -418,6 +425,10 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§3, producer obligations P1 and P2** (owner rules): lines are minimal, and a change is stacked only when it builds on an unlanded change's code, with the reason in the offer. A line is one change; a stack is a sequence of lines, base first. [`docs/dependency-graph.md`](docs/dependency-graph.md) is the possible successor model.
+- **I3** is "lines are whole; bases first", since a stack is no longer one line. L28's rule and §5.6's whole-line blame say the same; J1 splits whole lines.
+- **§5.1, waiting-for-base** names the states its base may be in, and that it rejoins the queue in its place. **§5.2** names a base in another live line, and **§5.3** restates why skipping is safe.
 
 - **§5.4, L18:** a pre-flight may leave a line out, uncharged, as assembly leaves out a conflict ([open question 25](docs/open-questions.md)).
 - **§5.5:** a known flake's or a timing failure's rerun that fails again is class 4, and blame is asked again with the class forced ([open question 3](docs/open-questions.md)).

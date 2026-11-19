@@ -47,7 +47,7 @@ Shunter is a merge queue for codebases where many producers, AI agents especiall
 
 What sets it apart is a **judge in the loop**:
 
-- **Rules guard safety.** A few invariants hold whatever happens: trunk only advances to tested states, stacks land whole, a riding change can't move, and blame needs evidence.
+- **Rules guard safety.** A few invariants hold whatever happens: trunk only advances to tested states, lines land whole and bases first, a riding change can't move, and blame needs evidence.
 - **Judgement handles the rest.** Where no mechanical rule decides (a failure nobody can be blamed for, a trunk that looks broken, retries that won't clear), the protocol defines a **judgement point**: what the judge sees, the actions it may choose, a deadline, and a safe default if it's silent.
 - **Judgements become rules.** Every judgement is recorded with its evidence. Those that recur are promoted into mechanical rules, so the rulebook grows from observed judgement, not speculation.
 
