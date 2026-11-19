@@ -65,6 +65,9 @@ type World struct {
 
 	// BuildHook, when set, decides a build. It may block on ctx.
 	BuildHook func(ctx context.Context, req adapter.BuildRequest) (adapter.BuildResult, error)
+	// ReblameHook, when set, answers a forced blame (adapter.Reblamer).
+	// When nil, a forced blame names nobody.
+	ReblameHook func(t state.TrainID, rep adapter.Report, lines []adapter.BuildLine) adapter.Report
 	// PushFaults are errors the next pushes return, in order, before trunk
 	// moves.
 	PushFaults []error
@@ -327,6 +330,20 @@ func (w *World) Rerun(ctx context.Context, key string, t state.TrainID, head sta
 	w.report[t] = adapter.Report{Outcome: adapter.Pending, Head: head}
 	w.Acts["rerun"]++
 	return nil
+}
+
+// Reblame implements adapter.Reblamer.
+func (w *World) Reblame(ctx context.Context, t state.TrainID, rep adapter.Report, lines []adapter.BuildLine) (adapter.Report, error) {
+	if err := w.enter(ctx, "reblame"); err != nil {
+		return adapter.Report{}, err
+	}
+	w.mu.Lock()
+	h := w.ReblameHook
+	w.mu.Unlock()
+	if h == nil {
+		return rep, nil
+	}
+	return h(t, rep, lines), nil
 }
 
 // Cancel implements adapter.CI.

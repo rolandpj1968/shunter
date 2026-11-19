@@ -556,3 +556,41 @@ func TestRetargetAStackedChangeWhoseBaseLanded(t *testing.T) {
 		t.Fatalf("a second retarget patched again: %v", err)
 	}
 }
+
+// TestReblameForcesTheClass: asked again after a flake's one rerun failed,
+// the hook is told the class, and only a deterministic answer names lines.
+func TestReblameForcesTheClass(t *testing.T) {
+	lines := []adapter.BuildLine{{ID: "11", Changes: []state.Change{{ID: "11", Head: "aaa"}}}, {ID: "12"}}
+	rep := adapter.Report{Outcome: adapter.Flaky, Head: "h", Evidence: "failed again after its one rerun: only timeouts"}
+	cases := []struct {
+		answer string
+		blamed string
+	}{
+		{`{"class":"deterministic","blamed":["11"],"evidence":"TestSlow in a.go"}`, "[11]"},
+		{`{"class":"flaky","why":"still a flake"}`, "[]"},
+		{`{"class":"no-verdict"}`, "[]"},
+	}
+	for _, tc := range cases {
+		_, c := newServer(t)
+		got := filepath.Join(t.TempDir(), "in.json")
+		p := filepath.Join(t.TempDir(), "blame.sh")
+		os.WriteFile(p, []byte("#!/bin/sh\ncat > "+got+"\necho '"+tc.answer+"'\n"), 0o755)
+		c.cfg.Blame = hook.Hook{Command: []string{p}, Timeout: 10 * time.Second}
+		out, err := c.Reblame(ctx, "t1", rep, lines)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blamed := "[]"
+		if len(out.Blamed) > 0 {
+			blamed = "[" + string(out.Blamed[0]) + "]"
+		}
+		if out.Outcome != adapter.Failed || blamed != tc.blamed {
+			t.Errorf("%s: outcome %d blamed %v (%s), want failed %s", tc.answer, out.Outcome, out.Blamed, out.Evidence, tc.blamed)
+		}
+		b, _ := os.ReadFile(got)
+		var in BlameInput
+		if json.Unmarshal(b, &in) != nil || in.ForceClass != "deterministic" {
+			t.Errorf("the hook read %s", b)
+		}
+	}
+}

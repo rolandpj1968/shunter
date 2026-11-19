@@ -95,6 +95,7 @@ Generated files can also be stale only in combination, with nothing conflicting.
 
 - **The failure's text** is CI's evidence, the failed check runs' names and summaries, and the output of `log_command`, which gets the hook's input on its stdin (to fetch the failed jobs' logs, say). A log that can't be read answers `no-verdict`: nothing is judged on what could not be read.
 - **Each line's files** are what its last change's head changes since it left trunk, read with git in `git_dir` (a clone holding the changes: Shunter's own works, read-only). A head that isn't there is fetched from the `fetch` remotes; one that still can't be read answers `no-verdict`.
+- **A forced class.** When a known flake's or a timing failure's one rerun fails again, Shunter asks once more with `"force_class": "deterministic"` (PROTOCOL.md §5.5). The hook then skips the flake test below and names lines by the rules, as for any deterministic failure.
 - **Flake or not** (optional): a `timing` pattern makes the failure flaky (Shunter reruns it once); else a `deterministic` pattern makes it deterministic; else a `flaky` pattern makes it flaky.
 
 ### The blame rules

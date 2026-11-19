@@ -6,7 +6,7 @@ the check runs (see the [hooks.blame] section of examples/shunter.toml):
 
   in:  {"train", "head", "lines": [{"id", "changes": [{"ID", "Head"}], "text"}],
         "checks": [{"Name", "Conclusion", "URL", "Summary", ...}],
-        "evidence"}
+        "evidence", "force_class"}
   out: {"class": "deterministic", "blamed": [...], "evidence": "..."}
        or {"class": "flaky" | "no-verdict", "why": "..."}
 
@@ -15,6 +15,13 @@ and the output of `log_command` (the failed jobs' logs, say), which reads
 the same input on its stdin. Each line's files are its own "files", when
 Shunter or a wrapper gives them, or else what its last change's head
 changes since it left trunk, read with git in `git_dir`.
+
+"force_class", when Shunter sets it, is the class the failure is: today
+only "deterministic", when a known flake's or a timing failure's one rerun
+failed again (PROTOCOL.md §5.5). The hook then doesn't ask whether the
+failure is a flake: it only names the lines, by the rules below, and
+answers that class. A log or a file list that can't be read still answers
+"no-verdict", which Shunter reads as naming nobody.
 
 A line's "text" is its changes' titles and descriptions, as Shunter reads
 them from the forge; "description" patterns match against it.
@@ -121,7 +128,10 @@ def main():
         files = line_files(cfg, base, doc, order)
     except (sh.GitError, OSError, subprocess.SubprocessError) as e:
         sh.answer({"class": "no-verdict", "why": "blame could not read what it judges by: %s" % e})
-    if rules.kind(text) == "flaky":
+    force = doc.get("force_class") or ""
+    if force not in ("", "deterministic"):
+        raise SystemExit("blame: force_class %r: only \"deterministic\" is known" % force)
+    if not force and rules.kind(text) == "flaky":
         sh.answer({"class": "flaky", "why": "the failure shows only timing or connection errors"})
     texts = {sh.line_id(l): l.get("text") or "" for l in doc.get("lines") or []}
     blamed, why = rules.blame(text, order, files, texts)
