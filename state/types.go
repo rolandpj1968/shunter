@@ -26,7 +26,7 @@ const (
 	LineNone        LineState = iota // not known to the queue
 	LineOffered                      // offered; the gate has not answered
 	LineWaiting                      // queued; may join a train
-	LineWaitingBase                  // queued behind its base line
+	LineWaitingBase                  // retired: a line queued before needs first, behind its base
 	LineHeld                         // kept out of trains by a recorded judgement
 	LineParked                       // moved aside under a park, until its restore
 	LineRiding                       // in a live train; its stage is the train's state
@@ -115,14 +115,17 @@ type Line struct {
 	State   LineState
 	Seq     int      // its place in the queue: lower goes first
 	Changes []Change // in stack order: a change's base is the one before it
-	Base    LineID   // the line this one is stacked on, if any
+	Base    LineID   // the line this one is stacked on, if any: the line it needs (I3)
 	Alone   bool     // must ride in a train of one
 	Fix     ParkID   // the park this line is the fix for; it is exempt from it
 	Train   TrainID  // the live train it rides, when riding
 	Park    ParkID   // the park it is under, when parked (kept while held)
 	Group   int      // the half of a split it belongs to; 0 for none
-	Cause   Cause    // why it is in its state
-	Reason  string   // the stated reason, shown to its owner
+	// Stale says why the line waits for a rebase (§5.2): its head and its
+	// declared base disagree. A stale line joins no train. Empty when not.
+	Stale  string
+	Cause  Cause  // why it is in its state
+	Reason string // the stated reason, shown to its owner
 	// NoVerdicts is a retry budget (§5.10): the trains this line rode that
 	// ended with no verdict. It resets on landing, a new offer or a new head.
 	NoVerdicts int
@@ -223,6 +226,26 @@ func (s State) clone() State {
 		c.Parks[k] = &p
 	}
 	return c
+}
+
+// NeedMet reports whether the line's need is met for a train that takes the
+// lines in taken (I3): it has no base, or its base has landed, rides in a
+// live train (every one of which is earlier in the chain than a train being
+// assembled), or is taken into this train ahead of it.
+func (s State) NeedMet(l *Line, taken map[LineID]bool) bool {
+	if l.Base == "" {
+		return true
+	}
+	b := s.Lines[l.Base]
+	switch {
+	case b == nil:
+		return false
+	case b.State == LineLanded, b.State == LineRiding:
+		return true
+	case taken[b.ID] && b.State == LineWaiting:
+		return b.Seq < l.Seq && s.NeedMet(b, taken)
+	}
+	return false
 }
 
 // Waiting returns the lines that may join a train, in queue order.

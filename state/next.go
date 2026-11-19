@@ -60,7 +60,10 @@ func (m *machine) train(id TrainID) (*Train, error) {
 
 // setLine is the only place a line changes state. It records the transition,
 // tells the owner where the protocol says the owner is told, and moves the
-// lines stacked on this one when it is spent.
+// lines stacked on this one when it is spent: a waiting line whose base is
+// returned or dropped goes back too, uncharged (I3). One that rides goes
+// back when its train ends (place), and one that is held or parked when it
+// is released or restored.
 func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 	from := l.State
 	l.State, l.Cause, l.Reason = to, c, reason
@@ -82,10 +85,21 @@ func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 		l.NoVerdicts, l.Group = 0, 0
 	}
 	for _, id := range m.s.lineIDs() {
-		if d := m.s.Lines[id]; d.Base == l.ID && d.State == LineWaitingBase {
-			m.place(d, CauseBaseLanded)
+		d := m.s.Lines[id]
+		if d.Base != l.ID {
+			continue
+		}
+		switch {
+		case d.State == LineWaitingBase && to == LineLanded:
+			m.place(d, CauseBaseLanded) // a line queued before needs first
+		case (d.State == LineWaiting || d.State == LineWaitingBase) && to != LineLanded:
+			m.setLine(d, LineReturned, CauseBaseLost, baseLost(l))
 		}
 	}
+}
+
+func baseLost(base *Line) string {
+	return fmt.Sprintf("its base %s did not land (%s): rebase and offer it again", base.ID, base.State)
 }
 
 func (m *machine) setTrain(t *Train, to TrainState, c Cause, reason string) {
@@ -105,21 +119,16 @@ func (m *machine) allPark() *Park {
 
 // place is the gate. Every path that puts a line back in the queue comes
 // through here, so a gate condition holds at every transition, not only at
-// the offer (§5.2).
+// the offer (§5.2). A line whose base is live waits in the queue; the
+// joining rule takes it only behind its base (I3). A line whose base was
+// returned or dropped passes into the queue and goes back at once.
 func (m *machine) place(l *Line, c Cause) {
 	if l.Base != "" {
-		switch b := m.s.Lines[l.Base]; b.State {
-		case LineLanded:
-		case LineReturned, LineDropped:
-			if l.State != LineWaitingBase {
-				m.setLine(l, LineWaitingBase, c, "waits for its base")
+		if b := m.s.Lines[l.Base]; b.State == LineReturned || b.State == LineDropped {
+			if l.State != LineWaiting {
+				m.setLine(l, LineWaiting, c, "")
 			}
-			m.setLine(l, LineReturned, CauseBaseLost, fmt.Sprintf("its base %s did not land", l.Base))
-			return
-		default:
-			if l.State != LineWaitingBase {
-				m.setLine(l, LineWaitingBase, c, "waits for its base")
-			}
+			m.setLine(l, LineReturned, CauseBaseLost, baseLost(b))
 			return
 		}
 	}
@@ -425,6 +434,30 @@ func (m *machine) apply(ev Event) error {
 			m.s.Landings = append(m.s.Landings, Landing{Head: e.Trunk, Foreign: true})
 		}
 		m.s.Paused, m.s.PauseWhy = false, ""
+	case Stale:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		if e.Reason == "" {
+			return bad(ErrReason, "a stale line")
+		}
+		switch l.State {
+		case LineOffered, LineWaiting, LineWaitingBase, LineHeld, LineParked:
+		default:
+			return bad(ErrState, "line %s is %s", l.ID, l.State)
+		}
+		l.Stale = e.Reason
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "stale, waits for a rebase: " + e.Reason})
+	case Fresh:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		if l.Stale == "" || l.State.Spent() {
+			return bad(ErrState, "line %s is not stale", l.ID)
+		}
+		l.Stale = ""
 	case ExpireBudget:
 		l, err := m.line(e.Line)
 		if err != nil {
@@ -478,6 +511,13 @@ func (m *machine) offer(e Offer) error {
 		}
 		if _, err := m.line(e.Base); err != nil {
 			return err
+		}
+		// Needs are acyclic: ancestry is. A base whose own bases lead back
+		// to this line would leave both waiting for ever.
+		for b, n := m.s.Lines[e.Base], 0; b != nil && b.Base != "" && n <= len(m.s.Lines); b, n = m.s.Lines[b.Base], n+1 {
+			if b.Base == e.Line {
+				return bad(ErrInput, "line %s would need itself, through line %s", e.Line, b.ID)
+			}
 		}
 	}
 	l := &Line{ID: e.Line, State: from, Seq: m.s.NextSeq, Changes: append([]Change(nil), e.Changes...), Base: e.Base, Alone: e.Alone, Fix: e.Fix}
@@ -619,6 +659,10 @@ func (m *machine) assemble(e Assemble) error {
 		}
 	}
 	group := -1
+	taken := map[LineID]bool{}
+	for _, id := range e.Lines {
+		taken[id] = true
+	}
 	for _, id := range e.Lines {
 		l, err := m.line(id)
 		if err != nil {
@@ -633,6 +677,10 @@ func (m *machine) assemble(e Assemble) error {
 			return bad(ErrJoin, "line %s rides alone", id)
 		case group >= 0 && l.Group != group:
 			return bad(ErrJoin, "line %s is in another half of a split", id)
+		case l.Stale != "":
+			return bad(ErrJoin, "line %s is stale: %s", id, l.Stale)
+		case l.Base != "" && !m.s.NeedMet(l, taken):
+			return bad(ErrJoin, "line %s needs line %s, which has not landed, rides in no earlier train and is not earlier in this train (I3)", id, l.Base)
 		}
 		group = l.Group
 	}
@@ -686,6 +734,20 @@ func (m *machine) leaveOut(e LeaveOut) error {
 	}
 	t.drop(e.Line)
 	m.setLine(m.s.Lines[e.Line], LineReturned, CauseLeftOut, e.Reason)
+	// A line of the train that needs a line left out is left out too (I3):
+	// the train would hold it without its base.
+	for again := true; again; {
+		again = false
+		for _, id := range t.Lines {
+			d := m.s.Lines[id]
+			if b := m.s.Lines[d.Base]; d.Base != "" && b != nil && (b.State == LineReturned || b.State == LineDropped) {
+				t.drop(id)
+				m.setLine(d, LineReturned, CauseLeftOut, fmt.Sprintf("its base %s was left out of train %s", b.ID, t.ID))
+				again = true
+				break
+			}
+		}
+	}
 	if len(t.Lines) == 0 {
 		m.end(t, TrainEmpty, CauseEmpty, "every line was left out", nil)
 	}

@@ -198,6 +198,17 @@ type Pause struct{ Reason string }
 // judge found it, and the machine adopts it as a foreign landing.
 type Resume struct{ Trunk Head }
 
+// Stale marks a waiting line as stale (§5.2): its forge's declared base and
+// its ancestry disagree, so it waits for a rebase and joins no train. Its
+// owner is told the reason.
+type Stale struct {
+	Line   LineID
+	Reason string
+}
+
+// Fresh clears a line's staleness: its head and its base agree again.
+type Fresh struct{ Line LineID }
+
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).
 type ExpireBudget struct{ Line LineID }
 
@@ -228,6 +239,8 @@ func (PushRefused) event() string     { return "push-refused" }
 func (Pause) event() string           { return "pause" }
 func (Resume) event() string          { return "resume" }
 func (ExpireBudget) event() string    { return "expire-budget" }
+func (Stale) event() string           { return "stale" }
+func (Fresh) event() string           { return "fresh" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }

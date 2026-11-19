@@ -13,8 +13,10 @@ import (
 // assemble extends the chain with one train when it can (§5.3): not paused,
 // shorter than D, and the train at its tail has a head to build on. The
 // joining rule takes waiting lines in order and skips a line it cannot take:
-// one that must ride alone, one of another half of a split, or one past a
-// cap. Conflicts are the builder's to find, as leave-outs.
+// one that must ride alone, one of another half of a split, one past a cap,
+// a stale one, and one whose base has not landed, rides in no earlier train
+// and was not taken into this one (I3): so a line whose base was skipped is
+// skipped too. Conflicts are the builder's to find, as leave-outs.
 func (d *Daemon) assemble() {
 	for d.fatal == nil {
 		s := d.st.State()
@@ -54,10 +56,14 @@ func Join(s state.State, c Caps) []state.LineID { return join(s, c) }
 // join is the joining rule.
 func join(s state.State, c Caps) []state.LineID {
 	var out []state.LineID
+	taken := map[state.LineID]bool{}
 	group, changes := -1, 0
 	for _, id := range s.Waiting() {
 		l := s.Lines[id]
 		n := len(l.Changes)
+		if l.Stale != "" || !s.NeedMet(l, taken) {
+			continue
+		}
 		switch {
 		case len(out) == 0 && l.Alone:
 			return []state.LineID{id}
@@ -73,6 +79,7 @@ func join(s state.State, c Caps) []state.LineID {
 		}
 		group = l.Group
 		out = append(out, id)
+		taken[id] = true
 		changes += n
 		if c.Lines > 0 && len(out) >= c.Lines {
 			break

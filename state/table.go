@@ -47,30 +47,29 @@ func buildTable() []Row {
 		dRequeue = "the gate decides again"
 		oRunner  = "the runner"
 		gLive    = "the train is live and not landing"
+		gLegacy  = " (retired: a line queued before needs first)"
 	)
 	rows := []Row{
 		// A line.
 		lr(LineNone, LineOffered, CauseOffer, "offer", gOffer, "a producer", "refused"),
 		lr(LineReturned, LineOffered, CauseOffer, "offer", gOffer+"; budgets reset (§5.10)", "a producer", "refused"),
 		lr(LineDropped, LineOffered, CauseOffer, "offer", gOffer+"; budgets reset (§5.10)", "a producer", "refused"),
-		lr(LineOffered, LineWaiting, CauseGate, "gate-accept", "its base has landed, or it has none; no park covers it", oGate, "stays offered"),
-		lr(LineOffered, LineWaitingBase, CauseGate, "gate-accept", "its base is live", oGate, "stays offered"),
+		lr(LineOffered, LineWaiting, CauseGate, "gate-accept", "no park covers it", oGate, "stays offered"),
 		lr(LineOffered, LineParked, CauseGate, "gate-accept", "the queue is parked and this is not the park's fix", oGate, "stays offered"),
 		lr(LineOffered, LineReturned, CauseRefused, "gate-refuse", "a reason is given", oGate, "stays offered"),
 
 		lr(LineWaiting, LineHeld, CauseHold, "hold", gHold, oJudge, dStay),
-		lr(LineWaitingBase, LineHeld, CauseHold, "hold", gHold, oJudge, dStay),
+		lr(LineWaitingBase, LineHeld, CauseHold, "hold", gHold+gLegacy, oJudge, dStay),
 		lr(LineParked, LineHeld, CauseHold, "hold", gHold, oJudge, dStay),
 		lr(LineRiding, LineHeld, CauseHold, "hold", gHold+"; its train is not landing; the train goes void", oJudge, "refused while landing"),
 		lr(LineHeld, LineWaiting, CauseRelease, "release", gRelease, oJudge, "stays held, visible to its owner"),
-		lr(LineHeld, LineWaitingBase, CauseRelease, "release", gRelease+"; its base has not landed", oJudge, "stays held"),
 		lr(LineHeld, LineParked, CauseRelease, "release", gRelease+"; a park covers it", oJudge, "stays held"),
 
 		lr(LineWaiting, LineParked, CausePark, "park", "the park has a restore condition", "J1, J2 or the judge", "not parked"),
 		lr(LineParked, LineWaiting, CauseRestore, "restore", "the park exists; no other park covers the line", "the runner, when the condition holds", "restored at the park's deadline, with an alert"),
 
-		lr(LineWaiting, LineRiding, CauseJoin, "assemble", "not held, not parked; alone if it must be; one split group per train", "the runner's joining rule (§5.3)", "stays waiting"),
-		lr(LineRiding, LineReturned, CauseLeftOut, "leave-out", "the train is assembling; a reason is given", "the assembly rules (conflict, caps), or a pre-flight hook's leave-out (§5.4)", "refused without a reason"),
+		lr(LineWaiting, LineRiding, CauseJoin, "assemble", "not held, not parked, not stale; alone if it must be; one split group per train; its base has landed, rides in an earlier train, or is earlier in this train (I3)", "the runner's joining rule (§5.3)", "stays waiting"),
+		lr(LineRiding, LineReturned, CauseLeftOut, "leave-out", "the train is assembling; a reason is given", "the assembly rules (conflict, caps, its base left out), or a pre-flight hook's leave-out (§5.4)", "refused without a reason"),
 		lr(LineRiding, LineReturned, CauseCharged, "preflight-failed, ci-failed, judge (charge)", "evidence names the line (I6)", "a blame rule (§5.6), or J1", "never charged without evidence"),
 		lr(LineRiding, LineReturned, CauseAbort, "abort (return)", gLive, "the judge (§5.9)", "requeue"),
 		lr(LineRiding, LineWaiting, CauseRequeue, "any end of its train that is not a landing", "the gate passes it", oGate, dRequeue),
@@ -79,13 +78,14 @@ func buildTable() []Row {
 		lr(LineRiding, LineParked, CauseAbort, "abort (park)", gLive+"; a restore condition is given", "the judge (§5.9)", "requeue"),
 		lr(LineRiding, LineLanded, CauseLanded, "push-ok", "its train is landing", oRunner, "none: the push decided"),
 
-		lr(LineWaitingBase, LineWaiting, CauseBaseLanded, "push-ok (of its base)", "no park covers it", oGate, dRequeue),
-		lr(LineWaitingBase, LineParked, CauseBaseLanded, "push-ok (of its base)", "a park covers it", oGate, dRequeue),
-		lr(LineWaitingBase, LineReturned, CauseBaseLost, "its base is returned or dropped", "always", "rule: bases first (I3)", "returned with the reason"),
+		lr(LineWaiting, LineReturned, CauseBaseLost, "its base is returned or dropped", "always", "rule: needs first (I3)", "returned with the reason, uncharged"),
+		lr(LineWaitingBase, LineWaiting, CauseBaseLanded, "push-ok (of its base)", "no park covers it"+gLegacy, oGate, dRequeue),
+		lr(LineWaitingBase, LineParked, CauseBaseLanded, "push-ok (of its base)", "a park covers it"+gLegacy, oGate, dRequeue),
+		lr(LineWaitingBase, LineReturned, CauseBaseLost, "its base is returned or dropped", "always"+gLegacy, "rule: needs first (I3)", "returned with the reason, uncharged"),
 
 		lr(LineOffered, LineDropped, CauseWithdraw, "withdraw", "", oOwner, dStay),
 		lr(LineWaiting, LineDropped, CauseWithdraw, "withdraw", "", oOwner, dStay),
-		lr(LineWaitingBase, LineDropped, CauseWithdraw, "withdraw", "", oOwner, dStay),
+		lr(LineWaitingBase, LineDropped, CauseWithdraw, "withdraw", "none"+gLegacy, oOwner, dStay),
 		lr(LineParked, LineDropped, CauseWithdraw, "withdraw", "", oOwner, dStay),
 		lr(LineRiding, LineDropped, CauseWithdraw, "withdraw", gNotLand+"; the train goes void", oOwner, "refused while landing"),
 
