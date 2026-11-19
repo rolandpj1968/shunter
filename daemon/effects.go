@@ -75,10 +75,25 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 	a := d.ad
 	switch k.Kind {
 	case state.EffGate:
-		l := *s.Lines[k.Line]
+		l := copyLine(s.Lines[k.Line])
 		live := liveChanges(s, l.ID)
+		n := needsOf(s, &l)
+		anc, _ := a.Git.(adapter.Ancestry)
 		return func(ctx context.Context) result {
-			events, err := gate(ctx, a.Forge, l, live)
+			events, info, err := gateInfo(ctx, a.Forge, l, live)
+			if err == nil && anc != nil && accepted(events) {
+				// The gate reads the need twice (§5.2): a line whose
+				// declared base and ancestry disagree is taken, stale.
+				moved := map[state.ChangeID]state.Head{}
+				for _, ev := range events {
+					if hm, ok := ev.(state.HeadMoved); ok {
+						moved[hm.Change] = hm.Head
+					}
+				}
+				if why, serr := staleness(ctx, anc, n, withHeads(l.Changes, moved), info[0].Base); serr == nil && why != "" {
+					events = append(events, state.Stale{Line: l.ID, Reason: why})
+				}
+			}
 			return result{events: events, actor: "gate", err: err}
 		}, d.cfg.Call
 	case state.EffBuild:
@@ -182,6 +197,21 @@ func LiveChanges(s state.State, skip state.LineID) map[state.ChangeID]state.Line
 // A change whose head moved since the offer is taken at its new head, as a
 // head-moved event before the gate's answer.
 func gate(ctx context.Context, f adapter.Forge, l state.Line, live map[state.ChangeID]state.LineID) ([]state.Event, error) {
+	events, _, err := gateInfo(ctx, f, l, live)
+	return events, err
+}
+
+// accepted reports whether the gate's events end in its yes.
+func accepted(events []state.Event) bool {
+	if len(events) == 0 {
+		return false
+	}
+	_, ok := events[len(events)-1].(state.GateAccept)
+	return ok
+}
+
+// gateInfo is gate, with the changes as the forge described them.
+func gateInfo(ctx context.Context, f adapter.Forge, l state.Line, live map[state.ChangeID]state.LineID) ([]state.Event, []adapter.ChangeInfo, error) {
 	ids := make([]state.ChangeID, len(l.Changes))
 	for i, c := range l.Changes {
 		ids[i] = c.ID
@@ -189,15 +219,15 @@ func gate(ctx context.Context, f adapter.Forge, l state.Line, live map[state.Cha
 	info, err := f.Describe(ctx, ids)
 	if err != nil {
 		if adapter.IsPermanent(err) {
-			return evs(state.GateRefuse{Line: l.ID, Reason: err.Error()}), nil
+			return evs(state.GateRefuse{Line: l.ID, Reason: err.Error()}), nil, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
-	refuse := func(format string, a ...any) ([]state.Event, error) {
-		return evs(state.GateRefuse{Line: l.ID, Reason: fmt.Sprintf(format, a...)}), nil
+	refuse := func(format string, a ...any) ([]state.Event, []adapter.ChangeInfo, error) {
+		return evs(state.GateRefuse{Line: l.ID, Reason: fmt.Sprintf(format, a...)}), nil, nil
 	}
 	if len(info) != len(l.Changes) {
-		return nil, fmt.Errorf("the forge described %d of %d changes", len(info), len(l.Changes))
+		return nil, nil, fmt.Errorf("the forge described %d of %d changes", len(info), len(l.Changes))
 	}
 	var out []state.Event
 	for i, c := range info {
@@ -219,7 +249,7 @@ func gate(ctx context.Context, f adapter.Forge, l state.Line, live map[state.Cha
 				if adapter.IsPermanent(err) {
 					return refuse("change %s is stacked on %s: %v", c.ID, c.Base, err)
 				}
-				return nil, err
+				return nil, nil, err
 			}
 			if !base[0].Landed {
 				return refuse("change %s is stacked on %s, which has not landed and is in no live line", c.ID, c.Base)
@@ -233,7 +263,7 @@ func gate(ctx context.Context, f adapter.Forge, l state.Line, live map[state.Cha
 			return refuse("change %s is stacked on %s, which is not its base in this line", c.ID, c.Base)
 		}
 	}
-	return append(out, state.GateAccept{Line: l.ID}), nil
+	return append(out, state.GateAccept{Line: l.ID}), info, nil
 }
 
 // built turns a builder's answer into events: each left-out line, then the
@@ -265,6 +295,10 @@ func built(req adapter.BuildRequest, r adapter.BuildResult) []state.Event {
 func (d *Daemon) complete(r result) {
 	if r.prune {
 		d.pruneDone(r)
+		return
+	}
+	if r.restack {
+		d.restackDone(r)
 		return
 	}
 	if r.key == "" {
