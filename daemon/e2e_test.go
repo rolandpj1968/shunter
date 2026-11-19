@@ -625,18 +625,168 @@ func TestGateRefusesAndStacksWait(t *testing.T) {
 	r.w.Change("x", func(c *fake.Change) { c.Approved = false })
 	r.queue("x")
 	r.wantLine("x", state.LineReturned)
-	release := r.w.Block("open-pr")
 	r.queue("a")
 	r.queue("b")
-	r.wantLine("b", state.LineWaitingBase)
-	release()
-	r.settle()
+	// b waits in the queue, and rides in the train behind a's (I3).
+	ta, tb := r.trainOf("a"), r.trainOf("b")
+	if ta == tb || r.train(tb).BaseHead != r.train(ta).Head {
+		t.Fatalf("b rides %s on %s; a rides %s at %s", tb, r.train(tb).BaseHead, ta, r.train(ta).Head)
+	}
+	r.w.Pass(tb)
+	r.w.Pass(ta)
+	r.tick(time.Second)
+	r.wantLine("a", state.LineLanded)
+	r.wantLine("b", state.LineLanded)
+}
+
+// stack opens b stacked on a.
+func (r *rig) stack(id, base string) {
+	r.w.Open(state.ChangeID(id), state.Head(id+"-1"), state.ChangeID(base))
+}
+
+// TestStackedLineRidesBehindItsBaseInOneTrain: needs first (I3). A line
+// stacked on a waiting line joins the same train, behind it, and both land.
+func TestStackedLineRidesBehindItsBaseInOneTrain(t *testing.T) {
+	r := newRig(t)
+	r.open("a")
+	r.stack("b", "a")
+	r.together("a", "b")
+	t1 := r.trainOf("a")
+	if r.trainOf("b") != t1 {
+		t.Fatalf("a rides %s, b rides %s", t1, r.trainOf("b"))
+	}
+	if l := r.train(t1).Lines; len(l) != 2 || l[0] != "a" || l[1] != "b" {
+		t.Fatalf("train order %v: the base must go first", l)
+	}
+	r.w.Pass(t1)
+	r.tick(time.Second)
+	r.wantLine("a", state.LineLanded)
+	r.wantLine("b", state.LineLanded)
+}
+
+// TestSkippedBaseSkipsItsStack: a line whose base is skipped (held, or must
+// ride alone) is skipped too, and isn't taken into a train its build would
+// have to leave it out of.
+func TestSkippedBaseSkipsItsStack(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "c")
+	r.stack("b", "a")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("a")
+	r.exec(daemon.Request{Cmd: "hold", Args: []string{"a"}, Reason: "waits on a design call"})
+	r.queue("b")
+	r.queue("c")
+	r.exec(daemon.Request{Cmd: "resume"})
+	tc := r.trainOf("c")
+	if n := len(r.train(tc).Lines); n != 1 {
+		t.Fatalf("the train took %v; want c alone", r.train(tc).Lines)
+	}
+	r.wantLine("b", state.LineWaiting)
+	if st := r.exec(daemon.Request{Cmd: "status"}); !strings.Contains(st, "waits: a is held") {
+		t.Fatalf("the status doesn't say what b waits on:\n%s", st)
+	}
+	// Released, a rides, and b behind it.
+	r.exec(daemon.Request{Cmd: "release", Args: []string{"a"}})
+	if r.trainOf("b") == tc {
+		t.Fatal("b rode before its base")
+	}
+	if r.line("a") != state.LineRiding {
+		t.Fatalf("a is %s", r.line("a"))
+	}
+}
+
+// TestAloneBaseRidesFirstAndItsStackFollows: a base that must ride alone
+// rides first; the line stacked on it rides in the next train, with others.
+func TestAloneBaseRidesFirstAndItsStackFollows(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "c")
+	r.stack("b", "a")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.exec(daemon.Request{Cmd: "queue", Args: []string{"a"}, Alone: true})
+	r.queue("b")
+	r.queue("c")
+	r.exec(daemon.Request{Cmd: "resume"})
+	ta, tb := r.trainOf("a"), r.trainOf("b")
+	if ta == tb || len(r.train(ta).Lines) != 1 || r.trainOf("c") != tb {
+		t.Fatalf("a in %s %v, b in %s %v", ta, r.train(ta).Lines, tb, r.train(tb).Lines)
+	}
+}
+
+// TestReturnedBaseTakesItsStackUncharged: blame names the base; the line
+// stacked on it goes back with it, uncharged, and the rest ride again.
+func TestReturnedBaseTakesItsStackUncharged(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "c")
+	r.stack("b", "a")
+	r.together("a", "b", "c")
+	t1 := r.trainOf("a")
+	r.w.Fail(t1, "TestA failed in a/a_test.go", "a")
+	r.tick(time.Second)
+	r.wantLine("a", state.LineReturned)
+	r.wantLine("b", state.LineReturned)
+	s := r.state()
+	if s.Lines["a"].Cause != state.CauseCharged || s.Lines["b"].Cause != state.CauseBaseLost {
+		t.Fatalf("a went back %s, b %s", s.Lines["a"].Cause, s.Lines["b"].Cause)
+	}
+	if len(r.w.NoticesTo("owner", "its base a did not land")) != 1 {
+		t.Fatal("b's owner was not told why")
+	}
+	r.w.Pass(r.trainOf("c"))
+	r.tick(time.Second)
+	r.wantLine("c", state.LineLanded)
+}
+
+// TestBlamedStackLeavesItsBase: blame names only the stacked line; its base
+// lands with the rest.
+func TestBlamedStackLeavesItsBase(t *testing.T) {
+	r := newRig(t)
+	r.open("a")
+	r.stack("b", "a")
+	r.together("a", "b")
+	r.w.Fail(r.trainOf("a"), "TestB failed in b/b_test.go", "b")
+	r.tick(time.Second)
+	r.wantLine("b", state.LineReturned)
 	r.w.Pass(r.trainOf("a"))
 	r.tick(time.Second)
 	r.wantLine("a", state.LineLanded)
-	r.w.Pass(r.trainOf("b"))
+}
+
+// TestWithdrawnBaseReturnsItsWaitingStack: the base is withdrawn while the
+// line stacked on it waits; that line goes back, uncharged.
+func TestWithdrawnBaseReturnsItsWaitingStack(t *testing.T) {
+	r := newRig(t)
+	r.open("a")
+	r.stack("b", "a")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("a")
+	r.queue("b")
+	r.exec(daemon.Request{Cmd: "withdraw", Args: []string{"a"}})
+	r.wantLine("a", state.LineDropped)
+	r.wantLine("b", state.LineReturned)
+}
+
+// TestCoRequiresGroupLandsAndReturnsWhole: a line of two changes is a
+// declared group: it rides, is charged and lands as one.
+func TestCoRequiresGroupLandsAndReturnsWhole(t *testing.T) {
+	r := newRig(t)
+	r.open("g1", "c")
+	r.stack("g2", "g1")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("g1", "g2")
+	r.queue("c")
+	r.exec(daemon.Request{Cmd: "resume"})
+	t1 := r.trainOf("g1")
+	r.w.Fail(t1, "TestG failed in g/g_test.go", "g1")
 	r.tick(time.Second)
-	r.wantLine("b", state.LineLanded)
+	if l := r.state().Lines["g1"]; l.State != state.LineReturned || len(l.Changes) != 2 {
+		t.Fatalf("the group is %s with %d changes", l.State, len(l.Changes))
+	}
+	r.exec(daemon.Request{Cmd: "queue", Args: []string{"g1", "g2"}})
+	tg := r.trainOf("g1")
+	r.w.Pass(r.trainOf("c"))
+	r.w.Pass(tg)
+	r.tick(time.Second)
+	r.wantLine("g1", state.LineLanded)
 }
 
 func TestAloneRidesAlone(t *testing.T) {
@@ -808,7 +958,7 @@ func TestExportImportLineFiles(t *testing.T) {
 	r2.exec(daemon.Request{Cmd: "pause", Reason: "import"})
 	r2.exec(daemon.Request{Cmd: "import", Plain: &back})
 	r2.wantLine("a", state.LineHeld)
-	r2.wantLine("b", state.LineWaitingBase)
+	r2.wantLine("b", state.LineWaiting)
 	r2.wantLine("c", state.LineWaiting)
 	s := r2.state()
 	if s.Lines["b"].Base != "a" || !s.Lines["c"].Alone || s.Lines["a"].Reason != "waits on a design call" {

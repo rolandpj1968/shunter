@@ -56,10 +56,19 @@ func Check(s State) []error {
 				fail("L1", "line %s is parked with no restore condition", id)
 			}
 		}
-		// I3: nothing waits to ride, or rides, ahead of its base.
-		if l.Base != "" && (l.State == LineWaiting || l.State == LineRiding || l.State == LineLanded) {
-			if b := s.Lines[l.Base]; b == nil || b.State != LineLanded {
-				fail("I3", "line %s is %s and its base %s has not landed", id, l.State, l.Base)
+		// I3, needs first: a line rides only behind its base, lands only
+		// after it, and doesn't wait on a base that won't land.
+		if l.Base != "" {
+			b := s.Lines[l.Base]
+			switch {
+			case b == nil:
+				fail("I3", "line %s needs line %s, which is unknown", id, l.Base)
+			case l.State == LineLanded && b.State != LineLanded:
+				fail("I3", "line %s landed and its base %s is %s", id, l.Base, b.State)
+			case l.State == LineRiding && !behind(s, l, b):
+				fail("I3", "line %s rides in %s, not behind its base %s (%s)", id, l.Train, l.Base, b.State)
+			case l.State == LineWaiting && (b.State == LineReturned || b.State == LineDropped):
+				fail("I3", "line %s waits on its base %s, which is %s", id, l.Base, b.State)
 			}
 		}
 	}
@@ -186,4 +195,39 @@ func CheckStep(before, after State, fx []Effect) []error {
 		}
 	}
 	return errs
+}
+
+// behind reports whether riding line l rides behind its base b: b has
+// landed, or rides earlier in l's train, or in a train earlier in the chain.
+func behind(s State, l, b *Line) bool {
+	if b.State == LineLanded {
+		return true
+	}
+	if b.State != LineRiding {
+		return false
+	}
+	if b.Train == l.Train {
+		t := s.Trains[l.Train]
+		if t == nil {
+			return false
+		}
+		for _, id := range t.Lines {
+			if id == b.ID {
+				return true
+			}
+			if id == l.ID {
+				return false
+			}
+		}
+		return false
+	}
+	for _, id := range s.Chain {
+		if id == b.Train {
+			return true
+		}
+		if id == l.Train {
+			return false
+		}
+	}
+	return false
 }

@@ -71,6 +71,19 @@ type lazy func(State) Event
 
 func (lazy) event() string { return "lazy" }
 
+// seed changes the state by hand, for a state no event reaches any more: a
+// line queued before needs first, in the retired waiting-for-base state.
+type seed func(*State)
+
+func (seed) event() string { return "seed" }
+
+func legacy(id, base string) Event {
+	return seed(func(s *State) {
+		s.Lines[LineID(id)] = &Line{ID: LineID(id), State: LineWaitingBase, Seq: s.NextSeq, Base: LineID(base), Changes: []Change{{ID: ChangeID(id), Head: Head(id + "1")}}}
+		s.NextSeq++
+	})
+}
+
 func verifyOf(train string) Event { return lazy(func(s State) Event { return verify(s, train) }) }
 
 func landing(train string, lines ...string) []Event {
@@ -106,6 +119,12 @@ func (h *harness) step(ev Event) ([]Effect, error) {
 	h.t.Helper()
 	if l, ok := ev.(lazy); ok {
 		ev = l(h.s)
+	}
+	if sd, ok := ev.(seed); ok {
+		next := h.s.clone()
+		sd(&next)
+		h.s = next
+		return nil, nil
 	}
 	keep := h.s.clone()
 	next, fx, err := Next(h.s, ev)
@@ -176,19 +195,19 @@ var transitions = []tcase{
 	{name: "offer again after a refusal", setup: cat(offer("a"), GateRefuse{Line: "a", Reason: "not approved"}), ev: offer("a"), lines: lineWant{"a": LineOffered}},
 	{name: "offer again after a withdrawal", setup: cat(offer("a"), Withdraw{Line: "a"}), ev: offer("a"), lines: lineWant{"a": LineOffered}},
 	{name: "gate accepts", setup: cat(offer("a")), ev: GateAccept{Line: "a"}, lines: lineWant{"a": LineWaiting}},
-	{name: "gate accepts, base is live", setup: cat(ready("a"), stacked("b", "a")), ev: GateAccept{Line: "b"}, lines: lineWant{"b": LineWaitingBase}},
+	{name: "gate accepts, base is live: it waits in the queue", setup: cat(ready("a"), stacked("b", "a")), ev: GateAccept{Line: "b"}, lines: lineWant{"b": LineWaiting}},
 	{name: "gate accepts, queue is parked", setup: cat(allPark, offer("a")), ev: GateAccept{Line: "a"}, lines: lineWant{"a": LineParked}, fx: []EffectKind{EffNotify}},
 	{name: "gate accepts the park's fix", setup: cat(allPark, fix("f")), ev: GateAccept{Line: "f"}, lines: lineWant{"f": LineWaiting}},
 	{name: "gate refuses", setup: cat(offer("a")), ev: GateRefuse{Line: "a", Reason: "not approved"}, lines: lineWant{"a": LineReturned}, fx: []EffectKind{EffNotify}},
 
 	// Hold and release.
 	{name: "hold a waiting line", setup: ready("a"), ev: Hold{Line: "a", Reason: "review says no"}, lines: lineWant{"a": LineHeld}, fx: []EffectKind{EffNotify}},
-	{name: "hold a line waiting for its base", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: Hold{Line: "b", Reason: "r"}, lines: lineWant{"b": LineHeld}},
+	{name: "hold a line waiting for its base (retired)", setup: cat(ready("a"), legacy("b", "a")), ev: Hold{Line: "b", Reason: "r"}, lines: lineWant{"b": LineHeld}},
 	{name: "hold a parked line", setup: cat(ready("a"), allPark), ev: Hold{Line: "a", Reason: "r"}, lines: lineWant{"a": LineHeld}},
 	{name: "hold a riding line voids its train", setup: cat(ready("a", "b"), testing_("t1", "a", "b")), ev: Hold{Line: "a", Reason: "r"},
 		lines: lineWant{"a": LineHeld, "b": LineWaiting}, trains: trainWant{"t1": TrainVoid}, fx: []EffectKind{EffCancelRun, EffClosePR}},
 	{name: "release", setup: cat(ready("a"), Hold{Line: "a", Reason: "r"}), ev: Release{Line: "a"}, lines: lineWant{"a": LineWaiting}},
-	{name: "release behind a live base", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, Hold{Line: "b", Reason: "r"}), ev: Release{Line: "b"}, lines: lineWant{"b": LineWaitingBase}},
+	{name: "release behind a live base", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, Hold{Line: "b", Reason: "r"}), ev: Release{Line: "b"}, lines: lineWant{"b": LineWaiting}},
 	{name: "release into a park", setup: cat(ready("a"), allPark, Hold{Line: "a", Reason: "r"}), ev: Release{Line: "a"}, lines: lineWant{"a": LineParked}},
 	{name: "release after the park was restored", setup: cat(ready("a"), allPark, Hold{Line: "a", Reason: "r"}, Restore{Park: "p"}), ev: Release{Line: "a"}, lines: lineWant{"a": LineWaiting}},
 	{name: "release after the base was lost", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, Hold{Line: "b", Reason: "r"}, Withdraw{Line: "a"}), ev: Release{Line: "b"}, lines: lineWant{"b": LineReturned}},
@@ -311,11 +330,42 @@ var transitions = []tcase{
 			}
 		}},
 
-	// Stacks.
-	{name: "base lands: the line behind it queues", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, landing("t1", "a")), ev: PushOK{Train: "t1"}, lines: lineWant{"a": LineLanded, "b": LineWaiting}},
-	{name: "base lands under a park", setup: cat(allPark, fix("f"), GateAccept{Line: "f"}, stacked("b", "f"), GateAccept{Line: "b"}, landing("t1", "f")), ev: PushOK{Train: "t1"}, lines: lineWant{"f": LineLanded, "b": LineParked}},
-	{name: "base lost: the line behind it returns", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: Withdraw{Line: "a"}, lines: lineWant{"a": LineDropped, "b": LineReturned}},
-	{name: "base charged: the line behind it returns", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, testing_("t1", "a")), ev: CIFailed{Train: "t1", Blamed: ids("a"), Evidence: "e"}, lines: lineWant{"a": LineReturned, "b": LineReturned}},
+	// Needs first (I3).
+	{name: "a line rides in its base's train, behind it", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: assemble("t1", "a", "b"), lines: lineWant{"a": LineRiding, "b": LineRiding}},
+	{name: "a line rides in the train behind its base's", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, built("t1", "a")), ev: assemble("t2", "b"), lines: lineWant{"b": LineRiding}, trains: trainWant{"t2": TrainAssembling}},
+	{name: "base lands: the line behind it rides on", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, landing("t1", "a")), ev: PushOK{Train: "t1"}, lines: lineWant{"a": LineLanded, "b": LineWaiting}},
+	{name: "base withdrawn: the line behind it returns, uncharged", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: Withdraw{Line: "a"}, lines: lineWant{"a": LineDropped, "b": LineReturned}, fx: []EffectKind{EffNotify},
+		check: func(t *testing.T, s State) {
+			if s.Lines["b"].Cause != CauseBaseLost {
+				t.Errorf("b went back as %s", s.Lines["b"].Cause)
+			}
+		}},
+	{name: "base charged: the line waiting behind it returns", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, testing_("t1", "a")), ev: CIFailed{Train: "t1", Blamed: ids("a"), Evidence: "e"}, lines: lineWant{"a": LineReturned, "b": LineReturned}},
+	{name: "base charged in the same train: the line behind it goes with it, uncharged", setup: cat(ready("a", "c"), stacked("b", "a"), GateAccept{Line: "b"}, testing_("t1", "a", "b", "c")),
+		ev: CIFailed{Train: "t1", Blamed: ids("a"), Evidence: "e"}, lines: lineWant{"a": LineReturned, "b": LineReturned, "c": LineWaiting}, trains: trainWant{"t1": TrainFailed},
+		check: func(t *testing.T, s State) {
+			if s.Lines["b"].Cause != CauseBaseLost || s.Lines["a"].Cause != CauseCharged {
+				t.Errorf("a went back as %s, b as %s", s.Lines["a"].Cause, s.Lines["b"].Cause)
+			}
+		}},
+	{name: "the line behind a blamed one is blamed alone", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, testing_("t1", "a", "b")),
+		ev: CIFailed{Train: "t1", Blamed: ids("b"), Evidence: "e"}, lines: lineWant{"a": LineWaiting, "b": LineReturned}, trains: trainWant{"t1": TrainFailed}},
+	{name: "base left out: the line behind it is left out too", setup: cat(ready("a", "c"), stacked("b", "a"), GateAccept{Line: "b"}, stacked("d", "b"), GateAccept{Line: "d"}, assemble("t1", "a", "b", "c", "d")),
+		ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x"}, lines: lineWant{"a": LineReturned, "b": LineReturned, "c": LineRiding, "d": LineReturned}, trains: trainWant{"t1": TrainAssembling}},
+	{name: "base held while riding: the line behind it waits", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, testing_("t1", "a", "b")),
+		ev: Hold{Line: "a", Reason: "r"}, lines: lineWant{"a": LineHeld, "b": LineWaiting}, trains: trainWant{"t1": TrainVoid}},
+	{name: "a co-requires group is charged whole", setup: cat(Offer{Line: "g", Changes: []Change{{ID: "g1", Head: "h1"}, {ID: "g2", Head: "h2"}}}, GateAccept{Line: "g"}, ready("c"), testing_("t1", "g", "c")),
+		ev: CIFailed{Train: "t1", Blamed: ids("g"), Evidence: "e"}, lines: lineWant{"g": LineReturned, "c": LineWaiting}},
+	{name: "stale, then fresh", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, Stale{Line: "b", Reason: "its head doesn't hold a's"}), ev: Fresh{Line: "b"}, lines: lineWant{"b": LineWaiting},
+		check: func(t *testing.T, s State) {
+			if s.Lines["b"].Stale != "" {
+				t.Errorf("still stale: %q", s.Lines["b"].Stale)
+			}
+		}},
+	{name: "stale: the owner is told", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: Stale{Line: "b", Reason: "rebase onto a"}, lines: lineWant{"b": LineWaiting}, fx: []EffectKind{EffNotify}},
+	{name: "base lands: a retired line behind it queues", setup: cat(ready("a"), legacy("b", "a"), landing("t1", "a")), ev: PushOK{Train: "t1"}, lines: lineWant{"a": LineLanded, "b": LineWaiting}},
+	{name: "base lands under a park: a retired line behind it parks", setup: cat(allPark, fix("f"), GateAccept{Line: "f"}, legacy("b", "f"), landing("t1", "f")), ev: PushOK{Train: "t1"}, lines: lineWant{"f": LineLanded, "b": LineParked}},
+	{name: "base lost: a retired line behind it returns", setup: cat(ready("a"), legacy("b", "a")), ev: Withdraw{Line: "a"}, lines: lineWant{"a": LineDropped, "b": LineReturned}},
 
 	// Withdraw.
 	{name: "withdraw an offered line", setup: cat(offer("a")), ev: Withdraw{Line: "a"}, lines: lineWant{"a": LineDropped}},
@@ -323,6 +373,7 @@ var transitions = []tcase{
 	{name: "withdraw a parked line", setup: cat(ready("a"), allPark), ev: Withdraw{Line: "a"}, lines: lineWant{"a": LineDropped}},
 	{name: "withdraw a riding line", setup: cat(ready("a", "b"), built("t1", "a", "b")), ev: Withdraw{Line: "a"}, lines: lineWant{"a": LineDropped, "b": LineWaiting}, trains: trainWant{"t1": TrainVoid}},
 	{name: "withdraw behind a base", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: Withdraw{Line: "b"}, lines: lineWant{"b": LineDropped}},
+	{name: "withdraw a retired line behind a base", setup: cat(ready("a"), legacy("b", "a")), ev: Withdraw{Line: "b"}, lines: lineWant{"b": LineDropped}},
 
 	// Speculation.
 	{name: "train 2 on train 1's head", setup: cat(ready("a", "b"), built("t1", "a")), ev: assemble("t2", "b"), trains: trainWant{"t2": TrainAssembling},
@@ -404,7 +455,13 @@ var refusals = []tcase{
 	// Assembly.
 	{name: "assemble nothing", ev: Assemble{Train: "t1"}, err: ErrInput},
 	{name: "assemble an offered line", setup: cat(offer("a")), ev: assemble("t1", "a"), err: ErrState},
-	{name: "assemble a line behind its base", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: assemble("t1", "b"), err: ErrState},
+	{name: "assemble a line without its base", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: assemble("t1", "b"), err: ErrJoin},
+	{name: "assemble a line behind a held base", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, Hold{Line: "a", Reason: "r"}), ev: assemble("t1", "b"), err: ErrJoin},
+	{name: "assemble a stale line", setup: cat(ready("a"), Stale{Line: "a", Reason: "r"}), ev: assemble("t1", "a"), err: ErrJoin},
+	{name: "stale with no reason", setup: ready("a"), ev: Stale{Line: "a"}, err: ErrReason},
+	{name: "stale while riding", setup: cat(ready("a"), assemble("t1", "a")), ev: Stale{Line: "a", Reason: "r"}, err: ErrState},
+	{name: "fresh when not stale", setup: ready("a"), ev: Fresh{Line: "a"}, err: ErrState},
+	{name: "an offer that would need itself", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, Hold{Line: "b", Reason: "r"}, Withdraw{Line: "a"}), ev: stacked("a", "b"), err: ErrInput},
 	{name: "a line cannot ride two trains", setup: cat(ready("a"), built("t1", "a")), ev: assemble("t2", "a"), err: ErrState},
 	{name: "a train name is used once", setup: cat(ready("a", "b"), built("t1", "a")), ev: assemble("t1", "b"), err: ErrDuplicate},
 	{name: "deeper than D", setup: cat(ready("a", "b", "c"), built("t1", "a"), built("t2", "b")), ev: assemble("t3", "c"), err: ErrChain},
@@ -700,7 +757,13 @@ func TestRandomWalk(t *testing.T) {
 					ev = PushOK{Train: tr}
 				}
 			case 25:
-				if h.s.Paused {
+				if r.Intn(3) == 0 {
+					if r.Intn(2) == 0 {
+						ev = Stale{Line: pick(), Reason: "r"}
+					} else {
+						ev = Fresh{Line: pick()}
+					}
+				} else if h.s.Paused {
 					ev = Resume{}
 				} else if r.Intn(4) == 0 {
 					ev = Pause{Reason: "r"}
@@ -755,9 +818,19 @@ func settle(t *testing.T, h *harness, trains *int) {
 				h.must(PushOK{Train: tr.ID})
 			}
 		}
-		w := h.s.Waiting()
+		var w []LineID
+		for _, id := range h.s.lineIDs() {
+			if l := h.s.Lines[id]; !l.State.Spent() && l.Stale != "" {
+				h.must(Fresh{Line: id})
+			}
+		}
+		for _, id := range h.s.Waiting() {
+			if h.s.NeedMet(h.s.Lines[id], nil) {
+				w = append(w, id)
+			}
+		}
 		if len(w) == 0 {
-			if len(h.s.Parks) > 0 || len(h.s.inState(LineOffered)) > 0 {
+			if len(h.s.Parks) > 0 || len(h.s.inState(LineOffered)) > 0 || len(h.s.Waiting()) > 0 {
 				continue
 			}
 			break

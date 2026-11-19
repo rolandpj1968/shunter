@@ -383,6 +383,12 @@ func Status(s state.State, pending []store.Keyed) string {
 			fmt.Fprintf(&b, "%-16s %s", st, id)
 			if l.Base != "" {
 				fmt.Fprintf(&b, " on %s", l.Base)
+				if bl := s.Lines[l.Base]; st == state.LineWaiting && bl != nil && bl.State != state.LineLanded && bl.State != state.LineRiding {
+					fmt.Fprintf(&b, " (waits: %s is %s)", l.Base, bl.State)
+				}
+			}
+			if l.Stale != "" {
+				fmt.Fprintf(&b, "  STALE: %s", l.Stale)
 			}
 			if l.Alone {
 				b.WriteString(" alone")

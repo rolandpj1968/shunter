@@ -26,7 +26,7 @@ func init() {
 		state.PreflightFailed{}, state.Built{}, state.Opened{}, state.CIPassed{}, state.CIRerun{},
 		state.CINoVerdict{}, state.CIFailed{}, state.Judge{}, state.JudgeTimeout{}, state.HeadMoved{},
 		state.Abort{}, state.LandingVerified{}, state.PushOK{}, state.PushRefused{}, state.Pause{},
-		state.Resume{}, state.ExpireBudget{},
+		state.Resume{}, state.ExpireBudget{}, state.Stale{}, state.Fresh{},
 	} {
 		events[state.Name(e)] = reflect.TypeOf(e)
 	}

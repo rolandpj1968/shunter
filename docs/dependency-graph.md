@@ -1,6 +1,6 @@
 # Lines as a dependency graph
 
-*A design note for the owner to rule on ([open question 27](open-questions.md)). It binds nothing in [`PROTOCOL.md`](../PROTOCOL.md) until the owner rules. It evaluates replacing the line, as the unit of ordering, with an explicit graph of what each change needs, and recommends a first step.*
+*A design note that evaluates replacing the line, as the unit of ordering, with an explicit graph of what each change needs, and recommends a first step. **The owner took the recommendation** ([open question 27](open-questions.md)): its first step (§8, step 2) is now [`PROTOCOL.md`](../PROTOCOL.md), with the differences listed in §9. The row numbers in §4 are those of protocol 0.2, before the change.*
 
 ## 1. The problem
 
@@ -152,3 +152,14 @@ A stated reason ("needs A's *X*") overrides all three: the producer has said wha
 5. **Not recommended now:** dropping the stack top's green (§7), and declared removal of a derived edge other than as the consented unstack.
 
 What the owner rules on: whether to take step 2, and, within it, return (recommended) or wait for dependents of a returned change.
+
+## 9. As adopted
+
+Step 2 is in the protocol and the daemon, with these differences from §2–§5:
+
+- **One need per line.** A forge branch has one base, so a line needs one line: the live line holding its first change's declared base (`Line.Base`). Ancestry checks that need; it doesn't add others. A change that merges two unlanded changes (a diamond) needs only the one it targets, and is stale if it carries the other's commits.
+- **Staleness is a flag, not a state.** A stale line is waiting, and the joining rule skips it, as it skips a line that must ride alone. New events `stale` and `fresh` set and clear it; the gate reads it at the offer, and the runner reads it again while the line waits.
+- **A held or parked dependent isn't spent at once.** When its base is returned or withdrawn, a waiting dependent goes back at once (new row L24); a held or parked one goes back when it is released or restored, because a hold never spends a line.
+- **No new riding row.** A dependent riding with a base that goes back returns through its train's end (L19, then L24), or is left out with it at assembly (L16).
+- **waiting-for-base is retired, not removed.** A line queued before the change keeps it and leaves by its old rows; no line enters it now.
+- **Steps 3 and 4** (false-edge warnings, a consented unstack) are not done.
