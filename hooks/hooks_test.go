@@ -481,3 +481,30 @@ func TestConflictInAnUnmarkedFileIsAConflict(t *testing.T) {
 		t.Fatalf("%v", a)
 	}
 }
+
+// TestPreflightStepMayLeaveOut: a step with "answer": "leave-out" leaves the
+// lines its blame finds out of the train, with a reason, and charges none;
+// it needs a blame that names lines.
+func TestPreflightStepMayLeaveOut(t *testing.T) {
+	tr := newTrain(t, map[string]string{"one.txt": "1\n"}, map[string]string{"src/b.go": "package src\n"})
+	st := map[string]any{"name": "numbers", "command": []string{"sh", "-c", "echo 'src/b.go: number 7 is taken'; exit 1"}, "answer": "leave-out"}
+	a, stderr := hook(t, "preflight.py", map[string]any{"steps": []any{st}}, tr.input())
+	left, _ := a["left_out"].(map[string]any)
+	if a["pass"] != false || len(strs(a["blamed"])) != 0 || len(left) != 1 || !strings.Contains(fmt.Sprint(left["2"]), "number 7 is taken") {
+		t.Fatalf("%v\n%s", a, stderr)
+	}
+	// With "blame": "none" nothing can be left out: a configuration error,
+	// so no answer.
+	st["blame"] = "none"
+	py := python(t)
+	cfg := filepath.Join(t.TempDir(), "c.json")
+	b, _ := json.Marshal(map[string]any{"steps": []any{st}})
+	os.WriteFile(cfg, b, 0o644)
+	in, _ := json.Marshal(tr.input())
+	cmd := exec.Command(py, "-B", "preflight.py", "--config", cfg)
+	cmd.Stdin = bytes.NewReader(in)
+	out, err := cmd.Output()
+	if err == nil || len(bytes.TrimSpace(out)) != 0 {
+		t.Fatalf("leave-out with blame none answered %q (%v)", out, err)
+	}
+}

@@ -504,3 +504,49 @@ func TestPushHoldsTheTrunkLock(t *testing.T) {
 		t.Fatal("the push kept the lock")
 	}
 }
+
+// TestPreflightLeavesALineOut: a pre-flight may answer that a line didn't
+// fit this train (open question 25). The train is built again without it,
+// pre-flight runs again on the rest, and the line comes back left out, not
+// charged.
+func TestPreflightLeavesALineOut(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "preflight.sh")
+	runs := filepath.Join(dir, "runs")
+	// Leaves out line 2 (and a line not in the train, which is ignored)
+	// while clash.txt is in the tree, and blames it too, which is not read.
+	body := "#!/bin/sh\ncat > /dev/null\necho run >> " + runs + "\nif [ -e clash.txt ]; then echo '{\"pass\":false,\"blamed\":[\"2\"],\"left_out\":{\"2\":\"its migration number is taken\",\"77\":\"x\"}}'; exit 1; fi\necho '{\"pass\":true}'\n"
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := newWorld(t, Config{})
+	w.repo.cfg.Preflight = hook.Hook{Command: []string{p}, Dir: w.repo.cfg.Dir, Timeout: time.Minute}
+	base := w.trunk()
+	h1 := w.change("1", "main", map[string]string{"one.txt": "1\n"})
+	h2 := w.change("2", "main", map[string]string{"clash.txt": "x\n"})
+	h3 := w.change("3", "main", map[string]string{"three.txt": "3\n"})
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{line("1", ch("1", h1)), line("2", ch("2", h2)), line("3", ch("3", h3))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PreflightFailed || len(res.Blamed) != 0 || res.Head == "" || len(res.LeftOut) != 1 || !strings.Contains(res.LeftOut["2"], "its migration number is taken") {
+		t.Fatalf("result %+v", res)
+	}
+	if b, _ := os.ReadFile(runs); strings.Count(string(b), "run") != 2 {
+		t.Fatalf("pre-flight ran %d times, want 2", strings.Count(string(b), "run"))
+	}
+	// The head holds lines 1 and 3, and not line 2.
+	if _, err := w.repo.git(ctx, "cat-file", "-e", string(res.Head)+":clash.txt"); err == nil {
+		t.Fatal("the built head holds the line pre-flight left out")
+	}
+	for _, f := range []string{"one.txt", "three.txt"} {
+		if _, err := w.repo.git(ctx, "cat-file", "-e", string(res.Head)+":"+f); err != nil {
+			t.Fatalf("the built head lacks %s", f)
+		}
+	}
+	// A pre-flight that leaves out every line leaves an empty train.
+	res, err = w.repo.Build(ctx, "k2", adapter.BuildRequest{Train: "t2", Base: base, Lines: []adapter.BuildLine{line("2", ch("2", h2))}})
+	if err != nil || res.Head != "" || res.LeftOut["2"] == "" || res.PreflightFailed {
+		t.Fatalf("every line left out: %+v %v", res, err)
+	}
+}

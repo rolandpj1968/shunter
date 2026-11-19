@@ -111,7 +111,7 @@ Live trains form the **chain**, in landing order: train 1 is built on trunk, and
 | L15 | waiting | parked | park | the park has a restore condition | J1, J2 or the judge | not parked |
 | L16 | parked | waiting | restore | the park exists; no other park covers the line | the runner, when the condition holds | restored at the park's deadline, with an alert |
 | L17 | waiting | riding | assemble | not held, not parked; alone if it must be; one split group per train | the runner's joining rule (§5.3) | stays waiting |
-| L18 | riding | returned | leave-out | the train is assembling; a reason is given | the assembly rules (conflict, caps) | refused without a reason |
+| L18 | riding | returned | leave-out | the train is assembling; a reason is given | the assembly rules (conflict, caps), or a pre-flight hook's leave-out (§5.4) | refused without a reason |
 | L19 | riding | returned | preflight-failed, ci-failed, judge (charge) | evidence names the line (I6) | a blame rule (§5.6), or J1 | never charged without evidence |
 | L20 | riding | returned | abort (return) | the train is live and not landing | the judge (§5.9) | requeue |
 | L21 | riding | waiting | any end of its train that is not a landing | the gate passes it | the gate (§5.2) | the gate decides again |
@@ -216,6 +216,8 @@ There are three tiers of checking, and each answers a different question:
 | **3. CI** | the batch, in full | Is this exact state safe to land? |
 
 Tier 2 runs on every batch, before any CI is spent. A failure there sends the changes it names back (by the blame rules of §5.6), with no rerun.
+
+**A pre-flight may leave a line out instead.** Some failures say "this line didn't fit this train", not "this line broke it": it doesn't build on the train, or a generated part clashes with another line's (two changes taking the same number). A pre-flight may answer a leave-out for such a line, with a reason, as assembly leaves out a conflict (L18). The line goes back to its owner uncharged, told that it didn't fit; the train is built again without it, and pre-flight runs again on the rest. A leave-out is not a charge (I6), so it needs no evidence beyond its reason, and it uses no retry budget.
 
 **Test scope is an axis of its own.** Every test has one scope, and the scope decides when it runs:
 - **Package tests** test one unit. They're selected by the dependency graph: the changed units plus everything that depends on them.
@@ -417,6 +419,7 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 
 **0.3, unreleased.**
 
+- **§5.4, L18:** a pre-flight may leave a line out, uncharged, as assembly leaves out a conflict ([open question 25](docs/open-questions.md)).
 - **§5.5:** a known flake's or a timing failure's rerun that fails again is class 4, and blame is asked again with the class forced ([open question 3](docs/open-questions.md)).
 
 **0.2, 18 November 2026.** From a review of the script queue this protocol was drawn from, against 0.1.
