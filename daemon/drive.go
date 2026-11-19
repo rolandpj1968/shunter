@@ -133,7 +133,7 @@ func (d *Daemon) tick() {
 		for _, l := range t.Lines {
 			lines = append(lines, adapter.BuildLine{ID: l, Changes: append([]state.Change(nil), s.Lines[l].Changes...)})
 		}
-		d.poll(t.ID, t.Head, lines)
+		d.poll(t.ID, t.Head, lines, t.Reruns >= 1)
 	}
 	d.prune(now, s)
 }
@@ -241,7 +241,10 @@ func (d *Daemon) restores(now time.Time) {
 	}
 }
 
-func (d *Daemon) poll(id state.TrainID, head state.Head, lines []adapter.BuildLine) {
+// poll reads a train's CI. rerunSpent says the train's one rerun after a
+// flake or a timing failure is spent, so that the same reading again is
+// blamed as deterministic (§5.5).
+func (d *Daemon) poll(id state.TrainID, head state.Head, lines []adapter.BuildLine, rerunSpent bool) {
 	d.polls[id] = true
 	ci := d.ad.CI
 	d.wg.Add(1)
@@ -250,6 +253,9 @@ func (d *Daemon) poll(id state.TrainID, head state.Head, lines []adapter.BuildLi
 		ctx, cancel := context.WithTimeout(context.Background(), d.cfg.Call)
 		defer cancel()
 		rep, err := ci.Status(ctx, id, head, lines)
+		if err == nil && rerunSpent && rep.Outcome == adapter.Flaky {
+			rep = reblame(ctx, ci, id, rep, lines)
+		}
 		r := result{poll: id, actor: "ci", err: err}
 		if err == nil {
 			r.events = report(id, rep)
@@ -279,6 +285,29 @@ func report(id state.TrainID, r adapter.Report) []state.Event {
 	return nil
 }
 
+// reblame turns a known flake or a timing failure that failed again after
+// its one rerun into a deterministic failure (§5.5 class 4), and asks blame
+// again with that class forced. The rerun's failure is evidence in its own
+// right: a line that makes a test slow, or makes a flaky test it touches
+// fail every time, is named by its files like any other. A CI that can't
+// blame again, or a blame that names nobody, leaves it unblamed: J1.
+func reblame(ctx context.Context, ci adapter.CI, id state.TrainID, rep adapter.Report, lines []adapter.BuildLine) adapter.Report {
+	out := rep
+	out.Outcome, out.Blamed = adapter.Failed, nil
+	out.Evidence = "failed again after its one rerun: " + orWhy(rep.Why, orWhy(rep.Evidence, "a known flake or a timeout"))
+	out.Why = ""
+	rb, ok := ci.(adapter.Reblamer)
+	if !ok {
+		return out
+	}
+	got, err := rb.Reblame(ctx, id, out, lines)
+	if err != nil || got.Outcome != adapter.Failed {
+		out.Evidence += " [blame, asked again, gave no answer]"
+		return out
+	}
+	return got
+}
+
 func orWhy(s, def string) string {
 	if s == "" {
 		return def
@@ -287,9 +316,11 @@ func orWhy(s, def string) string {
 }
 
 // pollDone applies what a poll read. A second flake on a train whose one
-// rerun is spent is no longer a flake to the machine: it goes to J1 as a
-// failure nobody is named for. A poll that keeps failing is escalated; the
-// CI deadline voids the train in the end.
+// rerun is spent is no longer a flake to the machine: the poll has already
+// blamed it as deterministic (reblame). If the rerun was spent after the
+// poll began, it is a failure nobody is named for, which goes to J1. A poll
+// that keeps failing is escalated; the CI deadline voids the train in the
+// end.
 func (d *Daemon) pollDone(r result) {
 	if r.err != nil {
 		d.pollErrs[r.poll]++

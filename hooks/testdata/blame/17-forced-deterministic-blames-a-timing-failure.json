@@ -1,0 +1,49 @@
+{
+  "config": {
+    "timing": [
+      "panic: test timed out"
+    ],
+    "deterministic": [
+      "Error Trace:"
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "Error Trace: b/y_test.go:3\npanic: test timed out after 10m",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "b/y_test.go"
+        ]
+      }
+    ],
+    "force_class": "deterministic"
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [
+      "B"
+    ],
+    "evidence_contains": "b/y_test.go"
+  }
+}

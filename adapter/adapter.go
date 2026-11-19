@@ -128,6 +128,20 @@ type CI interface {
 	Cancel(ctx context.Context, key string, train state.TrainID) error
 }
 
+// Reblamer asks blame again with the failure's class forced to deterministic
+// (§5.5 class 4). A known flake's or a timing failure's one rerun that fails
+// the same way is evidence in its own right: it is blamed by files, as any
+// deterministic failure is, rather than sent to J1 as one nobody can name.
+// Optional: a CI without it leaves such a failure unblamed, and J1 decides.
+//
+// rep is the failure as Status read it, with its Outcome already Failed; the
+// answer is the same failure with the lines blame names. It can't change the
+// outcome: a forced blame that answers anything but deterministic names
+// nobody.
+type Reblamer interface {
+	Reblame(ctx context.Context, train state.TrainID, rep Report, lines []BuildLine) (Report, error)
+}
+
 // BuildLine is one line of a train to build, in queue order.
 type BuildLine struct {
 	ID      state.LineID

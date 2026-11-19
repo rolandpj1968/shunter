@@ -118,6 +118,8 @@ timeout = "5m"
 # Out: {"class":"deterministic","blamed":["<line>"],"evidence":"..."}, or
 # class "flaky", "infra" or "no-verdict". Lines not in the train are
 # ignored. A failure nobody is named for goes to J1 (I6).
+# With "force_class":"deterministic" in the input (a flake's or a timing
+# failure's one rerun failed again, §5.5), only that class names lines.
 command = ["./hooks/blame"]
 timeout = "2m"
 

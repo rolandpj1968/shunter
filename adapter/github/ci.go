@@ -243,6 +243,10 @@ type BlameInput struct {
 	Lines    []BlameLine     `json:"lines"`
 	Checks   []adapter.Check `json:"checks"`
 	Evidence string          `json:"evidence"`
+	// ForceClass, when set, is the class the failure is: the hook is asked
+	// only which lines it names. Shunter sets it to "deterministic" when a
+	// known flake's or a timing failure's one rerun failed again (§5.5).
+	ForceClass string `json:"force_class,omitempty"`
 }
 
 // BlameLine is one line of the train, for the blame hook. Text is its
@@ -265,12 +269,14 @@ type BlameAnswer struct {
 }
 
 // blame asks the hook what a failure is. A hook that fails, or answers
-// what it may not, leaves the failure unblamed: J1 decides (I6).
-func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report, lines []adapter.BuildLine) adapter.Report {
+// what it may not, leaves the failure unblamed: J1 decides (I6). With force
+// set, the hook is told the class, and an answer of any other class names
+// nobody.
+func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report, lines []adapter.BuildLine, force string) adapter.Report {
 	if !c.cfg.Blame.Configured() {
 		return rep
 	}
-	in := BlameInput{Train: t, Head: rep.Head, Checks: rep.Checks, Evidence: rep.Evidence}
+	in := BlameInput{Train: t, Head: rep.Head, Checks: rep.Checks, Evidence: rep.Evidence, ForceClass: force}
 	member := map[state.LineID]bool{}
 	for _, l := range lines {
 		in.Lines = append(in.Lines, BlameLine{ID: l.ID, Changes: l.Changes, Text: c.describeText(ctx, l.Changes)})
@@ -280,6 +286,10 @@ func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report,
 	res, err := c.cfg.Blame.Run(ctx, in, &a)
 	if err != nil || res.Code != 0 {
 		rep.Evidence += fmt.Sprintf(" [the blame hook gave no answer: exit %d %v]", res.Code, err)
+		return rep
+	}
+	if force != "" && a.Class != force {
+		rep.Evidence += fmt.Sprintf(" [the blame hook answered class %q, asked only whom a %s failure names]", a.Class, force)
 		return rep
 	}
 	if a.Evidence != "" {
@@ -339,9 +349,16 @@ func (c *Client) Status(ctx context.Context, t state.TrainID, head state.Head, l
 	}
 	rep := Classify(head, checks, c.cfg.Checks)
 	if rep.Outcome == adapter.Failed {
-		rep = c.blame(ctx, t, rep, lines)
+		rep = c.blame(ctx, t, rep, lines, "")
 	}
 	return rep, nil
+}
+
+// Reblame implements adapter.Reblamer: the blame hook asked again, with the
+// class forced to deterministic. No hook names nobody.
+func (c *Client) Reblame(ctx context.Context, t state.TrainID, rep adapter.Report, lines []adapter.BuildLine) (adapter.Report, error) {
+	rep.Outcome, rep.Blamed = adapter.Failed, nil
+	return c.blame(ctx, t, rep, lines, "deterministic"), nil
 }
 
 type ghRun struct {

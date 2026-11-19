@@ -253,6 +253,8 @@ Each failure gets one class, decided in this order:
 3. **Timing:** only timeouts or lost connections. One rerun.
 4. **Deterministic:** an assertion, or a compile or lint error. No rerun; go to blame.
 
+**A rerun that fails again is evidence.** When a known flake's or a timing failure's one rerun fails the same way, the failure is class 4 from then on: it goes to blame (§5.6), which is asked again with the class forced, and names lines by their files as for any deterministic failure. A line that makes a test slow, or makes a flaky test it touches fail every time, goes back to its owner without a judge. Blame that names none, or all of several, goes to J1 as before.
+
 ### 5.6 Blame
 
 Blame maps the evidence in a deterministic failure to changes. The most specific rule goes first:
@@ -412,6 +414,10 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 - Whether a deterministic pre-flight failure that blame can't attribute deserves one retry on a new base before J1. An old queue did this by habit; here it needs a judgement.
 
 ## Change log
+
+**0.3, unreleased.**
+
+- **§5.5:** a known flake's or a timing failure's rerun that fails again is class 4, and blame is asked again with the class forced ([open question 3](docs/open-questions.md)).
 
 **0.2, 18 November 2026.** From a review of the script queue this protocol was drawn from, against 0.1.
 

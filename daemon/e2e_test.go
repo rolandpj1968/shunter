@@ -815,3 +815,70 @@ func TestExportImportLineFiles(t *testing.T) {
 		t.Fatalf("not carried: b on %q, c alone %v, a's reason %q", s.Lines["b"].Base, s.Lines["c"].Alone, s.Lines["a"].Reason)
 	}
 }
+
+// TestSecondFlakeIsBlamedByFiles: a known flake gets one rerun (§5.5). When
+// the rerun fails the same way, that failure is evidence in its own right:
+// blame is asked again with the class forced to deterministic, and a line
+// it names goes back to its owner without a judge (open question 3).
+func TestSecondFlakeIsBlamedByFiles(t *testing.T) {
+	r := newRig(t)
+	r.w.ReblameHook = func(id state.TrainID, rep adapter.Report, lines []adapter.BuildLine) adapter.Report {
+		if rep.Outcome != adapter.Failed || !strings.Contains(rep.Evidence, "failed again after its one rerun") {
+			t.Errorf("a forced blame was asked about %+v", rep)
+		}
+		rep.Blamed = []state.LineID{"b"}
+		rep.Evidence += "; blame: b touches b/slow_test.go"
+		return rep
+	}
+	r.open("a", "b")
+	r.together("a", "b")
+	t1 := r.trainOf("a")
+	flake := adapter.Report{Outcome: adapter.Flaky, Head: r.train(t1).Head, Why: "only timeouts: TestSlow"}
+	r.w.Report(t1, flake)
+	r.tick(time.Second)
+	r.wantTrain(t1, state.TrainTesting)
+	if r.w.Count("rerun", true) != 1 || r.w.Count("reblame", false) != 0 {
+		t.Fatalf("the first flake: %d reruns, %d forced blames; want 1 and 0", r.w.Count("rerun", true), r.w.Count("reblame", false))
+	}
+	r.w.Report(t1, flake)
+	r.tick(time.Second)
+	r.wantTrain(t1, state.TrainFailed)
+	r.wantLine("b", state.LineReturned)
+	if r.w.Count("reblame", false) != 1 || r.w.Count("rerun", true) != 1 {
+		t.Fatalf("the second flake: %d forced blames, %d reruns; want 1 and 1", r.w.Count("reblame", false), r.w.Count("rerun", true))
+	}
+	if len(r.w.NoticesTo("owner", "failed again after its one rerun")) != 1 {
+		t.Fatal("b's owner was not told, with the evidence")
+	}
+	if len(r.w.NoticesTo("judge", "J1")) != 0 {
+		t.Fatal("the judge was asked about a failure blame named")
+	}
+	t2 := r.trainOf("a")
+	r.w.Pass(t2)
+	r.tick(time.Second)
+	r.wantLine("a", state.LineLanded)
+}
+
+// TestSecondFlakeThatNamesNobodyGoesToJ1: a forced blame that names no line
+// leaves the failure unblamed, and J1 decides, as before.
+func TestSecondFlakeThatNamesNobodyGoesToJ1(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "b")
+	r.together("a", "b")
+	t1 := r.trainOf("a")
+	flake := adapter.Report{Outcome: adapter.Flaky, Head: r.train(t1).Head, Why: "TestShared is a known flake"}
+	r.w.Report(t1, flake)
+	r.tick(time.Second)
+	r.w.Report(t1, flake)
+	r.tick(time.Second)
+	r.wantTrain(t1, state.TrainJudging)
+	if r.w.Count("reblame", false) != 1 {
+		t.Fatalf("blame was asked again %d times, want 1", r.w.Count("reblame", false))
+	}
+	if len(r.w.NoticesTo("judge", "J1")) != 1 {
+		t.Fatal("the judge was not asked at J1")
+	}
+	if tr := r.train(t1); !strings.Contains(tr.Reason, "failed again after its one rerun") {
+		t.Fatalf("the failure's evidence is %q", tr.Reason)
+	}
+}
