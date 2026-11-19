@@ -100,7 +100,12 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 		t := s.Trains[k.Train]
 		req := adapter.BuildRequest{Train: t.ID, Base: k.Expect}
 		for _, id := range t.Lines {
-			req.Lines = append(req.Lines, adapter.BuildLine{ID: id, Changes: append([]state.Change(nil), s.Lines[id].Changes...)})
+			l := s.Lines[id]
+			bl := adapter.BuildLine{ID: id, Changes: append([]state.Change(nil), l.Changes...)}
+			if b := s.Lines[l.Base]; b != nil && len(b.Changes) > 0 {
+				bl.Upstream = b.Changes[len(b.Changes)-1].Head
+			}
+			req.Lines = append(req.Lines, bl)
 		}
 		return func(ctx context.Context) result {
 			r, err := a.Git.Build(ctx, k.Key, req)

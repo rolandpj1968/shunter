@@ -141,7 +141,7 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 			}
 		}
 	}
-	if got := fmt.Sprint(r.lines[h('3')]); got != "[{105 [{105 }]} {106 [{106 h106}]} {107 [{107 }]}]" {
+	if got := fmt.Sprint(r.lines[h('3')]); got != "[{105 [{105 }] } {106 [{106 h106}] } {107 [{107 }] }]" {
 		t.Errorf("train 903's lines for blame: %s", got)
 	}
 	gates := []string{}
