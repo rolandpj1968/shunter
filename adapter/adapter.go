@@ -146,6 +146,10 @@ type Reblamer interface {
 type BuildLine struct {
 	ID      state.LineID
 	Changes []state.Change
+	// Upstream, for a stacked line, is its base's head as recorded: the
+	// line's own commits are those after it. A builder that replays
+	// commits replays only those; empty for a line on trunk.
+	Upstream state.Head `json:",omitempty"`
 }
 
 // BuildRequest asks for a train to be merged on Base and checked (§5.4).

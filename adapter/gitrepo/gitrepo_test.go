@@ -550,3 +550,60 @@ func TestPreflightLeavesALineOut(t *testing.T) {
 		t.Fatalf("every line left out: %+v %v", res, err)
 	}
 }
+
+// TestContainsReadsAncestry: a change stacked on another contains its head;
+// a push to the base leaves the stacked change holding the old head only.
+func TestContainsReadsAncestry(t *testing.T) {
+	w := newWorld(t, Config{})
+	h1 := w.change("1", "main", map[string]string{"one.txt": "1\n"})
+	h2 := w.change("2", "c1", map[string]string{"two.txt": "2\n"})
+	ids := []state.ChangeID{"1", "2"}
+	if ok, err := w.repo.Contains(ctx, h2, h1, ids); err != nil || !ok {
+		t.Fatalf("2 contains 1: %v %v", ok, err)
+	}
+	if ok, err := w.repo.Contains(ctx, h1, h2, ids); err != nil || ok {
+		t.Fatalf("1 contains 2: %v %v", ok, err)
+	}
+	h1b := w.change("1", "main", map[string]string{"one.txt": "1, again\n"})
+	if ok, err := w.repo.Contains(ctx, h2, h1b, ids); err != nil || ok {
+		t.Fatalf("2 contains 1's new head: %v %v", ok, err)
+	}
+	if _, err := w.repo.Contains(ctx, h2, state.Head(strings.Repeat("0", 40)), ids); err == nil {
+		t.Fatal("a head nowhere to be found is not an answer")
+	}
+}
+
+// TestStackedLineReplaysOnlyItsOwnCommits: a line stacked on a base that
+// landed as other commits (rebased, then changed again on trunk) replays
+// only its own commits, after its base's head, and so doesn't conflict
+// with what its base became.
+func TestStackedLineReplaysOnlyItsOwnCommits(t *testing.T) {
+	w := newWorld(t, Config{})
+	h1 := w.change("1", "main", map[string]string{"a.txt": "b1\na2\na3\n"})
+	h2 := w.change("2", "c1", map[string]string{"two.txt": "2\n"})
+	// The base lands as a new commit, and trunk changes the same line again.
+	run(t, w.dev, "checkout", "--quiet", "main")
+	w.write("a.txt", "b1\na2\na3\n")
+	run(t, w.dev, "commit", "--quiet", "-am", "change 1, landed")
+	w.write("a.txt", "c1\na2\na3\n")
+	run(t, w.dev, "commit", "--quiet", "-am", "later on trunk")
+	run(t, w.dev, "push", "--quiet", "origin", "main")
+	base := w.trunk()
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{
+		{ID: "2", Changes: []state.Change{ch("2", h2)}, Upstream: h1},
+	}})
+	if err != nil || res.Head == "" || len(res.LeftOut) != 0 {
+		t.Fatalf("result %+v %v", res, err)
+	}
+	if got := w.cat(res.Head, "a.txt"); got != "c1\na2\na3" {
+		t.Fatalf("a.txt is %q: the base's old commit was replayed", got)
+	}
+	if got := w.cat(res.Head, "two.txt"); got != "2" {
+		t.Fatalf("two.txt is %q", got)
+	}
+	// Without its upstream, the base's old commit is replayed and conflicts.
+	res, err = w.repo.Build(ctx, "k2", adapter.BuildRequest{Train: "t2", Base: base, Lines: []adapter.BuildLine{line("2", ch("2", h2))}})
+	if err != nil || res.LeftOut["2"] == "" {
+		t.Fatalf("without the upstream: %+v %v", res, err)
+	}
+}

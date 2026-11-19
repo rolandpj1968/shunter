@@ -428,6 +428,43 @@ func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[stat
 	return res, head, false, err
 }
 
+// ancestor reports whether a is h or in h's history, in the clone as it is.
+func (r *Repo) ancestor(ctx context.Context, a, h state.Head) bool {
+	ok, err := r.isAncestor(ctx, a, h)
+	return err == nil && ok
+}
+
+func (r *Repo) isAncestor(ctx context.Context, a, h state.Head) (bool, error) {
+	_, err := r.git(ctx, "merge-base", "--is-ancestor", string(a), string(h))
+	if err == nil {
+		return true, nil
+	}
+	var ge *bound.GitError
+	if errors.As(err, &ge) && ge.Code == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+// Contains implements adapter.Ancestry: whether head contains ancestor, read
+// in the clone, after fetching the changes named when either is missing.
+// It only reads: it takes no lock on the work tree, so it doesn't wait for
+// a build.
+func (r *Repo) Contains(ctx context.Context, head, ancestor state.Head, ids []state.ChangeID) (bool, error) {
+	if head == "" || ancestor == "" {
+		return false, adapter.Permanent(errors.New("an empty head"))
+	}
+	if !r.has(ctx, head) || !r.has(ctx, ancestor) {
+		if err := r.fetch(ctx, ids); err != nil {
+			return false, err
+		}
+		if !r.has(ctx, head) || !r.has(ctx, ancestor) {
+			return false, fmt.Errorf("%s or %s is not in the clone after a fetch", short(head), short(ancestor))
+		}
+	}
+	return r.isAncestor(ctx, ancestor, head)
+}
+
 // reset leaves the clone with nothing in progress.
 func (r *Repo) reset(ctx context.Context) {
 	r.git(ctx, "rebase", "--abort")
@@ -468,7 +505,11 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine) 
 			cont = []string{"commit", "--no-edit"}
 		} else {
 			upstream := string(prev)
-			if i == 0 {
+			if i == 0 && l.Upstream != "" && r.ancestor(ctx, l.Upstream, c.Head) {
+				// A stacked line: replay only its own commits, after its
+				// base's head, whatever its base became in the train.
+				upstream = string(l.Upstream)
+			} else if i == 0 {
 				if upstream, err = r.git(ctx, "merge-base", cur, string(c.Head)); err != nil {
 					return back(fmt.Sprintf("change %s has no history in common with the train", c.ID))
 				}

@@ -162,4 +162,5 @@ Step 2 is in the protocol and the daemon, with these differences from §2–§5:
 - **A held or parked dependent isn't spent at once.** When its base is returned or withdrawn, a waiting dependent goes back at once (new row L24); a held or parked one goes back when it is released or restored, because a hold never spends a line.
 - **No new riding row.** A dependent riding with a base that goes back returns through its train's end (L19, then L24), or is left out with it at assembly (L16).
 - **waiting-for-base is retired, not removed.** A line queued before the change keeps it and leaves by its old rows; no line enters it now.
+- **The git adapter reads ancestry and replays a stacked line's own commits.** It answers the ancestry question in its clone (`git merge-base --is-ancestor`), and, with `strategy = "rebase"`, replays a stacked line from its base's recorded head, so that what its base became in a train, or on trunk, isn't replayed again (§5, stale ancestry after the base lands).
 - **Steps 3 and 4** (false-edge warnings, a consented unstack) are not done.
