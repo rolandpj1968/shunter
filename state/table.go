@@ -70,7 +70,7 @@ func buildTable() []Row {
 		lr(LineParked, LineWaiting, CauseRestore, "restore", "the park exists; no other park covers the line", "the runner, when the condition holds", "restored at the park's deadline, with an alert"),
 
 		lr(LineWaiting, LineRiding, CauseJoin, "assemble", "not held, not parked; alone if it must be; one split group per train", "the runner's joining rule (§5.3)", "stays waiting"),
-		lr(LineRiding, LineReturned, CauseLeftOut, "leave-out", "the train is assembling; a reason is given", "the assembly rules (conflict, caps)", "refused without a reason"),
+		lr(LineRiding, LineReturned, CauseLeftOut, "leave-out", "the train is assembling; a reason is given", "the assembly rules (conflict, caps), or a pre-flight hook's leave-out (§5.4)", "refused without a reason"),
 		lr(LineRiding, LineReturned, CauseCharged, "preflight-failed, ci-failed, judge (charge)", "evidence names the line (I6)", "a blame rule (§5.6), or J1", "never charged without evidence"),
 		lr(LineRiding, LineReturned, CauseAbort, "abort (return)", gLive, "the judge (§5.9)", "requeue"),
 		lr(LineRiding, LineWaiting, CauseRequeue, "any end of its train that is not a landing", "the gate passes it", oGate, dRequeue),

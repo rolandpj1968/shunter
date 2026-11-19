@@ -224,10 +224,18 @@ type PreflightInput struct {
 
 // PreflightAnswer is the pre-flight hook's answer. A failure may name the
 // lines it charges; it is never a verdict on CI's behalf.
+//
+// LeftOut leaves lines out of the train, each with a reason: they didn't fit
+// this train (they don't build on it, or their generated parts clash with
+// another line's), which is not a charge. It is taken as a conflict is
+// (§5.3): the train is built again without them, pre-flight runs again on
+// what is left, and the rest of this answer is not read. Lines not in the
+// train are ignored.
 type PreflightAnswer struct {
-	Pass     bool           `json:"pass"`
-	Blamed   []state.LineID `json:"blamed,omitempty"`
-	Evidence string         `json:"evidence,omitempty"`
+	Pass     bool                    `json:"pass"`
+	Blamed   []state.LineID          `json:"blamed,omitempty"`
+	Evidence string                  `json:"evidence,omitempty"`
+	LeftOut  map[state.LineID]string `json:"left_out,omitempty"`
 }
 
 // ConflictInput is what the conflict hook reads. The working tree is in the
@@ -298,69 +306,31 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	if !r.has(ctx, req.Base) {
 		return adapter.BuildResult{}, fmt.Errorf("the base %s is not in the clone after a fetch", req.Base)
 	}
-	r.reset(ctx)
-	if _, err := r.git(ctx, "checkout", "--quiet", "--detach", "--force", string(req.Base)); err != nil {
-		return adapter.BuildResult{}, err
-	}
-	if _, err := r.git(ctx, "clean", "-fdq"); err != nil {
-		return adapter.BuildResult{}, err
-	}
-	res := adapter.BuildResult{LeftOut: map[state.LineID]string{}}
-	var kept []adapter.BuildLine
-	tips := map[state.LineID]state.Head{}
-	for _, l := range req.Lines {
-		why, err := r.apply(ctx, req.Train, l)
-		if err != nil {
-			r.reset(ctx)
-			return adapter.BuildResult{}, err
-		}
-		if why != "" {
-			res.LeftOut[l.ID] = why
-			continue
-		}
-		kept = append(kept, l)
-		tip, err := r.git(ctx, "rev-parse", "HEAD")
+	// Each round builds the train from its base, without the lines left
+	// out so far, and runs pre-flight on it. A pre-flight that leaves lines
+	// out starts another round without them, so that the head never holds a
+	// line the train doesn't: at most one round a line, and one more.
+	out := map[state.LineID]string{}
+	var res adapter.BuildResult
+	var head string
+	for {
+		var err error
+		var again bool
+		res, head, again, err = r.round(ctx, req, out)
 		if err != nil {
 			return adapter.BuildResult{}, err
 		}
-		tips[l.ID] = state.Head(tip)
+		if !again {
+			break
+		}
 	}
-	if len(kept) == 0 {
+	if head == "" {
 		return res, r.remember(key, res)
 	}
-	head, err := r.git(ctx, "rev-parse", "HEAD")
-	if err != nil {
-		return adapter.BuildResult{}, err
+	if res.PreflightFailed {
+		return res, r.remember(key, res)
 	}
-	if r.cfg.Preflight.Configured() {
-		in := PreflightInput{Dir: r.cfg.Dir, Train: req.Train, Base: req.Base, Head: state.Head(head), Lines: kept, Tips: tips}
-		var a PreflightAnswer
-		hr, err := r.cfg.Preflight.Run(ctx, in, &a)
-		if err != nil {
-			// A pre-flight that crashed, hung or said nothing has caught
-			// nothing: no verdict, never a charge (§5.5 class 0).
-			return adapter.BuildResult{}, fmt.Errorf("pre-flight gave no answer: %w %s", err, hr.Stderr)
-		}
-		switch {
-		case !a.Pass:
-			res.PreflightFailed = true
-			for _, id := range a.Blamed {
-				if slices.ContainsFunc(kept, func(l adapter.BuildLine) bool { return l.ID == id }) {
-					res.Blamed = append(res.Blamed, id)
-				}
-			}
-			res.Evidence = a.Evidence
-			return res, r.remember(key, res)
-		case hr.Code != 0:
-			return adapter.BuildResult{}, fmt.Errorf("pre-flight answered pass with exit %d", hr.Code)
-		}
-		if st, err := r.git(ctx, "status", "--porcelain"); err != nil || st != "" {
-			return adapter.BuildResult{}, adapter.Permanent(fmt.Errorf("pre-flight left the tree changed and uncommitted: %s", st))
-		}
-		if head, err = r.git(ctx, "rev-parse", "HEAD"); err != nil {
-			return adapter.BuildResult{}, err
-		}
-	}
+	var err error
 	r.net.Lock()
 	_, err = r.netgit(ctx, "push", "--quiet", "--no-verify", "--force", r.cfg.Remote, head+":refs/heads/"+r.Branch(req.Train))
 	r.net.Unlock()
@@ -369,6 +339,93 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	}
 	res.Head = state.Head(head)
 	return res, r.remember(key, res)
+}
+
+// round builds the train on its base without the lines in out, and runs
+// pre-flight on it. It adds to out the lines it leaves out. again says that
+// pre-flight left lines out of this build, which must be built again
+// without them. An empty head with no error is a train with every line
+// left out.
+func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[state.LineID]string) (res adapter.BuildResult, head string, again bool, err error) {
+	r.reset(ctx)
+	if _, err := r.git(ctx, "checkout", "--quiet", "--detach", "--force", string(req.Base)); err != nil {
+		return res, "", false, err
+	}
+	if _, err := r.git(ctx, "clean", "-fdq"); err != nil {
+		return res, "", false, err
+	}
+	res = adapter.BuildResult{LeftOut: map[state.LineID]string{}}
+	var kept []adapter.BuildLine
+	tips := map[state.LineID]state.Head{}
+	for _, l := range req.Lines {
+		if why, ok := out[l.ID]; ok {
+			res.LeftOut[l.ID] = why
+			continue
+		}
+		why, err := r.apply(ctx, req.Train, l)
+		if err != nil {
+			r.reset(ctx)
+			return res, "", false, err
+		}
+		if why != "" {
+			res.LeftOut[l.ID], out[l.ID] = why, why
+			continue
+		}
+		kept = append(kept, l)
+		tip, err := r.git(ctx, "rev-parse", "HEAD")
+		if err != nil {
+			return res, "", false, err
+		}
+		tips[l.ID] = state.Head(tip)
+	}
+	if len(kept) == 0 {
+		return res, "", false, nil
+	}
+	if head, err = r.git(ctx, "rev-parse", "HEAD"); err != nil {
+		return res, "", false, err
+	}
+	if !r.cfg.Preflight.Configured() {
+		return res, head, false, nil
+	}
+	in := PreflightInput{Dir: r.cfg.Dir, Train: req.Train, Base: req.Base, Head: state.Head(head), Lines: kept, Tips: tips}
+	var a PreflightAnswer
+	hr, err := r.cfg.Preflight.Run(ctx, in, &a)
+	if err != nil {
+		// A pre-flight that crashed, hung or said nothing has caught
+		// nothing: no verdict, never a charge (§5.5 class 0).
+		return res, "", false, fmt.Errorf("pre-flight gave no answer: %w %s", err, hr.Stderr)
+	}
+	// A leave-out comes first: "didn't fit this train" (§5.3). The rest of
+	// the answer was about a train that will not exist, so it is not read.
+	for _, l := range kept {
+		if why, ok := a.LeftOut[l.ID]; ok {
+			if why == "" {
+				why = "didn't fit this train"
+			}
+			out[l.ID], again = "left out by pre-flight: "+why, true
+		}
+	}
+	if again {
+		return res, head, true, nil
+	}
+	switch {
+	case !a.Pass:
+		res.PreflightFailed = true
+		for _, id := range a.Blamed {
+			if slices.ContainsFunc(kept, func(l adapter.BuildLine) bool { return l.ID == id }) {
+				res.Blamed = append(res.Blamed, id)
+			}
+		}
+		res.Evidence = a.Evidence
+		return res, head, false, nil
+	case hr.Code != 0:
+		return res, "", false, fmt.Errorf("pre-flight answered pass with exit %d", hr.Code)
+	}
+	if st, err := r.git(ctx, "status", "--porcelain"); err != nil || st != "" {
+		return res, "", false, adapter.Permanent(fmt.Errorf("pre-flight left the tree changed and uncommitted: %s", st))
+	}
+	head, err = r.git(ctx, "rev-parse", "HEAD")
+	return res, head, false, err
 }
 
 // reset leaves the clone with nothing in progress.

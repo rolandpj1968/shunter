@@ -102,6 +102,9 @@ effect_backoff = "5s"
 # In: {"dir","train","base","head","lines":[{"ID","Changes":[{"ID","Head"}]}],
 #      "tips":{"<line>":"<its last commit in the train>"}}
 # Out: {"pass":true} or {"pass":false,"blamed":["<line>"],"evidence":"..."}
+# or {"pass":false,"left_out":{"<line>":"<why>"}}: those lines didn't fit
+# this train; they go back uncharged, and the train is built again without
+# them (the rest of that answer is not read).
 # A crash, a timeout or no JSON is no verdict, never a charge.
 command = ["./hooks/preflight"]
 timeout = "20m"

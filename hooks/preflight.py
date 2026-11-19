@@ -9,6 +9,7 @@ examples/shunter.toml):
         "lines": [{"ID", "Changes": [{"ID", "Head"}]}],
         "tips": {"<line>": "<its last commit in the train>"}}
   out: {"pass": true} or {"pass": false, "blamed": [...], "evidence": "..."}
+       or {"pass": false, "left_out": {"<line>": "<why>"}, "evidence": "..."}
 
 Steps run in order and stop at the first failure, each with
 SHUNTER_TRAIN, SHUNTER_BASE and SHUNTER_HEAD in its environment. Each run
@@ -38,6 +39,16 @@ On a failure, blame, as the step's "blame" says ("files" when unset):
     files in the train (from the tips).
   Blame that names no line, or every line, is no blame: Shunter's J1
   decides.
+
+A step's "answer" says what its failure does with the lines blame finds:
+  - "blame" (the default): they are charged, and go back to their owners
+    as having broken the train.
+  - "leave-out": they are left out of the train, each with the step's
+    output as the reason: they didn't fit this train (they don't build on
+    it, or a generated part clashes with another line's). Shunter builds
+    the train again without them and runs pre-flight again. A leave-out is
+    not a charge. It needs a blame mode that names lines ("files" or
+    "bisect"); if blame names none, the failure is unblamed, as before.
 
 Configuration (JSON, --config FILE):
 
@@ -146,6 +157,21 @@ def blame_mode(step):
     return m
 
 
+ANSWERS = ("blame", "leave-out")
+
+
+def answer_mode(step):
+    """What a failure of the step answers: "blame" (the default) charges
+    the lines its blame finds; "leave-out" leaves them out of the train as
+    lines that didn't fit it, with the evidence as the reason."""
+    m = step.get("answer", "blame")
+    if m not in ANSWERS:
+        raise SystemExit("pre-flight: step %s: answer %r: one of %s" % (step.get("name"), m, ", ".join(ANSWERS)))
+    if m == "leave-out" and blame_mode(step) == "none":
+        raise SystemExit("pre-flight: step %s: answer \"leave-out\" needs a blame that names lines" % step.get("name"))
+    return m
+
+
 def run_step(step, doc, timeout):
     env = dict(os.environ)
     env.update({"SHUNTER_TRAIN": str(doc.get("train", "")), "SHUNTER_BASE": str(doc.get("base", "")),
@@ -216,6 +242,7 @@ def main():
     train = str(doc.get("train", ""))
     for step in cfg.get("steps") or []:
         blame_mode(step)  # a bad configuration says nothing, before any step runs
+        answer_mode(step)
     skipped = skips(cfg, base, sh.now())
     for n, why in sorted(skipped.items()):
         sh.log("pre-flight: %s skipped (%s; CI runs it)" % (n, why))
@@ -255,6 +282,9 @@ def main():
                     evidence += "\nblame: " + "; ".join(why)
             except sh.GitError as e:
                 sh.log("pre-flight: no blame: %s" % e)
+        if blamed and answer_mode(step) == "leave-out":
+            why = "pre-flight step %s failed with it in the train (exit %d):\n%s" % (name, rc, tail(out, 5))
+            sh.answer({"pass": False, "left_out": {lid: why[:1000] for lid in blamed}, "evidence": evidence[:4000]})
         sh.answer({"pass": False, "blamed": blamed, "evidence": evidence[:4000]})
     sh.answer({"pass": True})
 
