@@ -57,7 +57,8 @@ var version = "dev"
 var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true, "no-probe": true, "no-notify": true}
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
 	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
-	"stats": true, "since": true, "effects": true, "line-files": true, "state": true}
+	"stats": true, "since": true, "effects": true, "line-files": true, "state": true,
+	"until": true, "checks": true, "owners": true, "live": true}
 
 func main() {
 	if len(os.Args) < 2 {
