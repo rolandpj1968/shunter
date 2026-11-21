@@ -59,6 +59,49 @@ type Input struct {
 	// Depth, MaxLines and MaxChanges shape the trains Shunter would
 	// assemble.
 	Depth, MaxLines, MaxChanges int
+
+	// The gate's facts, all optional. They are what a live queue knows that
+	// the forge does not say: read from files the shadow never writes.
+	//
+	// Checks are line-check verdicts (§5.4). With RequireCheck, Shunter's
+	// gate takes a line only on a green verdict for the heads it has now.
+	Checks       []CheckFact
+	RequireCheck bool
+	// Owners say which changes are with their owner, being fixed (P3): a
+	// line holding one has not been offered again, and is not in the queue.
+	Owners []OwnerFact
+	// Live is the live queue's own answer for each waiting line: whether it
+	// would take the line into a train now. Shunter's answer is compared
+	// with it, line by line.
+	Live []LiveFact
+}
+
+// CheckFact is one line-check verdict: the changes checked as one unit, the
+// heads they were checked at, and the trunk they were merged with. Verdict is
+// "pass", "fail" (Evidence says what failed) or "conflict" (Evidence says in
+// what). Facts are in time order: the last for a line's present heads counts.
+type CheckFact struct {
+	Changes  []state.ChangeID `json:"changes"`
+	Heads    []state.Head     `json:"heads"`
+	Trunk    state.Head       `json:"trunk"`
+	Verdict  string           `json:"verdict"`
+	Evidence string           `json:"evidence,omitempty"`
+}
+
+// OwnerFact is one change's owner-state. Fixing says the change was charged
+// and its owner has not yet said it is done.
+type OwnerFact struct {
+	Change state.ChangeID `json:"change"`
+	Owner  string         `json:"owner,omitempty"`
+	Fixing bool           `json:"fixing"`
+	Why    string         `json:"why,omitempty"`
+}
+
+// LiveFact is the live queue's answer for one waiting line.
+type LiveFact struct {
+	Changes []state.ChangeID `json:"changes"`
+	Takes   bool             `json:"takes"`
+	Why     string           `json:"why,omitempty"`
 }
 
 // Train is one train of the history, as the live queue ran it and as
@@ -80,8 +123,18 @@ type Train struct {
 type Line struct {
 	Changes []state.ChangeID
 	Alone   bool
-	Gate    string // waiting, waiting-for-base, held, parked, refused, unread
+	Gate    string // waiting, waiting-for-base, held, parked, refused, unread, with-owner
 	Reason  string
+	// Check is the line check as Shunter's gate holds it: "green", "none",
+	// "conflict", "charged", or "" when no facts were given.
+	Check string
+	// Takes says Shunter's gate would let the line into a train now.
+	Takes bool
+	Why   string // why not, when it would not
+	// Live is the live queue's answer, when it gave one, and Compare is
+	// "agree", "diverge" or "" (no answer to compare).
+	Live    *LiveFact
+	Compare string
 }
 
 // Report is a shadow run's result.
@@ -105,6 +158,9 @@ type Report struct {
 	// assemble from them.
 	Waiting  []Line
 	Assemble [][]state.LineID
+	// Compared, GateAgree and GateDiverge count the waiting lines for which
+	// the live queue gave its own answer, and how Shunter's gate compares.
+	Compared, GateAgree, GateDiverge int
 	// ReadErrors are reads that failed; nothing is concluded from them.
 	ReadErrors []string
 }
@@ -301,8 +357,16 @@ func Run(ctx context.Context, in Input) Report {
 	// Now: the lines the live queue holds, through the gate, then its holds
 	// and parks placed as an import places them (docs/cutover.md); then the
 	// trains from what is left waiting.
-	s := state.New("trunk", state.Config{Depth: max(in.Depth, 1)})
-	s, rep.Waiting = gateLines(ctx, read, s, in.Lines)
+	s := state.New("trunk", state.Config{Depth: max(in.Depth, 1), RequireCheck: in.RequireCheck})
+	s, rep.Waiting = gateLines(ctx, read, s, in.Lines, in)
+	for _, l := range rep.Waiting {
+		switch l.Compare {
+		case "agree":
+			rep.Compared, rep.GateAgree = rep.Compared+1, rep.GateAgree+1
+		case "diverge":
+			rep.Compared, rep.GateDiverge = rep.Compared+1, rep.GateDiverge+1
+		}
+	}
 	for i := 0; i < max(in.Depth, 1); i++ {
 		take := daemon.Join(s, daemon.Caps{Lines: max(in.MaxLines, 1), Changes: in.MaxChanges})
 		if len(take) == 0 {
@@ -326,11 +390,32 @@ func Run(ctx context.Context, in Input) Report {
 // gateLines offers every line of lf, runs the gate on each from the forge,
 // and then places the holds and parks on the lines the gate accepted. A line
 // whose changes can't be read is reported, and the rest go on.
-func gateLines(ctx context.Context, read *cached, s state.State, lf store.LineFile) (state.State, []Line) {
+func gateLines(ctx context.Context, read *cached, s state.State, lf store.LineFile, in Input) (state.State, []Line) {
 	var out []Line
 	idx := map[state.LineID]int{}
+	fixing := map[state.ChangeID]OwnerFact{}
+	for _, o := range in.Owners {
+		if o.Fixing {
+			fixing[o.Change] = o
+		}
+	}
 	// Each line read first: one that can't be is reported and left out.
 	keep := func(pl store.PlainLine) bool {
+		// A line holding a change that is with its owner, being fixed, has
+		// not been offered again (P3): it is not in Shunter's queue at all.
+		for _, c := range pl.Changes {
+			if o, ok := fixing[c]; ok {
+				why := fmt.Sprintf("change %s is with its owner, being fixed", c)
+				if o.Owner != "" {
+					why = fmt.Sprintf("change %s is with its owner %s, being fixed", c, o.Owner)
+				}
+				if o.Why != "" {
+					why += " (" + o.Why + ")"
+				}
+				out = append(out, Line{Changes: pl.Changes, Alone: pl.Alone, Gate: "with-owner", Reason: why, Why: why})
+				return false
+			}
+		}
 		if _, err := read.describeAll(ctx, pl.Changes); err != nil {
 			ln := Line{Changes: pl.Changes, Alone: pl.Alone, Gate: "unread", Reason: err.Error()}
 			if adapter.IsPermanent(err) {
@@ -420,14 +505,152 @@ func gateLines(ctx context.Context, read *cached, s state.State, lf store.LineFi
 	if err != nil {
 		out = append(out, Line{Gate: "unread", Reason: "the line files: " + err.Error()})
 	}
+	// The line checks, as facts: each line's last verdict for the heads it
+	// has now goes through the machine as a line-checked event.
+	facts := len(in.Checks) > 0 || in.RequireCheck
+	for id := range idx {
+		if ev, ok := checkOf(s.Lines[id], in.Checks); ok {
+			if next, _, err := state.Next(s, ev); err == nil {
+				s = next
+			}
+		}
+	}
 	for id, i := range idx {
 		l := s.Lines[id]
 		out[i].Gate, out[i].Reason = l.State.String(), l.Reason
 		if l.State == state.LineReturned {
 			out[i].Gate = "refused"
+			if l.Cause == state.CauseCharged {
+				out[i].Gate = "charged"
+			}
+		}
+		if facts {
+			out[i].Check = checkName(l)
+		}
+		out[i].Takes, out[i].Why = takes(s, l)
+	}
+	live := map[string]*LiveFact{}
+	for i := range in.Live {
+		live[fmt.Sprint(in.Live[i].Changes)] = &in.Live[i]
+	}
+	for i := range out {
+		lf := live[fmt.Sprint(out[i].Changes)]
+		if lf == nil {
+			continue
+		}
+		out[i].Live = lf
+		out[i].Compare = "agree"
+		if lf.Takes != out[i].Takes {
+			out[i].Compare = "diverge"
 		}
 	}
 	return s, out
+}
+
+// checkOf is the line-checked event the facts give a line: the last verdict
+// on exactly the heads it has now, its changes checked as one unit. A line of
+// several changes with no verdict of its own takes a pass when every change
+// has a pass alone at its present head: a live queue that checks a composite
+// line part by part says no more than that, and the event says so.
+func checkOf(l *state.Line, facts []CheckFact) (state.LineChecked, bool) {
+	if l == nil || l.State.Spent() || len(facts) == 0 {
+		return state.LineChecked{}, false
+	}
+	heads := make([]state.Head, len(l.Changes))
+	for i, c := range l.Changes {
+		heads[i] = c.Head
+	}
+	same := func(f CheckFact, ids []state.ChangeID, hs []state.Head) bool {
+		if len(f.Changes) != len(ids) || len(f.Heads) != len(hs) {
+			return false
+		}
+		for i := range ids {
+			if f.Changes[i] != ids[i] || f.Heads[i] != hs[i] {
+				return false
+			}
+		}
+		return true
+	}
+	ids := make([]state.ChangeID, len(l.Changes))
+	for i, c := range l.Changes {
+		ids[i] = c.ID
+	}
+	for i := len(facts) - 1; i >= 0; i-- {
+		f := facts[i]
+		if !same(f, ids, heads) {
+			continue
+		}
+		ev := state.LineChecked{Line: l.ID, Heads: heads, Trunk: f.Trunk}
+		switch f.Verdict {
+		case "pass":
+			ev.Pass = true
+		case "fail":
+			ev.Evidence = orWord(f.Evidence, "the line check failed")
+		case "conflict":
+			ev.Conflict = orWord(f.Evidence, "it does not merge onto trunk")
+		default:
+			return state.LineChecked{}, false
+		}
+		return ev, true
+	}
+	if len(ids) < 2 {
+		return state.LineChecked{}, false
+	}
+	var trunk state.Head
+	for i := range ids {
+		found := false
+		for j := len(facts) - 1; j >= 0 && !found; j-- {
+			if same(facts[j], ids[i:i+1], heads[i:i+1]) {
+				if facts[j].Verdict != "pass" {
+					return state.LineChecked{}, false
+				}
+				found, trunk = true, facts[j].Trunk
+			}
+		}
+		if !found {
+			return state.LineChecked{}, false
+		}
+	}
+	return state.LineChecked{Line: l.ID, Heads: heads, Trunk: trunk, Pass: true}, true
+}
+
+func orWord(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+func checkName(l *state.Line) string {
+	switch {
+	case l.State == state.LineReturned && l.Cause == state.CauseCharged:
+		return "charged"
+	case l.Conflict != "":
+		return "conflict"
+	case l.CheckCurrent():
+		return "green"
+	}
+	return "none"
+}
+
+// takes says whether Shunter's gate would let the line into a train now, as
+// the joining rule tests each line, and why not when it would not.
+func takes(s state.State, l *state.Line) (bool, string) {
+	switch {
+	case l.State == state.LineReturned && l.Cause == state.CauseCharged:
+		return false, "charged by its line check: " + l.Reason
+	case l.State != state.LineWaiting:
+		return false, "it is " + l.State.String()
+	case l.Stale != "":
+		return false, "stale: " + l.Stale
+	case l.Conflict != "":
+		return false, "in conflict with trunk: " + l.Conflict
+	case l.AtChargedHeads():
+		return false, "at the heads it was charged on"
+	case s.Config.RequireCheck && !l.CheckCurrent():
+		return false, "no green line check on its present heads"
+	}
+	return true, ""
 }
 
 // cached is a read-only reader that reads each change once.
@@ -553,6 +776,21 @@ func (rep Report) Write(w io.Writer, verbose bool) {
 		}
 		for i, t := range rep.Assemble {
 			fmt.Fprintf(w, "  Train %d would take %d lines: %v\n", i+1, len(t), t)
+		}
+		if rep.Compared > 0 {
+			fmt.Fprintf(w, "Gate comparison: %d waiting lines the live queue answered for: agree %d, DIVERGE %d.\n", rep.Compared, rep.GateAgree, rep.GateDiverge)
+			word := map[bool]string{true: "takes", false: "does not take"}
+			for _, l := range rep.Waiting {
+				if l.Live == nil || (l.Compare == "agree" && !verbose) {
+					continue
+				}
+				mark := "    "
+				if l.Compare == "diverge" {
+					mark = " ** "
+				}
+				fmt.Fprintf(w, "%s%v  live queue: %s (%s)  Shunter: %s (%s)  %s\n", mark, l.Changes,
+					word[l.Live.Takes], orWord(l.Live.Why, "no reason given"), word[l.Takes], orWord(l.Why, "check "+orWord(l.Check, "not required")), strings.ToUpper(l.Compare))
+			}
 		}
 	}
 	if len(rep.ReadErrors) > 0 {

@@ -321,7 +321,18 @@ func shadowRun(fl map[string]string, logs []string) error {
 	if err != nil {
 		return err
 	}
-	in := shadow.Input{Read: gh, Depth: f.Queue.Depth, MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges}
+	in := shadow.Input{Read: gh, Depth: f.Queue.Depth, MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, RequireCheck: f.Queue.RequireCheck}
+	// The gate's facts: files of one JSON object a line, read and never
+	// written (shadow.CheckFact, OwnerFact, LiveFact).
+	if err := readFacts(fl["checks"], &in.Checks); err != nil {
+		return fmt.Errorf("shadow: --checks: %w", err)
+	}
+	if err := readFacts(fl["owners"], &in.Owners); err != nil {
+		return fmt.Errorf("shadow: --owners: %w", err)
+	}
+	if err := readFacts(fl["live"], &in.Live); err != nil {
+		return fmt.Errorf("shadow: --live: %w", err)
+	}
 	if in.MaxLines == 0 {
 		in.MaxLines = 8
 	}
@@ -464,4 +475,28 @@ func fatal(err error) {
 	}
 	fmt.Fprintln(os.Stderr, "shunter:", err)
 	os.Exit(1)
+}
+
+// readFacts reads a file of one JSON object a line into out, a pointer to a
+// slice. No path reads nothing. A line that is not an object of the slice's
+// type is an error: a fact half read would be a gate half fed.
+func readFacts[T any](path string, out *[]T) error {
+	if path == "" {
+		return nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	for i, ln := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		var v T
+		if err := json.Unmarshal([]byte(ln), &v); err != nil {
+			return fmt.Errorf("%s line %d: %w", path, i+1, err)
+		}
+		*out = append(*out, v)
+	}
+	return nil
 }
