@@ -419,7 +419,7 @@ The protocol assumes all of the following, and must stay safe under any combinat
 - trunk breaks without any batch's fault;
 - producers push to a riding change, retire mid-line, offer duplicate lines, or hang silently (a producer stuck in a tool call holds its work invisibly: each producer needs a liveness signal, and work held by a silent producer is handed on after a deadline);
 - the judge is slow, silent or wrong (safety must still hold; only liveness may suffer);
-- the runner restarts at any point. All its state is in one store (I8), and it resumes from what it finds;
+- the runner restarts at any point. All its state is in one store (I8), and it resumes from what it finds. **To replace it between trains, pause it:** a pause starts no new batch, the batches in flight finish and land, and lines offered meanwhile wait in order; then stop it, start the new one, and resume. Nothing is held by hand and nothing is killed mid-batch. (The queue this protocol grew from was reloaded by holding every line and killing the runner, and new lines outran the holds twice.)
 - a builder's report is wrong, or its output carries text that looks like a report (I9);
 - the runner's own code is replaced while it runs. A new version is checked before it's started (it parses, it can execute, it passes its own tests), the running version is recorded in the store, and a version that fails to start leaves the old one in place and alerts;
 - a watcher stops, or fails without saying so (L3).
