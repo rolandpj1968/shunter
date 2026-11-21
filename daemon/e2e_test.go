@@ -1232,3 +1232,42 @@ func TestALineInConflictIsRebasedByTheRunner(t *testing.T) {
 		t.Fatal("a line in conflict rides")
 	}
 }
+
+// TestAPauseDrainsTheQueueForAReload: to replace the runner between trains
+// (§7), pause it. A pause starts no new train, and the trains in flight
+// finish and land; lines offered meanwhile wait, in order. The runner can
+// then be stopped and started at any point, and a resume takes the waiting
+// lines up. Nothing is held by hand and nothing is killed mid-train.
+func TestAPauseDrainsTheQueueForAReload(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "b", "c")
+	r.queue("a")
+	t1 := r.trainOf("a")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "drain for a reload"})
+	r.queue("b")
+	r.queue("c")
+	for _, id := range []string{"b", "c"} {
+		if st := r.line(id); st != state.LineWaiting {
+			t.Fatalf("line %s is %s while the queue drains; want waiting", id, st)
+		}
+	}
+	r.w.Pass(t1)
+	r.tick(time.Second)
+	r.wantLine("a", state.LineLanded)
+	if n := len(r.state().Chain); n != 0 {
+		t.Fatalf("%d trains ride after the drain", n)
+	}
+	r.restart()
+	for _, id := range []string{"b", "c"} {
+		if st := r.line(id); st != state.LineWaiting {
+			t.Fatalf("line %s is %s after the reload, before the resume", id, st)
+		}
+	}
+	r.exec(daemon.Request{Cmd: "resume"})
+	if r.line("b") != state.LineRiding {
+		t.Fatalf("line b does not ride after the resume: %s", r.line("b"))
+	}
+	if sb, sc := r.state().Lines["b"].Seq, r.state().Lines["c"].Seq; sb >= sc {
+		t.Fatalf("the waiting lines lost their order: b %d, c %d", sb, sc)
+	}
+}
