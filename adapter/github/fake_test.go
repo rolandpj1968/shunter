@@ -125,6 +125,13 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	switch {
+	case r.Method == "GET" && len(parts) == 3 && parts[0] == "pulls" && parts[2] == "files":
+		// the pull request's files, 100 a page
+		n, _ := strconv.Atoi(parts[1])
+		fs, _ := s.pulls[n]["files"].([]map[string]any)
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		lo, hi := (max(page, 1)-1)*100, max(page, 1)*100
+		reply(fs[min(lo, len(fs)):min(hi, len(fs))])
 	case r.Method == "GET" && len(parts) == 2 && parts[0] == "pulls":
 		n, _ := strconv.Atoi(parts[1])
 		if p, ok := s.pulls[n]; ok {

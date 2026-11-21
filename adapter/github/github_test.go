@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -592,5 +594,39 @@ func TestReblameForcesTheClass(t *testing.T) {
 		if json.Unmarshal(b, &in) != nil || in.ForceClass != "deterministic" {
 			t.Errorf("the hook read %s", b)
 		}
+	}
+}
+
+// TestFilesIsWholeOrAnError: the file list the tier classifier reads is every
+// path a pull request touches, a rename's old name included, over as many
+// pages as it takes. A list that does not add up to the number of files the
+// pull request reports is an error, never a shorter list: the classifier
+// must not call a change inert on files it did not see.
+func TestFilesIsWholeOrAnError(t *testing.T) {
+	s, c := newServer(t)
+	s.pull(31, "open", "aaa", "feat-a", "main", "alice")
+	var fs []map[string]any
+	for i := 0; i < 230; i++ {
+		fs = append(fs, map[string]any{"filename": fmt.Sprintf("docs/%03d.md", i)})
+	}
+	fs = append(fs, map[string]any{"filename": "docs/new.md", "previous_filename": "pkg/old.go"})
+	s.pulls[31]["files"], s.pulls[31]["changed_files"] = fs, len(fs)
+	got, err := c.Files(ctx, "31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 232 || !slices.Contains(got, "pkg/old.go") || !slices.Contains(got, "docs/229.md") {
+		t.Fatalf("%d paths; the rename's old name present: %v", len(got), slices.Contains(got, "pkg/old.go"))
+	}
+	// The pull request reports more files than the listing gives.
+	s.pulls[31]["changed_files"] = len(fs) + 1
+	if _, err := c.Files(ctx, "31"); err == nil {
+		t.Fatal("a short list was given as whole")
+	}
+	// A pull request that reports no count is not listed either.
+	s.pull(32, "open", "bbb", "feat-b", "main", "alice")
+	s.pulls[32]["files"] = []map[string]any{{"filename": "docs/a.md"}}
+	if _, err := c.Files(ctx, "32"); err == nil {
+		t.Fatal("a list with no count to check it against was given as whole")
 	}
 }

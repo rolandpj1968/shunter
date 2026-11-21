@@ -239,6 +239,7 @@ func (m *machine) apply(ev Event) error {
 		if l.State != LineOffered {
 			return bad(ErrState, "line %s is %s", l.ID, l.State)
 		}
+		l.Inert = e.Inert
 		m.place(l, CauseGate)
 	case GateRefuse:
 		l, err := m.line(e.Line)
@@ -816,7 +817,12 @@ func (m *machine) assemble(e Assemble) error {
 	}
 	lines := append([]LineID(nil), e.Lines...)
 	sort.Slice(lines, func(i, j int) bool { return m.s.Lines[lines[i]].Seq < m.s.Lines[lines[j]].Seq })
-	t := &Train{ID: e.Train, Lines: lines, BaseHead: base}
+	t := &Train{ID: e.Train, Lines: lines, BaseHead: base, Light: true}
+	for _, id := range lines {
+		// The train's tier is its heaviest line's: light only when every
+		// line is inert.
+		t.Light = t.Light && m.s.Lines[id].Inert
+	}
 	m.s.Trains[t.ID] = t
 	m.s.Chain = append(m.s.Chain, t.ID)
 	m.setTrain(t, TrainAssembling, CauseAssemble, "")
@@ -1092,12 +1098,14 @@ func (m *machine) headMoved(e HeadMoved) error {
 			return nil
 		}
 		l.Changes[i].Head, l.NoVerdicts = e.Head, 0
-		l.Checked, l.CheckedOn, l.Conflict = nil, "", ""
+		l.Checked, l.CheckedOn, l.Conflict, l.Inert = nil, "", "", false
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("change %s moved while it rode (I4)", e.Change), nil)
 		return nil
 	}
 	l.Changes[i].Head, l.NoVerdicts = e.Head, 0
-	l.Checked, l.CheckedOn, l.Conflict = nil, "", ""
+	// A push may bring anything: the line is full until the gate has read
+	// its files again.
+	l.Checked, l.CheckedOn, l.Conflict, l.Inert = nil, "", "", false
 	return nil
 }
 

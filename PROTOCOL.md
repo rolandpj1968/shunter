@@ -48,6 +48,7 @@ These are safety properties. Every reachable state must satisfy them, whatever t
 - **I8, one state, one record.** Every line is in exactly one state of §5.1, held in one store, and so is every train. A transition is a recorded act: the subject, from, to, the actor, the time and the reason. No actor infers a line's state from anything else, and a transition that isn't in the tables of §5.1 can't be written.
 - **I10, checked before assembled.** Where the queue requires line checks (§5.4), no line is assembled into a batch without a green line check on exactly the heads its changes have. A push to any of them ends the check. A push is never taken as a fix: a line that a check charged rides again only when the check has passed on its new heads.
 - **I11, a charge is cleared by a fix.** A line that was charged never rides again at the heads it was charged on, and is offered again only by its owner (§3, P3). A push alone is not "done": anyone's push, a rebase or half a fix all move a head. Nor is an offer a fix: the heads must have moved.
+- **I12, never lighter than its content allows.** A batch is given the light tier of §5.4 only when every line in it is inert content, by a classifier that can only err towards the full tier.
 - **I9, the lander verifies.** Before it fast-forwards trunk, the runner itself reads from the forge that the batch's CI passed on exactly the head it is about to push, that the head is the one it built, that every change's head is the one it assembled (I4), and that trunk is where the batch was built (I5). It never lands on a builder's report, and no protocol message travels in a channel that tools or tests can write to.
 
 Two consequences are worth stating on their own, because the queue this protocol grew from broke both:
@@ -271,6 +272,13 @@ So a pre-flight check is:
 
 Not in pre-flight: long test suites, anything that needs services or browsers, anything flaky. Those belong to CI.
 
+**A line's tier is chosen by what it changes, and inert content takes a light one.** A change whose every file is inert, read by no build, no test and no generator (prose, say), gains nothing from the full tier: it gets a light check that satisfies the same required status. Two rules bind it:
+
+- **The classifier can only err towards the full tier.** A line is inert only when the forge's *whole* list of the files its changes touch is known, a rename's old name included, and every one of them matches a pattern declared inert and none a pattern declared read (a document a test checks, a page a generator embeds). No rules, a list the forge can't vouch for, a path the classifier can't make sense of, one file under no inert pattern: full. Adding a file to a change never lightens it, and a rule left out costs time, never a check that should have run. A push ends a line's inertness until the gate has read its files again.
+- **A batch's tier is its heaviest line's (I12).** A batch is light only when every line in it is inert; one full line makes the whole batch full. So an inert line may **join any batch whatever its size**: it can break nothing the batch's checks look at, counts against neither cap of J4, and rides a batch that is already full.
+
+Where the light check is chosen is the forge's business as much as the runner's: a CI that classifies the batch's own difference by the same rules, erring the same way, satisfies I12 by construction. The runner's classifier decides what joins; I1 still holds, since the light check is a CI run on exactly the batch's head.
+
 **A selection that leaves checks out must over-approximate.** This binds tier 1 as well as tier 3: a change the selection can't classify, or a change to the definition of CI itself, selects everything.
 
 **The selection is data-driven, in both directions:**
@@ -457,6 +465,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§5.4 and I12, tiers by content:** a line of inert content only takes a light tier and joins any batch whatever its size; a batch is light only when every line is. New package `tier`, `[tiers]` in the configuration, `Line.Inert`, `Train.Light`, and the optional `Filer` of a forge. The model carries I12 as `LightOnlyIfAllInert`.
 
 - **§5.4: a charge is on the heads the line has now, and on that line only.** The model has a line check in flight (`LineCheckStart`, `LineCheckDropped`) and the property `ChargedOnlyAtPresentHead`.
 

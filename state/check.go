@@ -44,6 +44,19 @@ func Check(s State) []error {
 			fail("§5.3", "train %s holds an unjudged failure at place %d, in state %s", id, i+1, t.State)
 		}
 	}
+	// §5.4: a train is never given a lighter tier than its lines allow. A
+	// light train holds inert lines only.
+	for _, id := range s.Chain {
+		t := s.Trains[id]
+		if t == nil || !t.Light {
+			continue
+		}
+		for _, lid := range t.Lines {
+			if l := s.Lines[lid]; l != nil && l.State == LineRiding && !l.Inert {
+				fail("§5.4", "train %s is light, and its line %s is not inert", id, lid)
+			}
+		}
+	}
 	for id, t := range s.Trains {
 		if t.Behind != nil && !t.State.Live() {
 			fail("§5.3", "ended train %s still holds an unjudged failure", id)

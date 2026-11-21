@@ -1,10 +1,18 @@
 package daemon
 
-import "time"
+import (
+	"time"
+
+	"github.com/rolandpj1968/shunter/tier"
+)
 
 // Config bounds the daemon. Every wait has a deadline and a default
 // (PROTOCOL.md §2.5: silence is safe). Zero values take the defaults below.
 type Config struct {
+	// Tiers are the rules of the gate's tier classifier (§5.4). With none,
+	// every line is full.
+	Tiers tier.Rules
+
 	// Version is recorded in the store at every start (§7).
 	Version string
 	// Now is the clock; time.Now when nil.

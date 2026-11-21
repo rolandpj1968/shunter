@@ -138,6 +138,10 @@ type Line struct {
 	// any change ends it.
 	Checked   []Head
 	CheckedOn Head
+	// Inert says the gate classified the line as inert content only (§5.4):
+	// it takes the light tier, and joins any train whatever its size. A push
+	// ends it: the line is full until it passes the gate again.
+	Inert bool
 	// Conflict says the line's check found that it does not merge onto
 	// trunk, and in what. A line in conflict joins no train. Only a push to
 	// one of its changes ends it: the runner's rebase (§5.2), or its owner's.
@@ -193,7 +197,10 @@ type Train struct {
 	Judged   int      // reruns ordered at J1
 	Pushes   int      // transient push refusals
 	Asked    bool     // the landing check has been asked for
-	Reason   string
+	// Light says the train was assembled of inert lines only, so the light
+	// tier is enough for it (§5.4). A train with any other line is full.
+	Light  bool
+	Reason string
 	// Behind is a failure reported while a train ahead of this one was still
 	// undecided (§5.3). Nothing is judged on it yet: the failure may be the
 	// train ahead's, inherited. If every train ahead lands it is this train's
