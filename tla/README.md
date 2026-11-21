@@ -17,6 +17,7 @@
 | `HeldNeverSpent`, `HeldNotRiding` | action, invariant | a held line is never spent |
 | `NeedsFirst` | invariant | I3: a line rides only behind its base, and lands only after it |
 | `JudgedOnlyAtHead` | action | §5.3: a train enters J1 or ends as failed only when it is first in the chain, on trunk |
+| `ChargedOnlyAtPresentHead` | action | a charge is only ever on the head the line has at that moment: a line check's verdict on a head since replaced charges nobody |
 | `NoRideAtChargedHead` | invariant | I11: a charged line never rides again at the head it was charged on |
 | `AssembledOnlyChecked` | invariant | I10: a line rides only on a green line check of the head it was assembled at |
 | `GreenOnlyByACheck` | action | I10: a push is never taken as a fix; only a pass of the check on the present head sets a line's green |
@@ -30,7 +31,7 @@ The judge is a nondeterministic choice within its menu (`JudgeCharge`, `JudgeReq
 Liveness assumes, and the module states as `Fairness`:
 
 - the runner assembles, checks and pushes when it can;
-- the line checker answers for every waiting line, with a pass or a failure;
+- the line checker starts a check of every waiting line, and answers it with a pass or a failure, or drops a verdict that is for a head since replaced;
 - CI eventually answers a run it is left to finish;
 - a failure kept behind an undecided train is judged once its train is first;
 - a line whose base is lost is returned;
@@ -55,7 +56,7 @@ To check syntax and semantics only, which takes a second:
 java -cp tla2tools.jar tla2sany.SANY Shunter.tla
 ```
 
-[`Shunter.cfg`](Shunter.cfg) is the small configuration: two lines, neither stacked, depth 2, one fault. [`Stack.cfg`](Stack.cfg) is the same with the second line stacked on the first; it runs on [`Stack.tla`](Stack.tla), which names the stack. [`Reoffer.cfg`](Reoffer.cfg) is `Shunter.cfg` with two faults, which is what it takes to push a fix to a charged line and offer it again (about half a million states, half a minute). CI runs all three. Liveness checking is the costly part. For a quicker safety-only run, remove `EveryLineIsSpent` from `PROPERTIES`. For more confidence, raise the constants one at a time (three lines; two faults; depth 3), keeping `MaxTrains` at the bound above.
+[`Shunter.cfg`](Shunter.cfg) is the small configuration: two lines, neither stacked, depth 2, one fault. [`Stack.cfg`](Stack.cfg) is the same with the second line stacked on the first; it runs on [`Stack.tla`](Stack.tla), which names the stack. [`Reoffer.cfg`](Reoffer.cfg) is `Shunter.cfg` with two faults, which is what it takes to push a fix to a charged line and offer it again (about 570,000 states, under a minute). CI runs all three. Liveness checking is the costly part. For a quicker safety-only run, remove `EveryLineIsSpent` from `PROPERTIES`. For more confidence, raise the constants one at a time (three lines; two faults; depth 3), keeping `MaxTrains` at the bound above.
 
 `-deadlock` turns off TLC's deadlock check: a queue whose lines are all spent has nothing left to do, which is its proper end. The CI job passes it.
 
