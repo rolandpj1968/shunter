@@ -1333,7 +1333,8 @@ func TestAnInertLineTakesTheLightTierAndJoinsAnyTrain(t *testing.T) {
 	}
 }
 
-// TestATrainOfInertLinesOnlyIsLight, and a push ends a line's inertness.
+// TestATrainOfInertLinesOnlyIsLight. (That a push ends a line's inertness is
+// the machine's rule, tested there: TestAPushMakesAnInertLineFull.)
 func TestATrainOfInertLinesOnlyIsLight(t *testing.T) {
 	r := newRigWith(t, 8, tier.Rules{Inert: []string{"docs/**"}})
 	r.open("doc1", "doc2")
@@ -1343,12 +1344,5 @@ func TestATrainOfInertLinesOnlyIsLight(t *testing.T) {
 	t1 := r.trainOf("doc1")
 	if r.trainOf("doc2") != t1 || !r.train(t1).Light {
 		t.Fatalf("the documents' train: light %v\n%s", r.train(t1).Light, daemon.Status(r.state(), nil))
-	}
-	// A push to a riding line voids its train (I4), and the line is full
-	// until the gate has read its files again.
-	r.exec(daemon.Request{Cmd: "pause", Reason: "hold the next train"})
-	r.st.Apply("forge", state.HeadMoved{Line: "doc1", Change: "doc1", Head: "doc1-2"})
-	if l := r.state().Lines["doc1"]; l.Inert {
-		t.Fatalf("line doc1 is still inert after a push")
 	}
 }
