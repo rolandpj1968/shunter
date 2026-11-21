@@ -786,6 +786,12 @@ func TestCoRequiresGroupLandsAndReturnsWhole(t *testing.T) {
 	if l := r.state().Lines["g1"]; l.State != state.LineReturned || len(l.Changes) != 2 {
 		t.Fatalf("the group is %s with %d changes", l.State, len(l.Changes))
 	}
+	// Charged, the group is with its owner. Offered again as it stands it is
+	// refused: a fix is a push.
+	if msg := r.execErr(daemon.Request{Cmd: "queue", Args: []string{"g1", "g2"}}); !strings.Contains(msg, "charged") {
+		t.Fatalf("a charged line was offered again unchanged: %q", msg)
+	}
+	r.w.Change("g2", func(c *fake.Change) { c.Head = "g2-2" })
 	r.exec(daemon.Request{Cmd: "queue", Args: []string{"g1", "g2"}})
 	tg := r.trainOf("g1")
 	r.w.Pass(r.trainOf("c"))
@@ -1160,5 +1166,69 @@ func TestAParkOnALandingEndsWhenThatLineLands(t *testing.T) {
 	r.tick(time.Second)
 	if r.line("a") == state.LineParked {
 		t.Fatalf("the park did not end when its line landed\n%s", daemon.Status(r.state(), nil))
+	}
+}
+
+// TestARecordedFlakeThatFailsTwiceChargesNobody: a recorded flake gets its
+// one rerun (§5.5). When it fails again, nothing is judged, even for a train
+// of one line: blame is not asked, nobody is charged, J1 is not opened, and
+// the line rides again.
+func TestARecordedFlakeThatFailsTwiceChargesNobody(t *testing.T) {
+	r := newRig(t)
+	r.open("a")
+	r.queue("a")
+	t1 := r.trainOf("a")
+	flake := adapter.Report{Outcome: adapter.Flaky, KnownFlake: true, Head: r.train(t1).Head, Why: "TestShared is a recorded flake"}
+	r.w.Report(t1, flake)
+	r.tick(time.Second)
+	r.w.Report(t1, flake)
+	r.tick(time.Second)
+	r.wantTrain(t1, state.TrainVoid)
+	if n := r.w.Count("reblame", false); n != 0 {
+		t.Fatalf("blame was asked %d times for a recorded flake", n)
+	}
+	if len(r.w.NoticesTo("judge", "J1")) != 0 {
+		t.Fatal("J1 was opened for a recorded flake")
+	}
+	l := r.state().Lines["a"]
+	if l.State == state.LineReturned || l.Cause == state.CauseCharged {
+		t.Fatalf("line a is %s (%s): a recorded flake charged it", l.State, l.Cause)
+	}
+	if t2 := r.trainOf("a"); t2 == t1 || t2 == "" {
+		t.Fatalf("line a does not ride again: train %q", t2)
+	}
+}
+
+// TestALineInConflictIsRebasedByTheRunner: a line whose check finds that it
+// does not merge onto trunk is rebased by the runner where that needs no
+// person (§5.2): the new head is recorded, and the line rides once it is
+// checked again. A conflict that needs a person goes to the line's owner,
+// uncharged, and the line stays out of trains until a push.
+func TestALineInConflictIsRebasedByTheRunner(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "b")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "check before any train"})
+	r.queue("a")
+	r.queue("b")
+	r.w.Rebases["a"] = adapter.RebaseResult{Heads: map[state.ChangeID]state.Head{"a": "a-2"}}
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"a", "T0", "a-1"}, Action: "conflict", Reason: "gen/api.go"})
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"b", "T0", "b-1"}, Action: "conflict", Reason: "x.go"})
+	r.tick(time.Second)
+	a, b := r.state().Lines["a"], r.state().Lines["b"]
+	if a.Changes[0].Head != "a-2" || a.Conflict != "" {
+		t.Fatalf("line a was not rebased: head %s, conflict %q", a.Changes[0].Head, a.Conflict)
+	}
+	if b.Conflict == "" || b.State != state.LineWaiting || b.Cause == state.CauseCharged {
+		t.Fatalf("line b: conflict %q, %s (%s)", b.Conflict, b.State, b.Cause)
+	}
+	if n := r.w.Count("rebase", true); n != 2 {
+		t.Fatalf("%d rebases, want one a line", n)
+	}
+	r.exec(daemon.Request{Cmd: "resume"})
+	if r.line("a") != state.LineRiding {
+		t.Fatalf("the rebased line does not ride: %s", r.line("a"))
+	}
+	if r.line("b") == state.LineRiding {
+		t.Fatal("a line in conflict rides")
 	}
 }

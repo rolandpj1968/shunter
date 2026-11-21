@@ -84,6 +84,12 @@ func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 	if to == LineLanded {
 		l.NoVerdicts, l.Group = 0, 0
 	}
+	if to == LineReturned && c == CauseCharged {
+		l.ChargedAt = l.ChargedAt[:0]
+		for _, ch := range l.Changes {
+			l.ChargedAt = append(l.ChargedAt, ch.Head)
+		}
+	}
 	for _, id := range m.s.lineIDs() {
 		d := m.s.Lines[id]
 		if d.Base != l.ID {
@@ -275,6 +281,28 @@ func (m *machine) apply(ev Event) error {
 		return m.withdraw(e)
 	case LineChecked:
 		return m.lineChecked(e)
+	case HandOver:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		if e.To == "" || e.Why == "" {
+			return bad(ErrReason, "a hand-over names the new owner and says why")
+		}
+		l.Owner = e.To
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "handed over to " + e.To + ": " + e.Why})
+	case RebaseFailed:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		if l.Conflict == "" || l.State.Spent() {
+			return bad(ErrState, "line %s is not in conflict", l.ID)
+		}
+		if e.Reason == "" {
+			return bad(ErrReason, "a rebase that failed")
+		}
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "conflicts with trunk (" + l.Conflict + ") and was not rebased by the runner: " + e.Reason})
 	case Assemble:
 		return m.assemble(e)
 	case LeaveOut:
@@ -347,6 +375,15 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
 		if t.Reruns >= 1 {
+			if e.Known {
+				// A recorded flake failed again after its one rerun. It
+				// charges nobody, whatever the train's size: the test is
+				// known to fail on code where it should pass, so its failure
+				// names no line. Nothing is judged; the lines go back, and
+				// their no-verdict budget brings a test that keeps failing
+				// to the judge (J3, J5).
+				return m.noVerdict(CINoVerdict{Train: t.ID, Why: "a recorded flake failed again after its rerun, which charges nobody: " + e.Why})
+			}
 			return bad(ErrBudget, "train %s was rerun already", t.ID)
 		}
 		t.Reruns++
@@ -539,7 +576,24 @@ func (m *machine) offer(e Offer) error {
 			}
 		}
 	}
-	l := &Line{ID: e.Line, State: from, Seq: m.s.NextSeq, Changes: append([]Change(nil), e.Changes...), Base: e.Base, Alone: e.Alone, Fix: e.Fix}
+	l := &Line{ID: e.Line, State: from, Seq: m.s.NextSeq, Changes: append([]Change(nil), e.Changes...), Base: e.Base, Alone: e.Alone, Fix: e.Fix, Owner: e.By}
+	if old != nil {
+		// The owner-state (§7): a returned line is with its owner until its
+		// owner says it is done, by offering it again. A push is not that:
+		// anyone's push, a rebase, a half-made fix all move the head.
+		if old.Owner != "" {
+			l.Owner = old.Owner
+		}
+		if old.State == LineReturned && old.Cause == CauseCharged {
+			if old.Owner != "" && e.By != old.Owner {
+				return bad(ErrOwner, "line %s was charged and is with %s, who alone offers it again (or hands it over)", e.Line, old.Owner)
+			}
+			l.ChargedAt = append([]Head(nil), old.ChargedAt...)
+			if l.AtChargedHeads() {
+				return bad(ErrUnfixed, "line %s is at the heads it was charged on: a fix is a push", e.Line)
+			}
+		}
+	}
 	m.s.NextSeq++
 	m.s.Lines[e.Line] = l
 	m.setLine(l, LineOffered, CauseOffer, "")
@@ -675,6 +729,18 @@ func (m *machine) lineChecked(e LineChecked) error {
 	}
 	if e.Pass {
 		l.Checked, l.CheckedOn = append([]Head(nil), e.Heads...), e.Trunk
+		l.Conflict = ""
+		return nil
+	}
+	if e.Conflict != "" {
+		// Not a failure: nobody is charged. The line joins no train, and
+		// the runner is asked to rebase it. One that rides was assembled,
+		// so it merged: its train judges it.
+		if l.State != LineRiding && l.Conflict != e.Conflict {
+			l.Checked, l.CheckedOn = nil, ""
+			l.Conflict = e.Conflict
+			m.emit(Effect{Kind: EffRebase, Line: l.ID, Reason: e.Conflict})
+		}
 		return nil
 	}
 	if e.Evidence == "" {
@@ -737,6 +803,10 @@ func (m *machine) assemble(e Assemble) error {
 			return bad(ErrJoin, "line %s is in another half of a split", id)
 		case l.Stale != "":
 			return bad(ErrJoin, "line %s is stale: %s", id, l.Stale)
+		case l.Conflict != "":
+			return bad(ErrJoin, "line %s conflicts with trunk: %s", id, l.Conflict)
+		case l.AtChargedHeads():
+			return bad(ErrUnfixed, "line %s is at the heads it was charged on", id)
 		case m.s.Config.RequireCheck && !l.CheckCurrent():
 			return bad(ErrJoin, "line %s has no current green line check (§5.4)", id)
 		case l.Base != "" && !m.s.NeedMet(l, taken):
@@ -1022,12 +1092,12 @@ func (m *machine) headMoved(e HeadMoved) error {
 			return nil
 		}
 		l.Changes[i].Head, l.NoVerdicts = e.Head, 0
-		l.Checked, l.CheckedOn = nil, ""
+		l.Checked, l.CheckedOn, l.Conflict = nil, "", ""
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("change %s moved while it rode (I4)", e.Change), nil)
 		return nil
 	}
 	l.Changes[i].Head, l.NoVerdicts = e.Head, 0
-	l.Checked, l.CheckedOn = nil, ""
+	l.Checked, l.CheckedOn, l.Conflict = nil, "", ""
 	return nil
 }
 

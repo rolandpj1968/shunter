@@ -66,6 +66,14 @@ func Check(s State) []error {
 		if s.Config.RequireCheck && l.State == LineRiding && !l.CheckCurrent() {
 			fail("I10", "line %s rides with no green line check on its present heads", id)
 		}
+		// A line in conflict with trunk, or at the heads it was charged on,
+		// rides no train (§5.2, §7).
+		if l.State == LineRiding && l.Conflict != "" {
+			fail("§5.2", "line %s rides in conflict with trunk: %s", id, l.Conflict)
+		}
+		if l.State == LineRiding && l.AtChargedHeads() {
+			fail("§7", "line %s rides at the heads it was charged on", id)
+		}
 		// A held line is never in a train, and never spent while held.
 		if l.State == LineHeld && rides {
 			fail("held", "held line %s rides %s", id, t)

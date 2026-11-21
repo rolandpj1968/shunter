@@ -298,6 +298,7 @@ func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report,
 	switch a.Class {
 	case "flaky":
 		rep.Outcome, rep.Why = adapter.Flaky, orDefault(a.Why, "a known flake, by the blame hook")
+		rep.KnownFlake = true
 	case "infra":
 		rep.Outcome, rep.Why = adapter.Infra, orDefault(a.Why, "the infrastructure failed, by the blame hook")
 	case "no-verdict":

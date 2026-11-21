@@ -607,3 +607,42 @@ func TestStackedLineReplaysOnlyItsOwnCommits(t *testing.T) {
 		t.Fatalf("without the upstream: %+v %v", res, err)
 	}
 }
+
+// TestRebaseAsksTheHook: the rebase hook is given the line and trunk, and its
+// answer is taken as it is: new heads, or a conflict for a person. No hook,
+// a hook that fails, or one that answers nothing leaves a conflict: the
+// runner never guesses a resolution.
+func TestRebaseAsksTheHook(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t, Config{})
+	l := line("7", ch("7", "h7"))
+	if res, err := w.repo.Rebase(ctx, "k0", l, "T"); err != nil || res.Conflict == "" {
+		t.Fatalf("no hook: %+v %v", res, err)
+	}
+	hookAt := func(name, body string) {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		w.repo.cfg.Rebase = hook.Hook{Command: []string{p}, Dir: w.repo.cfg.Dir, Timeout: time.Minute}
+	}
+	// It reads the line and trunk from its input and answers a new head.
+	hookAt("rebase-ok.sh", `in=$(cat); case "$in" in *'"trunk":"T"'*'"h7"'*) echo '{"heads":{"7":"h7b"}}';; *) echo '{"conflict":"bad input"}';; esac`)
+	res, err := w.repo.Rebase(ctx, "k1", l, "T")
+	if err != nil || res.Conflict != "" || res.Heads["7"] != "h7b" {
+		t.Fatalf("a rebase: %+v %v", res, err)
+	}
+	hookAt("rebase-real.sh", `cat >/dev/null; echo '{"conflict":"both sides changed a.txt"}'`)
+	if res, err := w.repo.Rebase(ctx, "k2", l, "T"); err != nil || res.Conflict != "both sides changed a.txt" || len(res.Heads) != 0 {
+		t.Fatalf("a real conflict: %+v %v", res, err)
+	}
+	hookAt("rebase-fails.sh", `cat >/dev/null; echo '{"heads":{"7":"h7c"}}'; exit 3`)
+	if res, err := w.repo.Rebase(ctx, "k3", l, "T"); err != nil || res.Conflict == "" || len(res.Heads) != 0 {
+		t.Fatalf("a hook that failed was believed: %+v %v", res, err)
+	}
+	hookAt("rebase-silent.sh", `cat >/dev/null; echo '{}'`)
+	if res, err := w.repo.Rebase(ctx, "k4", l, "T"); err != nil || res.Conflict == "" {
+		t.Fatalf("a hook that answered nothing: %+v %v", res, err)
+	}
+}

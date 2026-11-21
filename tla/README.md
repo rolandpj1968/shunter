@@ -13,9 +13,11 @@
 | `ExactSpeculation` | invariant | I5: each train lands on the exact head it was built on |
 | `Frozen` | invariant | I4: what lands is what was assembled |
 | `EndedStaysEnded`, `CancelledNeverLands` | action, invariant | a cancelled train never lands |
+| `SpentStaysSpent` | action | a spent line stays spent, but for a returned line offered again |
 | `HeldNeverSpent`, `HeldNotRiding` | action, invariant | a held line is never spent |
 | `NeedsFirst` | invariant | I3: a line rides only behind its base, and lands only after it |
 | `JudgedOnlyAtHead` | action | §5.3: a train enters J1 or ends as failed only when it is first in the chain, on trunk |
+| `NoRideAtChargedHead` | invariant | I11: a charged line never rides again at the head it was charged on |
 | `AssembledOnlyChecked` | invariant | I10: a line rides only on a green line check of the head it was assembled at |
 | `GreenOnlyByACheck` | action | I10: a push is never taken as a fix; only a pass of the check on the present head sets a line's green |
 | `OneRecord` | invariant | I8: a line rides exactly when one live train carries it |
@@ -53,7 +55,7 @@ To check syntax and semantics only, which takes a second:
 java -cp tla2tools.jar tla2sany.SANY Shunter.tla
 ```
 
-[`Shunter.cfg`](Shunter.cfg) is the small configuration: two lines, neither stacked, depth 2, one fault. [`Stack.cfg`](Stack.cfg) is the same with the second line stacked on the first; it runs on [`Stack.tla`](Stack.tla), which names the stack. CI runs both. Liveness checking is the costly part. For a quicker safety-only run, remove `EveryLineIsSpent` from `PROPERTIES`. For more confidence, raise the constants one at a time (three lines; two faults; depth 3), keeping `MaxTrains` at the bound above.
+[`Shunter.cfg`](Shunter.cfg) is the small configuration: two lines, neither stacked, depth 2, one fault. [`Stack.cfg`](Stack.cfg) is the same with the second line stacked on the first; it runs on [`Stack.tla`](Stack.tla), which names the stack. [`Reoffer.cfg`](Reoffer.cfg) is `Shunter.cfg` with two faults, which is what it takes to push a fix to a charged line and offer it again (about half a million states, half a minute). CI runs all three. Liveness checking is the costly part. For a quicker safety-only run, remove `EveryLineIsSpent` from `PROPERTIES`. For more confidence, raise the constants one at a time (three lines; two faults; depth 3), keeping `MaxTrains` at the bound above.
 
 `-deadlock` turns off TLC's deadlock check: a queue whose lines are all spent has nothing left to do, which is its proper end. The CI job passes it.
 

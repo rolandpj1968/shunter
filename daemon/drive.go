@@ -64,6 +64,11 @@ func join(s state.State, c Caps) []state.LineID {
 		if l.Stale != "" || !s.NeedMet(l, taken) {
 			continue
 		}
+		if l.Conflict != "" || l.AtChargedHeads() {
+			// In conflict with trunk, or still at the heads it was charged
+			// on: it waits for a push.
+			continue
+		}
 		if s.Config.RequireCheck && !l.CheckCurrent() {
 			// No current green line check (I10): it waits for one. A line
 			// stacked on it waits too, since its need is then unmet.
@@ -285,7 +290,10 @@ func (d *Daemon) poll(id state.TrainID, head state.Head, lines []adapter.BuildLi
 		ctx, cancel := context.WithTimeout(context.Background(), d.cfg.Call)
 		defer cancel()
 		rep, err := ci.Status(ctx, id, head, lines)
-		if err == nil && rerunSpent && rep.Outcome == adapter.Flaky {
+		if err == nil && rerunSpent && rep.Outcome == adapter.Flaky && !rep.KnownFlake {
+			// A timing failure that failed again is evidence, and is blamed.
+			// A recorded flake that failed again charges nobody (§5.5): it
+			// goes to the machine as it is, which judges nothing.
 			rep = reblame(ctx, ci, id, rep, lines)
 		}
 		r := result{poll: id, actor: "ci", err: err}
@@ -312,7 +320,7 @@ func report(id state.TrainID, r adapter.Report) []state.Event {
 	case adapter.Infra:
 		return evs(state.CINoVerdict{Train: id, Infra: true, Why: orWhy(r.Why, "the infrastructure failed")})
 	case adapter.Flaky:
-		return evs(state.CIRerun{Train: id, Why: orWhy(r.Why, "a known flake or a timeout")})
+		return evs(state.CIRerun{Train: id, Why: orWhy(r.Why, "a known flake or a timeout"), Known: r.KnownFlake})
 	}
 	return nil
 }
@@ -367,7 +375,7 @@ func (d *Daemon) pollDone(r result) {
 		return
 	}
 	for _, ev := range r.events {
-		if rr, ok := ev.(state.CIRerun); ok && t.Reruns >= 1 {
+		if rr, ok := ev.(state.CIRerun); ok && t.Reruns >= 1 && !rr.Known {
 			ev = state.CIFailed{Train: rr.Train, Evidence: "failed again after its one rerun: " + rr.Why}
 		}
 		d.apply(r.actor, ev)

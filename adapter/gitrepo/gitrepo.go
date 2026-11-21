@@ -57,6 +57,9 @@ type Config struct {
 	Preflight hook.Hook
 	// Conflict may resolve a conflict. Optional: none leaves the line out.
 	Conflict hook.Hook
+	// Rebase may rebase a waiting line that conflicts with trunk (§5.2).
+	// Optional: none leaves the conflict to the line's owner.
+	Rebase hook.Hook
 	// Policy bounds each network call (fetch, ls-remote, push).
 	Policy bound.Policy
 	// Env is added to git's environment: the committer, say.
@@ -209,6 +212,44 @@ func (r *Repo) has(ctx context.Context, h state.Head) bool {
 }
 
 // PreflightInput is what the pre-flight hook reads.
+// RebaseInput is what the rebase hook is given: a waiting line that does not
+// merge onto trunk. The hook rebases what it can without a person (the
+// repository's own rule says what that is), pushes the new heads itself, and
+// answers them; or it answers the conflict that needs a person. It must not
+// push a head it did not test as the producers' own pushes are tested.
+type RebaseInput struct {
+	Dir    string            `json:"dir"`
+	Remote string            `json:"remote"`
+	Trunk  state.Head        `json:"trunk"`
+	Line   adapter.BuildLine `json:"line"`
+}
+
+// RebaseAnswer is the rebase hook's answer.
+type RebaseAnswer struct {
+	Heads    map[state.ChangeID]state.Head `json:"heads,omitempty"`
+	Conflict string                        `json:"conflict,omitempty"`
+}
+
+// Rebase implements adapter.Rebaser with the rebase hook. No hook, a hook
+// that exits non-zero, or one that answers neither heads nor a conflict, is
+// a conflict left to the owner: the runner never guesses a resolution.
+func (r *Repo) Rebase(ctx context.Context, key string, line adapter.BuildLine, trunk state.Head) (adapter.RebaseResult, error) {
+	if !r.cfg.Rebase.Configured() {
+		return adapter.RebaseResult{Conflict: "no rebase hook is configured"}, nil
+	}
+	var a RebaseAnswer
+	hr, err := r.cfg.Rebase.Run(ctx, RebaseInput{Dir: r.cfg.Dir, Remote: r.cfg.Remote, Trunk: trunk, Line: line}, &a)
+	switch {
+	case err != nil:
+		return adapter.RebaseResult{}, fmt.Errorf("the rebase hook gave no answer: %w %s", err, hr.Stderr)
+	case hr.Code != 0:
+		return adapter.RebaseResult{Conflict: fmt.Sprintf("the rebase hook exited %d", hr.Code)}, nil
+	case a.Conflict == "" && len(a.Heads) == 0:
+		return adapter.RebaseResult{Conflict: "the rebase hook answered nothing"}, nil
+	}
+	return adapter.RebaseResult{Heads: a.Heads, Conflict: a.Conflict}, nil
+}
+
 type PreflightInput struct {
 	Dir   string              `json:"dir"`
 	Train state.TrainID       `json:"train"`

@@ -138,6 +138,31 @@ type Line struct {
 	// any change ends it.
 	Checked   []Head
 	CheckedOn Head
+	// Conflict says the line's check found that it does not merge onto
+	// trunk, and in what. A line in conflict joins no train. Only a push to
+	// one of its changes ends it: the runner's rebase (§5.2), or its owner's.
+	Conflict string
+	// Owner is who answers for the line: who offered it first, or whom it
+	// was handed over to. Only its owner offers a charged line again.
+	Owner string
+	// ChargedAt are the heads the line had when it was last charged. It does
+	// not ride on those heads again: a charge is cleared by a fix, and a fix
+	// is a push.
+	ChargedAt []Head
+}
+
+// AtChargedHeads reports whether the line's changes are at exactly the heads
+// it was charged on.
+func (l *Line) AtChargedHeads() bool {
+	if len(l.ChargedAt) == 0 || len(l.ChargedAt) != len(l.Changes) {
+		return false
+	}
+	for i, c := range l.Changes {
+		if l.ChargedAt[i] != c.Head {
+			return false
+		}
+	}
+	return true
 }
 
 // CheckCurrent reports whether the line holds a green line check on exactly
@@ -247,6 +272,7 @@ func (s State) clone() State {
 		l := *v
 		l.Changes = append([]Change(nil), v.Changes...)
 		l.Checked = append([]Head(nil), v.Checked...)
+		l.ChargedAt = append([]Head(nil), v.ChargedAt...)
 		c.Lines[k] = &l
 	}
 	c.Trains = make(map[TrainID]*Train, len(s.Trains))

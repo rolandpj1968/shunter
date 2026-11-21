@@ -74,9 +74,9 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		}
 		return d.act(actor, state.Hold{Line: l, Reason: req.Reason}, "line "+string(l)+" held")
 	case "checked":
-		// checked <line|change> <trunk> <head>... --action pass|fail [--reason <evidence>]
-		if len(req.Args) < 3 || (req.Action != "pass" && req.Action != "fail") || (req.Action == "fail" && req.Reason == "") {
-			return errResp(errors.New("usage: checked <line|change> <trunk> <head>... --action pass|fail [--reason <evidence, for a fail>]"))
+		// checked <line|change> <trunk> <head>... --action pass|fail|conflict [--reason <evidence, or the files in conflict>]
+		if len(req.Args) < 3 || (req.Action != "pass" && req.Action != "fail" && req.Action != "conflict") || (req.Action != "pass" && req.Reason == "") {
+			return errResp(errors.New("usage: checked <line|change> <trunk> <head>... --action pass|fail|conflict [--reason <evidence for a fail, the files for a conflict>]"))
 		}
 		l, err := d.findLine(req.Args[0])
 		if err != nil {
@@ -86,7 +86,23 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		for _, h := range req.Args[2:] {
 			heads = append(heads, state.Head(h))
 		}
-		return d.act(actor, state.LineChecked{Line: l, Heads: heads, Trunk: state.Head(req.Args[1]), Pass: req.Action == "pass", Evidence: req.Reason}, "line "+string(l)+" check recorded: "+req.Action)
+		ev := state.LineChecked{Line: l, Heads: heads, Trunk: state.Head(req.Args[1]), Pass: req.Action == "pass"}
+		switch req.Action {
+		case "fail":
+			ev.Evidence = req.Reason
+		case "conflict":
+			ev.Conflict = req.Reason
+		}
+		return d.act(actor, ev, "line "+string(l)+" check recorded: "+req.Action)
+	case "handover":
+		// handover <line> <new owner> --reason <why>: a line, live or returned.
+		if len(req.Args) != 2 || req.Reason == "" {
+			return errResp(errors.New("usage: handover <line> <new owner> --reason <why>"))
+		}
+		if d.st.State().Lines[state.LineID(req.Args[0])] == nil {
+			return errResp(fmt.Errorf("no line %q", req.Args[0]))
+		}
+		return d.act(actor, state.HandOver{Line: state.LineID(req.Args[0]), To: req.Args[1], Why: req.Reason}, "line "+req.Args[0]+" handed over to "+req.Args[1])
 	case "restore":
 		// restore <park> --reason <why>: the judge ends a park (§6.4).
 		if len(req.Args) != 1 || req.Reason == "" {
@@ -200,6 +216,7 @@ func (d *Daemon) queue(ctx context.Context, actor string, req Request) Response 
 		return errResp(fmt.Errorf("the forge described %d of %d changes", len(info), len(ids)))
 	}
 	o := OfferFor(d.st.State(), info, req.Alone)
+	o.By = actor
 	msg := fmt.Sprintf("line %s offered (%d changes)", o.Line, len(o.Changes))
 	if o.Base != "" {
 		msg += ", stacked on line " + string(o.Base)
