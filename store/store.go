@@ -88,13 +88,19 @@ type Keyed struct {
 // evidence: J1's default asks whether the same test failed in the train
 // before.
 type Since struct {
-	Trains   map[state.TrainID]time.Time `json:"trains"`
-	Parks    map[state.ParkID]time.Time  `json:"parks"`
-	Failures []Failure                   `json:"failures,omitempty"`
+	Trains map[state.TrainID]time.Time `json:"trains"`
+	Parks  map[state.ParkID]time.Time  `json:"parks"`
+	// Lines is when each line that is not landed or dropped entered the
+	// state it is in: how long a hold has stood, how long a charged line
+	// has been with its owner.
+	Lines    map[state.LineID]time.Time `json:"lines,omitempty"`
+	Failures []Failure                  `json:"failures,omitempty"`
 }
 
 // Failure is a train's deterministic failure, as its record states it.
 type Failure struct {
+	// TreeWide says the failing test scans the whole tree.
+	TreeWide bool           `json:"tree_wide,omitempty"`
 	Train    state.TrainID  `json:"train"`
 	Lines    []state.LineID `json:"lines"`
 	Evidence string         `json:"evidence"`
@@ -313,11 +319,17 @@ func keyEffects(seq uint64, fx []state.Effect) []Keyed {
 func (st *Store) track(before state.State, keyed []Keyed, at time.Time) {
 	for _, k := range keyed {
 		if k.Kind == state.EffRecord {
+			if k.Line != "" && k.Train == "" {
+				if st.since.Lines == nil {
+					st.since.Lines = map[state.LineID]time.Time{}
+				}
+				st.since.Lines[k.Line] = at
+			}
 			if k.Line == "" && k.Train != "" {
 				st.since.Trains[k.Train] = at
 				if k.To == state.TrainJudging.String() || (k.To == state.TrainFailed.String() && k.Cause == state.CauseCharged) {
 					t := st.s.Trains[k.Train]
-					st.since.Failures = append(st.since.Failures, Failure{Train: k.Train, Lines: append([]state.LineID(nil), t.Lines...), Evidence: k.Reason})
+					st.since.Failures = append(st.since.Failures, Failure{Train: k.Train, Lines: append([]state.LineID(nil), t.Lines...), Evidence: k.Reason, TreeWide: t.TreeWide})
 					if n := len(st.since.Failures); n > keepFailures {
 						st.since.Failures = append([]Failure(nil), st.since.Failures[n-keepFailures:]...)
 					}
@@ -330,6 +342,11 @@ func (st *Store) track(before state.State, keyed []Keyed, at time.Time) {
 	for id, t := range st.s.Trains {
 		if !t.State.Live() {
 			delete(st.since.Trains, id)
+		}
+	}
+	for id := range st.since.Lines {
+		if l := st.s.Lines[id]; l == nil || l.State == state.LineLanded || l.State == state.LineDropped {
+			delete(st.since.Lines, id)
 		}
 	}
 	for id := range st.s.Parks {

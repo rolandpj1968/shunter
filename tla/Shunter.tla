@@ -22,6 +22,11 @@
 (* reported behind an undecided train is kept ("red") and judged when      *)
 (* every train ahead has landed, or dropped when one does not.             *)
 (*                                                                         *)
+(* The runner's rebase of §5.2 is modelled: a line check may find a line   *)
+(* in conflict with trunk (trunk moved against it: the adversary's doing), *)
+(* and only then may the runner move its head.  Every other move of a head *)
+(* is its owner's push.                                                    *)
+(*                                                                         *)
 (* The tiers of §5.4 are modelled by one rule: a train takes the light     *)
 (* tier only when every line in it is inert.  Inert says which lines the   *)
 (* gate's classifier found inert; a push makes a line full again.  The     *)
@@ -72,6 +77,8 @@ VARIABLES
     charged,  \* line -> 0, or 1 + the version it was last charged at
     checking, \* line -> 0, or 1 + the version a line check in flight was started on
     inert,    \* line -> it is inert content only, as last classified
+    conflict, \* line -> its check found it in conflict with trunk, at its present head
+    by,       \* line -> who last moved its head: "none", "owner" or "runner"
     light,    \* train -> it was given the light tier
     tstate,   \* train -> its state
     cargo,    \* train -> the lines it was assembled from
@@ -85,10 +92,13 @@ VARIABLES
     used,     \* trains assembled so far
     faults    \* faults spent
 
-vars == <<line, ride, ver, green, charged, checking, inert, light, tstate, cargo, asm, checked, base, verdict, rerun,
+vars == <<line, ride, ver, green, charged, checking, inert, light, conflict, by, tstate, cargo, asm, checked, base, verdict, rerun,
           chain, trunk, used, faults>>
 
 Trains == 1..MaxTrains
+\* A head moves by a push, which is a fault, or by the runner's rebase, of
+\* which there is at most one a conflict, and a conflict is a fault.
+MaxVer == 2 * MaxFaults
 Spent  == {"landed", "returned", "dropped"}
 Live   == {"testing", "red", "judging", "green", "landing"}
 Ended  == {"landed", "failed", "void", "aborted"}
@@ -104,16 +114,18 @@ First(t)   == chain # <<>> /\ chain[1] = t
 TypeOK ==
     /\ line \in [Lines -> {"waiting", "held", "riding"} \cup Spent]
     /\ ride \in [Lines -> 0..MaxTrains]
-    /\ ver \in [Lines -> 0..MaxFaults]
-    /\ green \in [Lines -> 0..(MaxFaults + 1)]
-    /\ charged \in [Lines -> 0..(MaxFaults + 1)]
-    /\ checking \in [Lines -> 0..(MaxFaults + 1)]
+    /\ ver \in [Lines -> 0..MaxVer]
+    /\ green \in [Lines -> 0..(MaxVer + 1)]
+    /\ charged \in [Lines -> 0..(MaxVer + 1)]
+    /\ checking \in [Lines -> 0..(MaxVer + 1)]
     /\ inert \in [Lines -> BOOLEAN]
+    /\ conflict \in [Lines -> BOOLEAN]
+    /\ by \in [Lines -> {"none", "owner", "runner"}]
     /\ light \in [Trains -> BOOLEAN]
     /\ tstate \in [Trains -> {"unused"} \cup Live \cup Ended]
     /\ cargo \in [Trains -> SUBSET Lines]
-    /\ asm \in [Trains -> [Lines -> 0..MaxFaults]]
-    /\ checked \in [Trains -> [Lines -> 0..MaxFaults]]
+    /\ asm \in [Trains -> [Lines -> 0..MaxVer]]
+    /\ checked \in [Trains -> [Lines -> 0..MaxVer]]
     /\ base \in [Trains -> 0..MaxTrains]
     /\ verdict \in [Trains -> BOOLEAN]
     /\ rerun \in [Trains -> BOOLEAN]
@@ -130,6 +142,8 @@ Init ==
     /\ charged = [l \in Lines |-> 0]
     /\ checking = [l \in Lines |-> 0]
     /\ inert = [l \in Lines |-> l \in Inert]
+    /\ conflict = [l \in Lines |-> FALSE]
+    /\ by = [l \in Lines |-> "none"]
     /\ light = [t \in Trains |-> FALSE]
     /\ tstate = [t \in Trains |-> "unused"]
     /\ cargo = [t \in Trains |-> {}]
@@ -172,12 +186,12 @@ Checked(l) == green[l] = ver[l] + 1
 \* takes time: it starts on the head the line has then, and its verdict
 \* arrives later, when the head may have moved.
 LineCheckStart(l) ==
-    /\ line[l] = "waiting" /\ ~Checked(l) /\ checking[l] = 0
+    /\ line[l] = "waiting" /\ ~Checked(l) /\ checking[l] = 0 /\ ~conflict[l]
     \* a stacked line is checked with its base beneath it, after its base
     /\ \A b \in BaseOf(l) : Checked(b) \/ line[b] \in {"riding", "landed"}
     /\ checking' = [checking EXCEPT ![l] = ver[l] + 1]
     /\ NoFault
-    /\ UNCHANGED <<line, ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, inert, light, conflict, by>>
 
 \* The verdict is for the head the line still has.  A pass is kept against
 \* the version checked.
@@ -186,7 +200,7 @@ LineCheckPass(l) ==
     /\ green' = [green EXCEPT ![l] = checking[l]]
     /\ checking' = [checking EXCEPT ![l] = 0]
     /\ NoFault
-    /\ UNCHANGED <<line, ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, charged, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, charged, inert, light, conflict, by>>
 
 \* A failure charges the line (L33), at the head that was judged; its
 \* evidence, the same check passing on trunk alone, is not modelled.  It is
@@ -197,7 +211,29 @@ LineCheckFail(l) ==
     /\ charged' = [charged EXCEPT ![l] = checking[l]]
     /\ checking' = [checking EXCEPT ![l] = 0]
     /\ NoFault
-    /\ UNCHANGED <<ride, ver, green, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, inert, light>>
+    /\ UNCHANGED <<ride, ver, green, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, inert, light, conflict, by>>
+
+\* A fault, in that trunk has moved against the line: the check finds that
+\* the line no longer merges.  Nobody is charged.  The line joins no train
+\* until its head moves: by the runner's rebase, or its owner's push.
+LineCheckConflict(l) ==
+    /\ line[l] = "waiting" /\ checking[l] = ver[l] + 1
+    /\ Fault
+    /\ conflict' = [conflict EXCEPT ![l] = TRUE]
+    /\ checking' = [checking EXCEPT ![l] = 0]
+    /\ UNCHANGED <<line, ride, ver, green, charged, inert, light, by, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used>>
+
+\* The runner rebases a line (§5.2): only one its check found in conflict,
+\* never one that merges, whose head a needless rebase would move and whose
+\* check it would end.  The rebased line is full until classified again.
+Rebase(l) ==
+    /\ line[l] = "waiting" /\ conflict[l]
+    /\ ver' = [ver EXCEPT ![l] = @ + 1]
+    /\ conflict' = [conflict EXCEPT ![l] = FALSE]
+    /\ by' = [by EXCEPT ![l] = "runner"]
+    /\ inert' = [inert EXCEPT ![l] = FALSE]
+    /\ NoFault
+    /\ UNCHANGED <<line, ride, green, charged, checking, light, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used>>
 
 \* The verdict is for a head the line no longer has, or the line no longer
 \* waits: it is nobody's.  Nothing is kept and nobody is charged; a waiting
@@ -207,12 +243,12 @@ LineCheckDropped(l) ==
     /\ checking[l] # ver[l] + 1 \/ line[l] # "waiting"
     /\ checking' = [checking EXCEPT ![l] = 0]
     /\ NoFault
-    /\ UNCHANGED <<line, ride, ver, green, charged, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, green, charged, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, inert, light, conflict, by>>
 
 \* The runner joins waiting lines into the next train, on the exact head of
 \* the train ahead, or on trunk.
 Assemble(S) ==
-    /\ S # {} /\ \A l \in S : line[l] = "waiting" /\ Checked(l)
+    /\ S # {} /\ \A l \in S : line[l] = "waiting" /\ Checked(l) /\ ~conflict[l]
     \* I3: a line rides only behind its base: landed, riding already (so in
     \* an earlier train), or taken into this train with it
     /\ \A l \in S : \A b \in BaseOf(l) : line[b] \in {"landed", "riding"} \/ b \in S
@@ -234,7 +270,7 @@ Assemble(S) ==
         /\ ride' = [l \in Lines |-> IF l \in S THEN t ELSE ride[l]]
         /\ chain' = Append(chain, t)
     /\ NoFault
-    /\ UNCHANGED <<ver, checked, verdict, rerun, trunk, green, charged, checking, inert>>
+    /\ UNCHANGED <<ver, checked, verdict, rerun, trunk, green, charged, checking, inert, conflict, by>>
 
 \* CI passes on the train's own head.
 CIPass(t) ==
@@ -242,7 +278,7 @@ CIPass(t) ==
     /\ tstate' = [tstate EXCEPT ![t] = "green"]
     /\ verdict' = [verdict EXCEPT ![t] = TRUE]
     /\ NoFault
-    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A fault: the builder reports green, and there is no pass on this head
 \* (a pass for another attempt, or a line of test output that looks like a
@@ -251,7 +287,7 @@ FalseGreen(t) ==
     /\ tstate[t] = "testing"
     /\ Fault
     /\ tstate' = [tstate EXCEPT ![t] = "green"]
-    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* I9: the lander reads the verdict, the heads and trunk itself, when the
 \* train is first in the chain.  Any mismatch voids the train.
@@ -267,7 +303,7 @@ Verify(t) ==
             /\ UNCHANGED <<line, ride, chain>>
        ELSE /\ End(t, "void", Requeue)
             /\ UNCHANGED checked
-    /\ UNCHANGED <<ver, cargo, asm, base, verdict, rerun, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, base, verdict, rerun, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* The only action that moves trunk.
 Push(t) ==
@@ -278,21 +314,21 @@ Push(t) ==
     /\ ride' = [l \in Lines |-> IF ride[l] = t THEN 0 ELSE ride[l]]
     /\ chain' = Tail(chain)
     /\ NoFault
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A fault: the forge refuses the fast-forward for good.  No fallback merge.
 PushRefused(t) ==
     /\ tstate[t] = "landing"
     /\ Fault
     /\ End(t, "void", Requeue)
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A fault: the run was cancelled, skipped or unreadable.  Nothing is judged.
 NoVerdict(t) ==
     /\ tstate[t] = "testing"
     /\ Fault
     /\ End(t, "void", Requeue)
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A failure is reported for a train that is not first.  The train ahead
 \* is undecided, and the failure may be its own, inherited: nothing is
@@ -301,7 +337,7 @@ FailBehind(t) ==
     /\ tstate[t] = "testing" /\ ~First(t)
     /\ tstate' = [tstate EXCEPT ![t] = "red"]
     /\ NoFault
-    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A deterministic failure, and blame names some lines and not all (or the
 \* only one): they return, charged; the rest go again.  Only the first
@@ -313,14 +349,14 @@ FailBlamed(t, B) ==
     /\ End(t, "failed", [l \in Lines |-> IF l \in B THEN "returned" ELSE "waiting"])
     /\ NoFault
     /\ charged' = [l \in Lines |-> IF l \in B THEN ver[l] + 1 ELSE charged[l]]
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, checking, inert, light, conflict, by>>
 
 \* A fault: a failure blame cannot attribute.  The train waits at J1.
 FailUnblamed(t) ==
     /\ tstate[t] \in {"testing", "red"} /\ First(t)
     /\ Fault
     /\ tstate' = [tstate EXCEPT ![t] = "judging"]
-    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* J1's menu.  Charge, with evidence (not modelled), any lines the judge names.
 JudgeCharge(t, B) ==
@@ -329,7 +365,7 @@ JudgeCharge(t, B) ==
     /\ End(t, "failed", [l \in Lines |-> IF l \in B THEN "returned" ELSE "waiting"])
     /\ NoFault
     /\ charged' = [l \in Lines |-> IF l \in B THEN ver[l] + 1 ELSE charged[l]]
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, checking, inert, light, conflict, by>>
 
 \* Split or park: either way every line goes back uncharged.  This is also
 \* J1's default when the judge is silent.
@@ -337,7 +373,7 @@ JudgeRequeue(t) ==
     /\ tstate[t] = "judging"
     /\ End(t, "failed", Requeue)
     /\ NoFault
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* Rerun, once.
 JudgeRerun(t) ==
@@ -346,7 +382,7 @@ JudgeRerun(t) ==
     /\ rerun' = [rerun EXCEPT ![t] = TRUE]
     /\ tstate' = [tstate EXCEPT ![t] = "testing"]
     /\ NoFault
-    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A fault: a producer pushes to a change (a returned line's owner, too: a
 \* fix is a push).  If it rides, its train is void
@@ -360,6 +396,8 @@ HeadMove(l) ==
        ELSE UNCHANGED <<line, ride, tstate, chain>>
     /\ inert' = [inert EXCEPT ![l] = IF line[l] = "riding" /\ tstate[ride[l]] = "landing"
                                       THEN @ ELSE FALSE]
+    /\ by' = [by EXCEPT ![l] = "owner"]
+    /\ conflict' = [conflict EXCEPT ![l] = FALSE]
     /\ UNCHANGED <<cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, light>>
 
 \* A fault, for liveness only: the judge holds a line.  A hold on a riding
@@ -371,14 +409,14 @@ Hold(l) ==
           /\ UNCHANGED <<ride, tstate, chain>>
        \/ /\ line[l] = "riding" /\ tstate[ride[l]] # "landing"
           /\ End(ride[l], "void", [k \in Lines |-> IF k = l THEN "held" ELSE "waiting"])
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* The only way out of a hold.
 Release(l) ==
     /\ line[l] = "held"
     /\ line' = [line EXCEPT ![l] = "waiting"]
     /\ NoFault
-    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A fault: the judge aborts a train at any stage before its push, and says
 \* which lines return; the rest go back to waiting.
@@ -387,7 +425,7 @@ Abort(t, R) ==
     /\ R \subseteq Riders(t)
     /\ Fault
     /\ End(t, "aborted", [l \in Lines |-> IF l \in R THEN "returned" ELSE "waiting"])
-    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* I3: a waiting line whose base was returned or dropped goes back too,
 \* uncharged: what it was built on will not land as it is.
@@ -396,7 +434,7 @@ BaseLost(l) ==
     /\ \E b \in BaseOf(l) : line[b] \in {"returned", "dropped"}
     /\ line' = [line EXCEPT ![l] = "returned"]
     /\ NoFault
-    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* A fault, in that it spends the adversary's budget: a returned line is
 \* offered again.  A charged line only at another head than the one it was
@@ -407,14 +445,14 @@ Reoffer(l) ==
     /\ \A b \in BaseOf(l) : line[b] \notin {"returned", "dropped"}
     /\ Fault
     /\ line' = [line EXCEPT ![l] = "waiting"]
-    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 \* An owner takes a waiting line back.
 Withdraw(l) ==
     /\ line[l] = "waiting"
     /\ line' = [line EXCEPT ![l] = "dropped"]
     /\ NoFault
-    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light>>
+    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green, charged, checking, inert, light, conflict, by>>
 
 Next ==
     \/ \E S \in SUBSET Lines : Assemble(S)
@@ -424,7 +462,7 @@ Next ==
         \/ \E B \in SUBSET Lines : FailBlamed(t, B) \/ JudgeCharge(t, B) \/ Abort(t, B)
     \/ \E l \in Lines : HeadMove(l) \/ Hold(l) \/ Release(l) \/ Withdraw(l)
     \/ \E l \in Lines : LineCheckStart(l) \/ LineCheckPass(l) \/ LineCheckFail(l) \/ LineCheckDropped(l)
-    \/ \E l \in Lines : BaseLost(l) \/ Reoffer(l)
+    \/ \E l \in Lines : BaseLost(l) \/ Reoffer(l) \/ LineCheckConflict(l) \/ Rebase(l)
 
 (***************************************************************************)
 (* Fairness, which is what liveness assumes of the world:                  *)
@@ -434,6 +472,8 @@ Next ==
 (*   - CI eventually answers a run it is left to finish;                   *)
 (*   - a kept failure is judged once its train is first;                   *)
 (*   - a line whose base is lost is returned;                              *)
+(*   - a line in conflict is rebased (the model's conflicts are all ones   *)
+(*     the runner can resolve; one it cannot waits for its owner's push);  *)
 (*   - J1's deadline passes, and its default applies;                      *)
 (*   - every hold is eventually released.                                  *)
 (* Nothing is assumed of the adversary but its budget, MaxFaults.          *)
@@ -450,6 +490,7 @@ Fairness ==
     /\ \A l \in Lines : WF_vars(LineCheckStart(l))
     /\ \A l \in Lines : WF_vars(LineCheckPass(l) \/ LineCheckFail(l))
     /\ \A l \in Lines : WF_vars(LineCheckDropped(l))
+    /\ \A l \in Lines : WF_vars(Rebase(l))
     /\ \A l \in Lines : WF_vars(BaseLost(l))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -533,6 +574,18 @@ HeldNeverSpent ==
 SpentStaysSpent ==
     [][\A l \in Lines : line[l] \in Spent =>
           line'[l] = line[l] \/ (line[l] = "returned" /\ line'[l] = "waiting")]_vars
+
+\* §5.2: a line's head moves only by its owner, or by a NECESSARY rebase.
+\* The runner moves a head only of a waiting line its check found in
+\* conflict with trunk; a line that merges is never touched.
+NeededRebaseOnly ==
+    [][\A l \in Lines :
+          ver'[l] # ver[l] =>
+              \/ by'[l] = "owner"
+              \/ by'[l] = "runner" /\ conflict[l] /\ line[l] = "waiting"]_vars
+
+\* A line in conflict with trunk rides no train.
+NoRideInConflict == \A l \in Lines : line[l] = "riding" => ~conflict[l]
 
 \* §5.4: no train is given a lighter tier than its lines allow.  A light
 \* train holds inert lines only, for as long as it lives; a push to one of

@@ -135,6 +135,10 @@ timeout = "5m"
 # command = ["./hooks/rebase"]
 # timeout = "15m"
 
+# Under [deadlines], two alerts that act on nothing:
+#   review = "24h"   # a hold that has stood this long is told to the judge, each time it passes
+#   owner = "12h"    # so is a charged line that has stayed this long with its owner
+
 [hooks.blame]
 # In: {"train","head","lines":[...],"checks":[...],"evidence":"..."}
 # Out: {"class":"deterministic","blamed":["<line>"],"evidence":"..."}, or

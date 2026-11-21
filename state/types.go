@@ -146,6 +146,10 @@ type Line struct {
 	// trunk, and in what. A line in conflict joins no train. Only a push to
 	// one of its changes ends it: the runner's rebase (§5.2), or its owner's.
 	Conflict string
+	// ConflictOn is the trunk the conflict was found against. The runner is
+	// asked to rebase once for a conflict of these heads with this trunk,
+	// and again only when a check finds a conflict with another trunk.
+	ConflictOn Head
 	// Owner is who answers for the line: who offered it first, or whom it
 	// was handed over to. Only its owner offers a charged line again.
 	Owner string
@@ -197,6 +201,9 @@ type Train struct {
 	Judged   int      // reruns ordered at J1
 	Pushes   int      // transient push refusals
 	Asked    bool     // the landing check has been asked for
+	// TreeWide says the failure the train reported was of a test that scans
+	// the whole tree (CIFailed.TreeWide).
+	TreeWide bool
 	// Light says the train was assembled of inert lines only, so the light
 	// tier is enough for it (§5.4). A train with any other line is full.
 	Light  bool

@@ -49,6 +49,7 @@ These are safety properties. Every reachable state must satisfy them, whatever t
 - **I10, checked before assembled.** Where the queue requires line checks (§5.4), no line is assembled into a batch without a green line check on exactly the heads its changes have. A push to any of them ends the check. A push is never taken as a fix: a line that a check charged rides again only when the check has passed on its new heads.
 - **I11, a charge is cleared by a fix.** A line that was charged never rides again at the heads it was charged on, and is offered again only by its owner (§3, P3). A push alone is not "done": anyone's push, a rebase or half a fix all move a head. Nor is an offer a fix: the heads must have moved.
 - **I12, never lighter than its content allows.** A batch is given the light tier of §5.4 only when every line in it is inert content, by a classifier that can only err towards the full tier.
+- **I13, a head moves only by its owner, or by a necessary rebase.** The runner moves a change's head only to rebase a waiting line that its check found in conflict with trunk. A line that merges is never touched: a rebase moves the head, and a moved head ends the line's check (I10), so a needless one leaves a line that needed nothing with no verdict.
 - **I9, the lander verifies.** Before it fast-forwards trunk, the runner itself reads from the forge that the batch's CI passed on exactly the head it is about to push, that the head is the one it built, that every change's head is the one it assembled (I4), and that trunk is where the batch was built (I5). It never lands on a builder's report, and no protocol message travels in a channel that tools or tests can write to.
 
 Two consequences are worth stating on their own, because the queue this protocol grew from broke both:
@@ -210,6 +211,8 @@ A line whose base is live **waits in the queue** and rides only behind its base 
 
 **The runner rebases what needs no person.** A waiting line that no longer merges onto trunk is not sent back to its owner for that alone: a stale base isn't worth a person's turn, and an owner who has gone quiet strands it. When the line check (§5.4) finds a conflict, nobody is charged; the line joins no train, and the runner asks its rebase hook to rebase it. The hook rebases only what its repository's rule says needs no person (generated files, a counters file, both sides only adding lines), pushes the new heads through whatever tests the producers' own pushes, and answers them; the line is then checked again like any pushed line. A conflict the hook can't resolve, or a queue with no hook, goes to the owner with the files named, uncharged, and the line stays out of trains until a push. A change stacked on a change that has landed is moved onto trunk by the same act. The runner never guesses a resolution: a hook that fails, or answers nothing, leaves the conflict to the owner.
 
+**And it rebases nothing that needs no rebase (I13).** The rebase is asked for only when a line check has just found the line in conflict, once for those heads against that trunk; the same conflict found again asks nothing, and one found against a trunk that has since moved asks again, since what could not be resolved then may be now. A line whose base has landed and which merges as it stands is moved onto trunk on the forge and not rebased. The queue this protocol grew from first rebased every line that was merely behind trunk: each rebase moved the head, each moved head ended the check in flight, and one line went a day with no verdict at all.
+
 **A gate condition holds at every later transition, not only at the offer.** Whatever would refuse, hold or park a line at the gate (a park, a hold, an unlanded base) is tested again whenever the line would enter the queue or join a batch, including a batch rebuilt after a failure or a void. A line that no longer passes goes to the state the gate would give it. It doesn't ride and fail.
 
 ### 5.3 Batches and speculation
@@ -316,6 +319,8 @@ Blame works in whole lines: a line is charged or cleared together (I3). A line s
 
 Returning a line **includes telling its owner**, in the same recorded act, with the evidence. A line isn't "returned" until the telling is recorded as delivered or as owed.
 
+**A test that scans the whole tree is touched by every change.** Some tests hold every member of a repository-wide set to a rule: every route registered, every table listed, every file a test reads declared. A change breaks such a test without touching its file or its package, so "no line of the batch touches what failed" says nothing about it. The blame hook marks such a failure (`tree_wide`), by its repository's own rule, a naming convention or a list. A failure so marked is never taken as evidence that trunk is broken (J1), and is never the ground for calling a failure unrelated to its batch.
+
 ### 5.7 Landing
 
 - **The lander verifies (I9).** When a green batch is first in the chain, the runner reads from the forge, itself: the head CI passed, each change's head, and trunk. All three must be what the batch was built from. If any differs, the batch is void: nothing is judged, and its lines go back.
@@ -358,7 +363,7 @@ Each point defines what the judge **sees**, what it **may choose**, the **deadli
   - rerun once (stating why it might differ).
 - **May not choose:** to return a line with no evidence (I6). A batch of one line can't be split, so for it the menu is charge with evidence, park, or rerun.
 - **Deadline:** 10 minutes. **Default:**
-  - the same test failed in the previous batch with unrelated changes: **park** (trunk or a shared fixture is suspect, J2);
+  - the same test failed in the previous batch with unrelated changes: **park** (trunk or a shared fixture is suspect, J2). **Not when the test scans the whole tree** (§5.6): two unrelated batches failing on it are two changes that each broke the set it holds, and the rules below apply;
   - else the batch is one line: **charge it, by elimination.** It is judged at the head of the chain (§5.3), so its base is trunk, which is tested (I1), and the failure was not in the batch before: the line is the only change there is, and that is its evidence (I6). Draft 0.2 parked the whole queue here. That stopped every line for one line's failure, and when the park's deadline restored the queue the line rode and failed again;
   - else **split.** The halves of a split ride apart until they land.
 - **Promotion:** a recurring J1 judgement becomes a blame rule (§5.6). An example is "a PR that closes a listed gap": judged once, a rule thereafter.
@@ -428,6 +433,7 @@ The protocol assumes all of the following, and must stay safe under any combinat
 - trunk breaks without any batch's fault;
 - producers push to a riding change, retire mid-line, offer duplicate lines, or hang silently (a producer stuck in a tool call holds its work invisibly: each producer needs a liveness signal, and work held by a silent producer is handed on after a deadline);
 - the judge is slow, silent or wrong (safety must still hold; only liveness may suffer);
+- a hold is forgotten, or an owner goes silent with a charged line. Neither is acted on by a clock: a hold ends only by its release, and a line leaves its owner only by the owner's offer or a recorded hand-over. Both are *raised*: a hold that has stood past its review time, and a charged line that has stayed with its owner, are told to the judge, again each time the period passes (L3);
 - the runner restarts at any point. All its state is in one store (I8), and it resumes from what it finds. **To replace it between trains, pause it:** a pause starts no new batch, the batches in flight finish and land, and lines offered meanwhile wait in order; then stop it, start the new one, and resume. Nothing is held by hand and nothing is killed mid-batch. (The queue this protocol grew from was reloaded by holding every line and killing the runner, and new lines outran the holds twice.)
 - a builder's report is wrong, or its output carries text that looks like a report (I9);
 - the runner's own code is replaced while it runs. A new version is checked before it's started (it parses, it can execute, it passes its own tests), the running version is recorded in the store, and a version that fails to start leaves the old one in place and alerts;
@@ -465,6 +471,10 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **I13 and §5.2: the runner rebases only a line in conflict,** once for its heads against a trunk. The model carries it as `NeededRebaseOnly` and `NoRideInConflict`, with the conflict and the rebase as actions.
+- **§5.6: a test that scans the whole tree** is marked by the blame hook (`tree_wide`), and its failure in two unrelated batches no longer parks the queue at J1.
+- **§7: a hold past its review time and a charged line long with its owner are raised to the judge,** and never acted on. New deadlines `review` (24h) and `owner` (12h).
 
 - **§5.4 and I12, tiers by content:** a line of inert content only takes a light tier and joins any batch whatever its size; a batch is light only when every line is. New package `tier`, `[tiers]` in the configuration, `Line.Inert`, `Train.Light`, and the optional `Filer` of a forge. The model carries I12 as `LightOnlyIfAllInert`.
 
