@@ -14,6 +14,8 @@
 | `Frozen` | invariant | I4: what lands is what was assembled |
 | `EndedStaysEnded`, `CancelledNeverLands` | action, invariant | a cancelled train never lands |
 | `HeldNeverSpent`, `HeldNotRiding` | action, invariant | a held line is never spent |
+| `NeedsFirst` | invariant | I3: a line rides only behind its base, and lands only after it |
+| `JudgedOnlyAtHead` | action | §5.3: a train enters J1 or ends as failed only when it is first in the chain, on trunk |
 | `AssembledOnlyChecked` | invariant | I10: a line rides only on a green line check of the head it was assembled at |
 | `GreenOnlyByACheck` | action | I10: a push is never taken as a fix; only a pass of the check on the present head sets a line's green |
 | `OneRecord` | invariant | I8: a line rides exactly when one live train carries it |
@@ -28,6 +30,8 @@ Liveness assumes, and the module states as `Fairness`:
 - the runner assembles, checks and pushes when it can;
 - the line checker answers for every waiting line, with a pass or a failure;
 - CI eventually answers a run it is left to finish;
+- a failure kept behind an undecided train is judged once its train is first;
+- a line whose base is lost is returned;
 - J1's deadline passes and its default applies;
 - every hold is eventually released;
 - the adversary has a finite budget, `MaxFaults`: false greens, lost verdicts, refused pushes, pushes to riding changes, holds and aborts.
@@ -49,7 +53,7 @@ To check syntax and semantics only, which takes a second:
 java -cp tla2tools.jar tla2sany.SANY Shunter.tla
 ```
 
-[`Shunter.cfg`](Shunter.cfg) is the small configuration: two lines, depth 2, one fault. Liveness checking is the costly part. For a quicker safety-only run, remove `EveryLineIsSpent` from `PROPERTIES`. For more confidence, raise the constants one at a time (three lines; two faults; depth 3), keeping `MaxTrains` at the bound above.
+[`Shunter.cfg`](Shunter.cfg) is the small configuration: two lines, neither stacked, depth 2, one fault. [`Stack.cfg`](Stack.cfg) is the same with the second line stacked on the first; it runs on [`Stack.tla`](Stack.tla), which names the stack. CI runs both. Liveness checking is the costly part. For a quicker safety-only run, remove `EveryLineIsSpent` from `PROPERTIES`. For more confidence, raise the constants one at a time (three lines; two faults; depth 3), keeping `MaxTrains` at the bound above.
 
 `-deadlock` turns off TLC's deadlock check: a queue whose lines are all spent has nothing left to do, which is its proper end. The CI job passes it.
 
@@ -59,6 +63,5 @@ java -cp tla2tools.jar tla2sany.SANY Shunter.tla
 
 - Add the gate: `offered`, `waiting-for-base` and `parked`, with restore.
 - Add assembly: leave-outs and pre-flight failures.
-- Add needs first (I3): a base per line, and a stacked line's check taken with its base beneath it.
 - Bound a green line check's age against trunk. Here trunk moving never ends one.
 - Validate traces: replay the Go state machine's transition log against this model, so the function and the model can't drift apart.

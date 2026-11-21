@@ -177,6 +177,7 @@ func (m *machine) finish(t *Train, to TrainState, c Cause, reason string, dispos
 		m.emit(Effect{Kind: EffClosePR, Train: t.ID, Reason: reason})
 	}
 	lines := t.Lines
+	t.Behind = nil // judged now, or void with the train ahead: either way it is no longer waiting
 	m.setTrain(t, to, c, reason)
 	for _, id := range lines {
 		l := m.s.Lines[id]
@@ -283,26 +284,26 @@ func (m *machine) apply(ev Event) error {
 		if err != nil {
 			return err
 		}
-		if t.State != TrainAssembling {
-			return bad(ErrState, "train %s is %s", t.ID, t.State)
+		if t.State != TrainAssembling || t.Behind != nil {
+			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
-		return m.fail(t, e.Blamed, e.Evidence)
+		return m.failed(t, e.Blamed, e.Evidence)
 	case CIFailed:
 		t, err := m.train(e.Train)
 		if err != nil {
 			return err
 		}
-		if t.State != TrainTesting {
-			return bad(ErrState, "train %s is %s", t.ID, t.State)
+		if t.State != TrainTesting || t.Behind != nil {
+			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
-		return m.fail(t, e.Blamed, e.Evidence)
+		return m.failed(t, e.Blamed, e.Evidence)
 	case Built:
 		t, err := m.train(e.Train)
 		if err != nil {
 			return err
 		}
-		if t.State != TrainAssembling {
-			return bad(ErrState, "train %s is %s", t.ID, t.State)
+		if t.State != TrainAssembling || t.Behind != nil {
+			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
 		if e.Head == "" || e.Head == t.BaseHead {
 			return bad(ErrHead, "train %s built at %q on %q", t.ID, e.Head, t.BaseHead)
@@ -328,8 +329,8 @@ func (m *machine) apply(ev Event) error {
 		if err != nil {
 			return err
 		}
-		if t.State != TrainTesting {
-			return bad(ErrState, "train %s is %s", t.ID, t.State)
+		if t.State != TrainTesting || t.Behind != nil {
+			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
 		if e.Head != t.Head {
 			return bad(ErrHead, "train %s passed at %s, built at %s", t.ID, e.Head, t.Head)
@@ -342,8 +343,8 @@ func (m *machine) apply(ev Event) error {
 		if err != nil {
 			return err
 		}
-		if t.State != TrainTesting {
-			return bad(ErrState, "train %s is %s", t.ID, t.State)
+		if t.State != TrainTesting || t.Behind != nil {
+			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
 		if t.Reruns >= 1 {
 			return bad(ErrBudget, "train %s was rerun already", t.ID)
@@ -362,8 +363,21 @@ func (m *machine) apply(ev Event) error {
 		if t.State != TrainJudging {
 			return bad(ErrState, "train %s is %s", t.ID, t.State)
 		}
-		if e.SameTestBefore || len(t.Lines) < 2 {
+		switch {
+		case e.SameTestBefore:
+			// The same failure in the train before, with unrelated lines:
+			// trunk or a shared fixture is suspect (J2). The queue parks.
 			return m.judge(Judge{Train: t.ID, Action: JudgePark, Park: ParkID("j1-" + string(t.ID)), Cond: "deadline: the judge reviews", Why: "J1 default: park"})
+		case len(t.Lines) < 2:
+			// One line, judged at the head of the chain: its base is trunk
+			// itself, which is tested (I1), and the failure was not seen in
+			// the train before. The line is the only change there is, and
+			// that is its evidence (I6). Parking the whole queue for it, as
+			// 0.2 did, stopped every line for one line's failure, and when
+			// the park's deadline restored it the line rode and failed again.
+			return m.judge(Judge{Train: t.ID, Action: JudgeCharge, Lines: append([]LineID(nil), t.Lines...),
+				Evidence: "by elimination: the only line of a train built on tested trunk; the failure was not seen in the train before",
+				Why:      "J1 default: charge by elimination"})
 		}
 		return m.judge(Judge{Train: t.ID, Action: JudgeSplit, Why: "J1 default: split"})
 	case HeadMoved:
@@ -392,6 +406,9 @@ func (m *machine) apply(ev Event) error {
 				why += fmt.Sprintf("; the later push %s came after the landing check and is not on trunk", l.Late)
 			}
 			m.setLine(l, LineLanded, CauseLanded, why)
+		}
+		if err := m.judgeDeferred(); err != nil {
+			return err
 		}
 		m.askVerify()
 	case PushRefused:
@@ -800,7 +817,55 @@ func (m *machine) leaveOut(e LeaveOut) error {
 // fail handles a deterministic failure (§5.6). Blame that names some lines
 // and not all charges them. Blame that names none, or all of several, is not
 // a decision blame can make: the train goes to J1.
-func (m *machine) fail(t *Train, blamed []LineID, evidence string) error {
+// waits says, for an error, that a train's failure is recorded and unjudged.
+func waits(t *Train) string {
+	if t.Behind != nil {
+		return ", and its failure waits for the train ahead"
+	}
+	return ""
+}
+
+// failed takes a failure report. Only the first train of the chain is
+// judged: its base is trunk, so its failure is its own. A train behind it was
+// built on a head that may never land, and its failure may be that head's:
+// charging, splitting or parking on it would judge the wrong train. Its
+// report is kept (Train.Behind) and judged when every train ahead has landed
+// (judgeDeferred). If a train ahead does not land, this one is void with it
+// (end), and the report is dropped with nobody charged.
+func (m *machine) failed(t *Train, blamed []LineID, evidence string) error {
+	if len(m.s.Chain) > 0 && m.s.Chain[0] == t.ID {
+		return m.fail(t, blamed, evidence)
+	}
+	if err := m.checkBlame(t, blamed, evidence); err != nil {
+		return err
+	}
+	t.Behind = &Deferred{Blamed: append([]LineID(nil), blamed...), Evidence: evidence}
+	return nil
+}
+
+// judgeDeferred judges the failure the new first train reported while it was
+// behind, now that everything ahead of it has landed. A line blamed then and
+// no longer in the train is no longer named.
+func (m *machine) judgeDeferred() error {
+	if len(m.s.Chain) == 0 {
+		return nil
+	}
+	t := m.s.Trains[m.s.Chain[0]]
+	d := t.Behind
+	if d == nil {
+		return nil
+	}
+	t.Behind = nil
+	var blamed []LineID
+	for _, id := range d.Blamed {
+		if t.has(id) {
+			blamed = append(blamed, id)
+		}
+	}
+	return m.fail(t, blamed, d.Evidence)
+}
+
+func (m *machine) checkBlame(t *Train, blamed []LineID, evidence string) error {
 	if !distinct(blamed) {
 		return bad(ErrInput, "a line is blamed twice")
 	}
@@ -812,6 +877,17 @@ func (m *machine) fail(t *Train, blamed []LineID, evidence string) error {
 	if len(blamed) > 0 && evidence == "" {
 		return bad(ErrEvidence, "train %s", t.ID)
 	}
+	return nil
+}
+
+func (m *machine) fail(t *Train, blamed []LineID, evidence string) error {
+	if err := m.checkBlame(t, blamed, evidence); err != nil {
+		return err
+	}
+	return m.judgeFailure(t, blamed, evidence)
+}
+
+func (m *machine) judgeFailure(t *Train, blamed []LineID, evidence string) error {
 	if len(blamed) == 0 || (len(blamed) == len(t.Lines) && len(t.Lines) > 1) {
 		m.setTrain(t, TrainJudging, CauseUnblamed, evidence)
 		m.emit(Effect{Kind: EffAskJudge, Point: "J1", Train: t.ID, Reason: "a failure blame cannot attribute"})
@@ -844,6 +920,9 @@ func (m *machine) noVerdict(e CINoVerdict) error {
 	case TrainAssembling, TrainBuilt, TrainTesting:
 	default:
 		return bad(ErrState, "train %s is %s", t.ID, t.State)
+	}
+	if t.Behind != nil {
+		return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 	}
 	if e.Why == "" {
 		return bad(ErrReason, "a train with no verdict")

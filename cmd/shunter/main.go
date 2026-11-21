@@ -81,7 +81,7 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	req := daemon.Request{Cmd: verb, Args: pos, Alone: fl["alone"] != "", Action: fl["action"], Reason: fl["reason"], Actor: actor()}
+	req := daemon.Request{Cmd: verb, Args: pos, Alone: fl["alone"] != "", Action: fl["action"], Reason: fl["reason"], Until: fl["until"], Actor: actor()}
 	if fl["lines"] != "" {
 		req.Lines = strings.Split(fl["lines"], ",")
 	}
@@ -454,7 +454,7 @@ func watchRun(fl map[string]string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|hold|release|cancel|withdraw|pause|resume|judge|status|export|import> ...")
+	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|checked|hold|release|cancel|restore|withdraw|pause|resume|judge|status|export|import> ...")
 	os.Exit(2)
 }
 

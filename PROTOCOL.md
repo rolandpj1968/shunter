@@ -115,7 +115,7 @@ Live trains form the **chain**, in landing order: train 1 is built on trunk, and
 | L11 | held | waiting | release | it is held | the judge, or a human | stays held, visible to its owner |
 | L12 | held | parked | release | it is held; a park covers it | the judge, or a human | stays held |
 | L13 | waiting | parked | park | the park has a restore condition | J1, J2 or the judge | not parked |
-| L14 | parked | waiting | restore | the park exists; no other park covers the line | the runner, when the condition holds | restored at the park's deadline, with an alert |
+| L14 | parked | waiting | restore | the park exists; no other park covers the line | the runner, when the condition holds; or the judge's restore | a condition the runner can test: stays parked, and the judge is alerted at the deadline; any other: restored at the deadline, with an alert |
 | L15 | waiting | riding | assemble | not held, not parked, not stale; a current green line check, where the queue requires one (I10); alone if it must be; one split group per train; its base has landed, rides in an earlier train, or is earlier in this train (I3) | the runner's joining rule (§5.3) | stays waiting |
 | L16 | riding | returned | leave-out | the train is assembling; a reason is given | the assembly rules (conflict, caps, its base left out), or a pre-flight hook's leave-out (§5.4) | refused without a reason |
 | L17 | riding | returned | preflight-failed, ci-failed, judge (charge) | evidence names the line (I6) | a blame rule (§5.6), or J1 | never charged without evidence |
@@ -211,6 +211,7 @@ A line whose base is live **waits in the queue** and rides only behind its base 
 - **Joining:** the runner joins waiting lines into a batch, in order. It **skips** a line it can't take (it shares files with the batch, must run alone, or would exceed the caps: a number of lines, and a number of changes, a stack's every change counted) rather than stopping at it. A line that alone reaches the change cap rides alone, so that no line waits for ever. **A stacked line joins only behind its base** (I3): its base has landed, rides in an earlier train of the chain, or has joined this train ahead of it. So a line whose base was skipped, for any reason above or because it is held, parked or stale, is skipped too, and a stale line is skipped. Skipping is safe because a line is taken only after what it needs.
 - **Speculation, to depth D:** while batch 1 runs, the runner builds batch 2 on batch 1's exact head, batch 3 on batch 2's, and so on up to depth D. All D batches run CI at the same time (I5).
 - **Landing is in chain order:** when batch 1 lands, the chain shifts up, batch 2 becomes batch 1, and the runner extends the chain at its tail.
+- **Only the first batch is judged.** Batch 1 is built on trunk, so its failure is its own. Batch *k* > 1 is built on a head that may never land, and its failure may be that head's, inherited. When a batch that isn't first reports a failure (in pre-flight or in CI), nothing is charged, split or parked: the report is kept. If every batch ahead lands, the failure was its own and is judged then, as if reported at that moment. If one doesn't, the batch is void with it and the report is dropped, with nobody charged. Draft 0.2 judged the report at once, and so could charge a line for the failure of the batch ahead of it.
 - **When batch *j* ends without landing** (it fails, is void, or is aborted): batches *j+1…D* are void, because the head they were built on will never exist. They're rebuilt on trunk, minus whatever blame removed from batch *j*.
 - **Choosing D:** the trade-off is throughput against waste. With a batch pass probability *p*, the best case lands D batches per CI cycle, and a failure at position *j* voids D−*j* runs. Deep chains pay when *p* is high (around 0.9), and depth 1 is about the limit when *p* is near 0.5. On metered CI, voided runs cost money; on owned runners they cost only capacity, so D is bounded by free runner slots (D × one batch's jobs) more than by spend. D is set at judgement point J4.
 - **Change-based CI:** a batch's CI may run only the jobs its change can affect. "Its change" is measured against the batch beneath it, not trunk, or speculation would count batch 1's change twice.
@@ -340,7 +341,10 @@ Each point defines what the judge **sees**, what it **may choose**, the **deadli
   - **park** (§6.4): the failure isn't the batch's, trunk or a shared fixture is broken;
   - rerun once (stating why it might differ).
 - **May not choose:** to return a line with no evidence (I6). A batch of one line can't be split, so for it the menu is charge with evidence, park, or rerun.
-- **Deadline:** 10 minutes. **Default:** if the same test failed in the previous batch with unrelated changes, or the batch is one line, park. Otherwise split. The halves of a split ride apart until they land.
+- **Deadline:** 10 minutes. **Default:**
+  - the same test failed in the previous batch with unrelated changes: **park** (trunk or a shared fixture is suspect, J2);
+  - else the batch is one line: **charge it, by elimination.** It is judged at the head of the chain (§5.3), so its base is trunk, which is tested (I1), and the failure was not in the batch before: the line is the only change there is, and that is its evidence (I6). Draft 0.2 parked the whole queue here. That stopped every line for one line's failure, and when the park's deadline restored the queue the line rode and failed again;
+  - else **split.** The halves of a split ride apart until they land.
 - **Promotion:** a recurring J1 judgement becomes a blame rule (§5.6). An example is "a PR that closes a listed gap": judged once, a rule thereafter.
 
 ### J2. Trunk, or a shared fixture, may be broken
@@ -395,7 +399,7 @@ Batch size caps, speculation depth D (§5.3), which jobs a batch runs. A human s
 
 Parking moves the waiting lines aside: arrivals park too, and parked lines count as queued. The batch in flight finishes. The fix lands alone; then the lines come back. Parking is a judgement act, recorded, and always followed by a restore.
 
-Every park carries a **restore condition the runner can test:** a named change has landed, a measure is above a threshold, a time. The runner restores when it holds, and says so. A park whose condition can't be tested carries a deadline, after which the default restores and alerts. Restored lines pass the gate again (§5.2) and take the places they had.
+Every park carries a **restore condition the runner can test:** a named change has landed, a measure is above a threshold, a time. The runner restores when it holds, and says so. **A condition the runner can test is never met by a clock:** such a park ends when its condition holds, or by the judge's restore, and not otherwise. At its deadline the judge is alerted and the park stays. If the condition can no longer come true (the line it waits for was returned or dropped), the judge is told that the wait can't end. A wait that acts on its own timeout releases lines whose fix hasn't landed. Only a park whose condition can't be tested, words for a person, carries a deadline after which the default restores and alerts. Restored lines pass the gate again (§5.2) and take the places they had.
 
 A park may also cover named lines only, as an abort's disposal of them (§5.9). **To keep one line out of batches, use a hold (§5.1), not a park:** a hold names the line, shows its owner the reason, and can't spend it.
 
@@ -445,6 +449,11 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§5.3: only the first batch is judged.** A failure reported behind an undecided batch is kept and judged when every batch ahead has landed, or dropped when one doesn't. The model carries it as `JudgedOnlyAtHead`.
+- **J1's default for a batch of one line is a charge by elimination,** not a park of the whole queue.
+- **§6.4, L14: a park with a condition the runner can test never ends on its deadline.** New command `restore`; `cancel --action park` and `judge park` take `--until landed:<line>`.
+- **The model has needs first** (`Needs`, `NeedsFirst`, `BaseLost`), checked on a second configuration with a stack.
 
 - **The line check, and I10** (§5.4; from five days of the script queue's failures): the runner checks each waiting line alone, merged with trunk, and no line is assembled without a current green check. New event `line-checked`, new row L33 (a waiting line charged by its check, with evidence), a new guard on L15, and `require_check` in the queue's configuration. The TLA+ model carries it as `AssembledOnlyChecked`.
 - **§5.4, tier 1 is on the change merged with trunk,** not "on its own base".

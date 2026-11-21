@@ -169,6 +169,17 @@ type Train struct {
 	Pushes   int      // transient push refusals
 	Asked    bool     // the landing check has been asked for
 	Reason   string
+	// Behind is a failure reported while a train ahead of this one was still
+	// undecided (§5.3). Nothing is judged on it yet: the failure may be the
+	// train ahead's, inherited. If every train ahead lands it is this train's
+	// own and is judged then; if one does not, this train is void with it.
+	Behind *Deferred
+}
+
+// Deferred is a failure report kept unjudged.
+type Deferred struct {
+	Blamed   []LineID
+	Evidence string
 }
 
 // Park is a recorded judgement that moves lines aside. All parks the whole
@@ -242,6 +253,9 @@ func (s State) clone() State {
 	for k, v := range s.Trains {
 		t := *v
 		t.Lines = append([]LineID(nil), v.Lines...)
+		if v.Behind != nil {
+			t.Behind = &Deferred{Blamed: append([]LineID(nil), v.Behind.Blamed...), Evidence: v.Behind.Evidence}
+		}
 		c.Trains[k] = &t
 	}
 	c.Parks = make(map[ParkID]*Park, len(s.Parks))
