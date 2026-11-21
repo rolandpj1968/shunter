@@ -69,6 +69,20 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 			return errResp(err)
 		}
 		return d.act(actor, state.Hold{Line: l, Reason: req.Reason}, "line "+string(l)+" held")
+	case "checked":
+		// checked <line|change> <trunk> <head>... --action pass|fail [--reason <evidence>]
+		if len(req.Args) < 3 || (req.Action != "pass" && req.Action != "fail") || (req.Action == "fail" && req.Reason == "") {
+			return errResp(errors.New("usage: checked <line|change> <trunk> <head>... --action pass|fail [--reason <evidence, for a fail>]"))
+		}
+		l, err := d.findLine(req.Args[0])
+		if err != nil {
+			return errResp(err)
+		}
+		heads := make([]state.Head, 0, len(req.Args)-2)
+		for _, h := range req.Args[2:] {
+			heads = append(heads, state.Head(h))
+		}
+		return d.act(actor, state.LineChecked{Line: l, Heads: heads, Trunk: state.Head(req.Args[1]), Pass: req.Action == "pass", Evidence: req.Reason}, "line "+string(l)+" check recorded: "+req.Action)
 	case "release":
 		if len(req.Args) != 1 {
 			return errResp(errors.New("usage: release <line|change>"))

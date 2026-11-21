@@ -272,6 +272,8 @@ func (m *machine) apply(ev Event) error {
 		}
 	case Withdraw:
 		return m.withdraw(e)
+	case LineChecked:
+		return m.lineChecked(e)
 	case Assemble:
 		return m.assemble(e)
 	case LeaveOut:
@@ -635,6 +637,45 @@ func (m *machine) withdraw(e Withdraw) error {
 	return nil
 }
 
+// lineChecked records a line check's verdict. Only a verdict on the heads the
+// line has now counts. A failure charges a waiting line. A line that is held
+// or parked only loses its green; one that rides keeps it (see below).
+func (m *machine) lineChecked(e LineChecked) error {
+	l, err := m.line(e.Line)
+	if err != nil {
+		return err
+	}
+	if l.State.Spent() {
+		return bad(ErrState, "line %s is %s", l.ID, l.State)
+	}
+	if len(e.Heads) != len(l.Changes) {
+		return nil
+	}
+	for i, c := range l.Changes {
+		if e.Heads[i] != c.Head {
+			return nil
+		}
+	}
+	if e.Pass {
+		l.Checked, l.CheckedOn = append([]Head(nil), e.Heads...), e.Trunk
+		return nil
+	}
+	if e.Evidence == "" {
+		return bad(ErrEvidence, "line %s", l.ID)
+	}
+	if l.State == LineRiding {
+		// It was assembled on a green check of these heads (I10), and a
+		// later verdict on another trunk does not undo that: its train's
+		// own pre-flight and CI judge it now.
+		return nil
+	}
+	l.Checked, l.CheckedOn = nil, ""
+	if l.State == LineWaiting {
+		m.setLine(l, LineReturned, CauseCharged, "line check: "+e.Evidence)
+	}
+	return nil
+}
+
 func (m *machine) assemble(e Assemble) error {
 	if e.Train == "" || len(e.Lines) == 0 || !distinct(e.Lines) {
 		return bad(ErrInput, "a train needs a name and distinct lines")
@@ -679,6 +720,8 @@ func (m *machine) assemble(e Assemble) error {
 			return bad(ErrJoin, "line %s is in another half of a split", id)
 		case l.Stale != "":
 			return bad(ErrJoin, "line %s is stale: %s", id, l.Stale)
+		case m.s.Config.RequireCheck && !l.CheckCurrent():
+			return bad(ErrJoin, "line %s has no current green line check (§5.4)", id)
 		case l.Base != "" && !m.s.NeedMet(l, taken):
 			return bad(ErrJoin, "line %s needs line %s, which has not landed, rides in no earlier train and is not earlier in this train (I3)", id, l.Base)
 		}
@@ -900,10 +943,12 @@ func (m *machine) headMoved(e HeadMoved) error {
 			return nil
 		}
 		l.Changes[i].Head, l.NoVerdicts = e.Head, 0
+		l.Checked, l.CheckedOn = nil, ""
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("change %s moved while it rode (I4)", e.Change), nil)
 		return nil
 	}
 	l.Changes[i].Head, l.NoVerdicts = e.Head, 0
+	l.Checked, l.CheckedOn = nil, ""
 	return nil
 }
 

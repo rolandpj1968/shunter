@@ -104,6 +104,9 @@ type Queue struct {
 	Depth      int `toml:"depth"`
 	MaxLines   int `toml:"max_lines"`
 	MaxChanges int `toml:"max_changes"`
+	// RequireCheck: no line joins a train without a current green line
+	// check (PROTOCOL.md §5.4, I10).
+	RequireCheck bool `toml:"require_check"`
 }
 
 // Deadlines are every wait's bound; zero takes the daemon's default.
@@ -295,7 +298,9 @@ func (f *File) Daemon(version string) daemon.Config {
 }
 
 // State is the queue's configuration, for a new store.
-func (f *File) State() state.Config { return state.Config{Depth: f.Queue.Depth} }
+func (f *File) State() state.Config {
+	return state.Config{Depth: f.Queue.Depth, RequireCheck: f.Queue.RequireCheck}
+}
 
 func (f *File) policy() bound.Policy {
 	return bound.Policy{Attempts: f.Retry.Attempts, Backoff: f.Retry.Backoff.Duration, MaxBackoff: f.Retry.MaxBackoff.Duration}

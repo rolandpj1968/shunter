@@ -55,3 +55,41 @@ func TestJoinCapsChangesAsWellAsLines(t *testing.T) {
 		}
 	}
 }
+
+// I10: where the queue requires line checks, the joining rule passes over a
+// line with no current green check, and over a line stacked on one.
+func TestJoinTakesOnlyCheckedLines(t *testing.T) {
+	s := state.New("T0", state.Config{Depth: 1, RequireCheck: true})
+	step := func(ev state.Event) {
+		t.Helper()
+		next, _, err := state.Next(s, ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s = next
+	}
+	for _, id := range []state.LineID{"l1", "l2", "l3", "l4"} {
+		o := state.Offer{Line: id, Changes: []state.Change{{ID: state.ChangeID("c-" + string(id)), Head: "h"}}}
+		if id == "l3" {
+			o.Base = "l2" // l3 is stacked on the unchecked l2
+		}
+		step(o)
+		step(state.GateAccept{Line: id})
+	}
+	pass := func(id state.LineID) {
+		step(state.LineChecked{Line: id, Heads: []state.Head{"h"}, Trunk: "T0", Pass: true})
+	}
+	if got := daemon.Join(s, daemon.Caps{}); len(got) != 0 {
+		t.Fatalf("unchecked lines joined: %v", got)
+	}
+	pass("l1")
+	pass("l3")
+	pass("l4")
+	if got, want := daemon.Join(s, daemon.Caps{}), []state.LineID{"l1", "l4"}; !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
+	}
+	pass("l2")
+	if got, want := daemon.Join(s, daemon.Caps{}), []state.LineID{"l1", "l2", "l3", "l4"}; !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
+	}
+}

@@ -44,6 +44,7 @@ These are safety properties. Every reachable state must satisfy them, whatever t
 - **I6, blame needs evidence.** A change goes back to its owner as charged only when a blame rule or a recorded judgement names it.
 - **I7, one writer.** At most one actor fast-forwards trunk.
 - **I8, one state, one record.** Every line is in exactly one state of §5.1, held in one store, and so is every train. A transition is a recorded act: the subject, from, to, the actor, the time and the reason. No actor infers a line's state from anything else, and a transition that isn't in the tables of §5.1 can't be written.
+- **I10, checked before assembled.** Where the queue requires line checks (§5.4), no line is assembled into a batch without a green line check on exactly the heads its changes have. A push to any of them ends the check. A push is never taken as a fix: a line that a check charged rides again only when the check has passed on its new heads.
 - **I9, the lander verifies.** Before it fast-forwards trunk, the runner itself reads from the forge that the batch's CI passed on exactly the head it is about to push, that the head is the one it built, that every change's head is the one it assembled (I4), and that trunk is where the batch was built (I5). It never lands on a builder's report, and no protocol message travels in a channel that tools or tests can write to.
 
 Two consequences are worth stating on their own, because the queue this protocol grew from broke both:
@@ -115,7 +116,7 @@ Live trains form the **chain**, in landing order: train 1 is built on trunk, and
 | L12 | held | parked | release | it is held; a park covers it | the judge, or a human | stays held |
 | L13 | waiting | parked | park | the park has a restore condition | J1, J2 or the judge | not parked |
 | L14 | parked | waiting | restore | the park exists; no other park covers the line | the runner, when the condition holds | restored at the park's deadline, with an alert |
-| L15 | waiting | riding | assemble | not held, not parked, not stale; alone if it must be; one split group per train; its base has landed, rides in an earlier train, or is earlier in this train (I3) | the runner's joining rule (§5.3) | stays waiting |
+| L15 | waiting | riding | assemble | not held, not parked, not stale; a current green line check, where the queue requires one (I10); alone if it must be; one split group per train; its base has landed, rides in an earlier train, or is earlier in this train (I3) | the runner's joining rule (§5.3) | stays waiting |
 | L16 | riding | returned | leave-out | the train is assembling; a reason is given | the assembly rules (conflict, caps, its base left out), or a pre-flight hook's leave-out (§5.4) | refused without a reason |
 | L17 | riding | returned | preflight-failed, ci-failed, judge (charge) | evidence names the line (I6) | a blame rule (§5.6), or J1 | never charged without evidence |
 | L18 | riding | returned | abort (return) | the train is live and not landing | the judge (§5.9) | requeue |
@@ -133,6 +134,7 @@ Live trains form the **chain**, in landing order: train 1 is built on trunk, and
 | L30 | waiting-for-base | dropped | withdraw | none (retired: a line queued before needs first) | its owner | refused; the line stays where it is |
 | L31 | parked | dropped | withdraw | none | its owner | refused; the line stays where it is |
 | L32 | riding | dropped | withdraw | its train is not landing; the train goes void | its owner | refused while landing |
+| L33 | waiting | returned | line-checked (fail) | the verdict is on the line's present heads; the failing check passes on trunk alone (I6) | the line check (§5.4) | never charged without evidence |
 
 **Transitions of a train**
 
@@ -169,7 +171,7 @@ Reading the tables:
 - **Nothing leaves "held" except by release** (L11, L12). A held line can't join, can't be parked afresh, can't be charged, and can't be withdrawn until it's released. So a hold can never spend a line.
 - **Nothing leaves "aborted", "void", "failed", "empty" or "landed".** A late report for an ended train is refused and logged.
 - **Only T13 moves trunk,** and only from "landing", which only T12 enters.
-- **A line returns only with a reason** (L6, L16–L18, L24, L27), and as charged only with evidence (L17, I6). A line whose base didn't land goes back uncharged (L16, L24).
+- **A line returns only with a reason** (L6, L16–L18, L24, L27, L33), and as charged only with evidence (L17, L33, I6). A line whose base didn't land goes back uncharged (L16, L24).
 
 ```
                     ┌───────── held ◀── hold ── (waiting, waiting-for-base, parked, riding)
@@ -215,15 +217,30 @@ A line whose base is live **waits in the queue** and rides only behind its base 
 
 ### 5.4 Pre-flight
 
-There are three tiers of checking, and each answers a different question:
+There are three tiers of checking, and a fourth the runner may put between the first two. Each answers a different question:
 
 | Tier | Runs on | Question |
 |---|---|---|
-| **1. Producer pre-checks** | the change, on its own base, before it's offered as a line | Does this change work at all? |
+| **1. Producer pre-checks** | the change **merged with trunk as it is now**, before it's offered as a line | Does this change work at all? |
+| **1b. Line check** (optional; the runner's) | each waiting line alone, merged with trunk, while it waits | Does this line, by itself, break something cheap to detect? |
 | **2. Batch pre-flight** | the assembled batch, on the runner, before CI is dispatched | Did *combining* these changes break something cheap to detect? |
 | **3. CI** | the batch, in full | Is this exact state safe to land? |
 
 **A stack top's tier-1 check counts for the changes below it.** Tier 1 keeps the pass rate up; it isn't what makes trunk safe, since every train is tested in full (tier 3, I1). A change that can't pass without the change above it should be in one line with it (P1).
+
+**Tier 1 tests the change merged with trunk, not the change on its own base.** A change that passes on a stale base and fails once merged is the commonest cheap failure there is: an import trunk dropped, a registry entry trunk now demands, a quality ratchet trunk has moved. Draft 0.2 said "on its own base", and the queue this protocol grew from paid for it: in one five-day sample, two thirds of all batch failures were deterministic checks of one change, each of which failed on that change merged with trunk and on nothing else.
+
+**The line check (tier 1b) is tier 1 run by the runner, so that it need not be taken on trust.** A producer's pre-check is the producer's own copy of the rules, it can be skipped, and the queue holds no record of it. Where a queue turns line checks on:
+
+- **What runs:** every deterministic check of tier 2, on the line alone merged with trunk, with no skip list, and without stopping at the first failure, so the owner gets the whole list in one round.
+- **When:** while the line waits, in parallel with batches and with other lines' checks, on capacity the batches aren't using. It holds no batch slot.
+- **The verdict belongs to the heads it was taken on.** It is stored against the trunk and the heads checked. A push to any change of the line ends it (I10). Trunk moving does not end a green verdict at once: re-checking every waiting line at every landing costs more than it finds, and what trunk's movement breaks in a line is exactly what tier 2 catches on the true tree. A queue bounds a green verdict's age instead, and refreshes the oldest when idle.
+- **A failure charges the line, with evidence** (I6): the failing check is run on trunk alone, and passes there. A check that fails on trunk alone is trunk's fault, charges nobody, and is J2's business.
+- **No verdict is no verdict:** a timeout, a full disk or an unreadable forge is tried again, and never charges (§5.5, class 0).
+- **The gate:** no line is assembled without a current green check (I10; L15's guard; a failure is L33). A line stacked on another is checked with its base beneath it, after its base is green.
+- **If the checker dies, the gate opens, loudly.** Tier 2 still runs every check on every batch, so a dead checker costs speed and never safety (L3 watches it).
+
+With line checks on, tier 2 has less to do: only what joining lines can break. Moving a check out of tier 2 on that ground is a J6 decision, made from the record of what each tier caught.
 
 Tier 2 runs on every batch, before any CI is spent. A failure there sends the changes it names back (by the blame rules of §5.6), with no rerun.
 
@@ -428,6 +445,9 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **The line check, and I10** (§5.4; from five days of the script queue's failures): the runner checks each waiting line alone, merged with trunk, and no line is assembled without a current green check. New event `line-checked`, new row L33 (a waiting line charged by its check, with evidence), a new guard on L15, and `require_check` in the queue's configuration. The TLA+ model carries it as `AssembledOnlyChecked`.
+- **§5.4, tier 1 is on the change merged with trunk,** not "on its own base".
 
 - **Needs first** (the owner's ruling on [open question 27](docs/open-questions.md); [`docs/dependency-graph.md`](docs/dependency-graph.md)). **I3** is "needs first": a stacked line waits in the queue and rides behind its base, in the same train or a later one. **waiting-for-base is retired** (kept only for lines queued before), its rows offered → waiting-for-base and held → waiting-for-base gone, and the line rows renumbered. **New row L24**, waiting → returned, uncharged, when its base is returned or dropped; L15's guard carries the need; L16 leaves out a line whose base was left out. **§5.2:** a need is read from the forge and from ancestry, and a line where they disagree is **stale** (new events stale and fresh). **§5.3:** a line whose base is skipped is skipped. **§5.4:** a stack top's tier-1 check counts for the changes below it. **L1** allows a line to wait, visibly, behind a held, parked or stale base.
 - **§3, producer obligations P1 and P2** (owner rules): lines are minimal, and a change is stacked only when it builds on an unlanded change's code, with the reason in the offer. A line is one change; a stack is a sequence of lines, base first. [`docs/dependency-graph.md`](docs/dependency-graph.md) is the possible successor model.

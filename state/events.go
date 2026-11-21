@@ -209,6 +209,19 @@ type Stale struct {
 // Fresh clears a line's staleness: its head and its base agree again.
 type Fresh struct{ Line LineID }
 
+// LineChecked reports the line check of one line (§5.4): the line
+// alone, merged with trunk, on exactly Heads. A verdict on other heads than
+// the line has now says nothing and changes nothing. A pass is kept on the
+// line. A failure charges a waiting line, and needs its evidence (I6): the
+// failing check passes on Trunk alone.
+type LineChecked struct {
+	Line     LineID
+	Heads    []Head // the heads of the line's changes that were checked, in order
+	Trunk    Head   // the trunk the line was merged with
+	Pass     bool
+	Evidence string // a failure's evidence; shown to the owner
+}
+
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).
 type ExpireBudget struct{ Line LineID }
 
@@ -241,6 +254,7 @@ func (Resume) event() string          { return "resume" }
 func (ExpireBudget) event() string    { return "expire-budget" }
 func (Stale) event() string           { return "stale" }
 func (Fresh) event() string           { return "fresh" }
+func (LineChecked) event() string     { return "line-checked" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }
