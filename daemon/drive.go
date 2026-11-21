@@ -58,6 +58,7 @@ func join(s state.State, c Caps) []state.LineID {
 	var out []state.LineID
 	taken := map[state.LineID]bool{}
 	group, changes := -1, 0
+	counted, full := 0, false // the lines that count against the cap; whether it is reached
 	for _, id := range s.Waiting() {
 		l := s.Lines[id]
 		n := len(l.Changes)
@@ -81,6 +82,19 @@ func join(s state.State, c Caps) []state.LineID {
 			continue
 		case group >= 0 && l.Group != group:
 			continue
+		case l.Inert && len(out) > 0:
+			// Inert content joins any train whatever its size (§5.4): it
+			// can break nothing the train's checks look at, so it counts
+			// against neither cap, and joins a train that is already full.
+			// (First in a train, it is counted like any line, so that a
+			// queue of nothing else still makes trains of the configured
+			// size.)
+			out = append(out, id)
+			taken[id] = true
+			continue
+		case full:
+			// The cap is reached: only inert lines join from here on.
+			continue
 		case len(out) == 0 && c.Changes > 0 && n >= c.Changes:
 			return []state.LineID{id}
 		case c.Changes > 0 && changes+n > c.Changes:
@@ -91,8 +105,9 @@ func join(s state.State, c Caps) []state.LineID {
 		out = append(out, id)
 		taken[id] = true
 		changes += n
-		if c.Lines > 0 && len(out) >= c.Lines {
-			break
+		counted++
+		if c.Lines > 0 && counted >= c.Lines {
+			full = true
 		}
 	}
 	return out

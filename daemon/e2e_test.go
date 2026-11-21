@@ -14,6 +14,7 @@ import (
 	"github.com/rolandpj1968/shunter/daemon"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
+	"github.com/rolandpj1968/shunter/tier"
 )
 
 type clock struct {
@@ -40,13 +41,20 @@ type rig struct {
 	d      *daemon.Daemon
 	cancel context.CancelFunc
 	done   chan error
+	// maxLines and tiers are the daemon's train cap and tier rules.
+	maxLines int
+	tiers    tier.Rules
 }
 
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T) *rig { return newRigWith(t, 0, tier.Rules{}) }
+
+// newRigWith is a rig whose daemon caps a train's lines and classifies lines
+// by the tier rules given.
+func newRigWith(t *testing.T, maxLines int, tiers tier.Rules) *rig {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
-	r := &rig{t: t, ctx: ctx, dir: t.TempDir(), w: fake.New("T0"), clk: &clock{t: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)}}
+	r := &rig{t: t, ctx: ctx, dir: t.TempDir(), w: fake.New("T0"), clk: &clock{t: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)}, maxLines: maxLines, tiers: tiers}
 	r.start()
 	r.settle()
 	t.Cleanup(func() {
@@ -67,7 +75,8 @@ func (r *rig) start() {
 	}
 	r.st = st
 	// The real ticker never fires in a test; the test ticks by hand.
-	r.d = daemon.New(st, r.w.Set(), daemon.Config{Version: "test", Now: r.clk.Now, Tick: time.Hour, Poll: time.Nanosecond, Backoff: time.Second}, nil)
+	r.d = daemon.New(st, r.w.Set(), daemon.Config{Version: "test", Now: r.clk.Now, Tick: time.Hour, Poll: time.Nanosecond, Backoff: time.Second,
+		MaxLines: r.maxLines, Tiers: r.tiers}, nil)
 	ctx, cancel := context.WithCancel(r.ctx)
 	r.cancel, r.done = cancel, make(chan error, 1)
 	go func() { r.done <- r.d.Run(ctx) }()
@@ -1269,5 +1278,77 @@ func TestAPauseDrainsTheQueueForAReload(t *testing.T) {
 	}
 	if sb, sc := r.state().Lines["b"].Seq, r.state().Lines["c"].Seq; sb >= sc {
 		t.Fatalf("the waiting lines lost their order: b %d, c %d", sb, sc)
+	}
+}
+
+// TestAnInertLineTakesTheLightTierAndJoinsAnyTrain: the gate classifies a
+// line by the whole list of files its changes touch (§5.4). A line of inert
+// content only is inert: it counts against no cap of a train, and a train of
+// nothing else is light. Anything short of that is full: one file that is
+// not inert, a file list the forge cannot vouch for, a push.
+func TestAnInertLineTakesTheLightTierAndJoinsAnyTrain(t *testing.T) {
+	r := newRigWith(t, 2, tier.Rules{Inert: []string{"docs/**", "**/*.md"}, Read: []string{"docs/generated/**"}})
+	files := map[string][]string{
+		"code1": {"pkg/a.go"},
+		"code2": {"pkg/b.go"},
+		"doc1":  {"docs/a.md"},
+		"doc2":  {"docs/b.md", "NOTES.md"},
+		"mixed": {"docs/c.md", "pkg/c.go"},
+		"read":  {"docs/generated/api.md"},
+		"blind": {"docs/d.md"},
+	}
+	order := []string{"code1", "code2", "doc1", "doc2", "mixed", "read", "blind"}
+	r.open(order...)
+	for id, fs := range files {
+		r.w.Change(state.ChangeID(id), func(c *fake.Change) { c.Files = fs })
+	}
+	r.w.Change("blind", func(c *fake.Change) { c.FilesErr = errors.New("the list is not whole") })
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	for _, id := range order {
+		r.queue(id)
+	}
+	want := map[string]bool{"doc1": true, "doc2": true}
+	for _, id := range order {
+		if got := r.state().Lines[state.LineID(id)].Inert; got != want[id] {
+			t.Errorf("line %s: inert %v, want %v", id, got, want[id])
+		}
+	}
+	r.exec(daemon.Request{Cmd: "resume"})
+	// The cap is two lines: the two code lines fill it, and both documents
+	// ride with them all the same. The train is full: it holds code.
+	t1 := r.trainOf("code1")
+	rides := func(id string) state.TrainID { return r.state().Lines[state.LineID(id)].Train }
+	for _, id := range []string{"code2", "doc1", "doc2"} {
+		if rides(id) != t1 {
+			t.Errorf("line %s does not ride train %s with the lines it could join\n%s", id, t1, daemon.Status(r.state(), nil))
+		}
+	}
+	for _, id := range []string{"mixed", "read", "blind"} {
+		if rides(id) == t1 {
+			t.Errorf("line %s is past the cap and not inert, and rides train %s", id, t1)
+		}
+	}
+	if r.train(t1).Light {
+		t.Errorf("train %s holds code and is light", t1)
+	}
+}
+
+// TestATrainOfInertLinesOnlyIsLight, and a push ends a line's inertness.
+func TestATrainOfInertLinesOnlyIsLight(t *testing.T) {
+	r := newRigWith(t, 8, tier.Rules{Inert: []string{"docs/**"}})
+	r.open("doc1", "doc2")
+	r.w.Change("doc1", func(c *fake.Change) { c.Files = []string{"docs/a.md"} })
+	r.w.Change("doc2", func(c *fake.Change) { c.Files = []string{"docs/b.md"} })
+	r.together("doc1", "doc2")
+	t1 := r.trainOf("doc1")
+	if r.trainOf("doc2") != t1 || !r.train(t1).Light {
+		t.Fatalf("the documents' train: light %v\n%s", r.train(t1).Light, daemon.Status(r.state(), nil))
+	}
+	// A push to a riding line voids its train (I4), and the line is full
+	// until the gate has read its files again.
+	r.exec(daemon.Request{Cmd: "pause", Reason: "hold the next train"})
+	r.st.Apply("forge", state.HeadMoved{Line: "doc1", Change: "doc1", Head: "doc1-2"})
+	if l := r.state().Lines["doc1"]; l.Inert {
+		t.Fatalf("line doc1 is still inert after a push")
 	}
 }

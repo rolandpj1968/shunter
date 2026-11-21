@@ -10,6 +10,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
+	"github.com/rolandpj1968/shunter/tier"
 )
 
 // drive does what the runner does whenever anything happened: it starts
@@ -75,6 +76,7 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 	a := d.ad
 	switch k.Kind {
 	case state.EffGate:
+		tiers := d.cfg.Tiers
 		l := copyLine(s.Lines[k.Line])
 		live := liveChanges(s, l.ID)
 		n := needsOf(s, &l)
@@ -92,6 +94,14 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 				}
 				if why, serr := staleness(ctx, anc, n, withHeads(l.Changes, moved), info[0].Base); serr == nil && why != "" {
 					events = append(events, state.Stale{Line: l.ID, Reason: why})
+				}
+			}
+			if err == nil && accepted(events) && inert(ctx, a.Forge, tiers, l) {
+				for i, ev := range events {
+					if ga, ok := ev.(state.GateAccept); ok {
+						ga.Inert = true
+						events[i] = ga
+					}
 				}
 			}
 			return result{events: events, actor: "gate", err: err}
@@ -197,6 +207,25 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 }
 
 func evs(e state.Event) []state.Event { return []state.Event{e} }
+
+// inert reports whether every change of the line is inert content only
+// (§5.4), by the forge's whole file list of each. Anything short of that is
+// not inert: no rules, a forge that cannot list files, a list that failed or
+// is not whole, one file the rules do not call inert. The classifier can
+// only err towards the full tier.
+func inert(ctx context.Context, f adapter.Forge, rules tier.Rules, l state.Line) bool {
+	fl, ok := f.(adapter.Filer)
+	if !ok || !rules.Configured() || len(l.Changes) == 0 {
+		return false
+	}
+	for _, c := range l.Changes {
+		files, err := fl.Files(ctx, c.ID)
+		if err != nil || rules.Classify(files) != tier.Light {
+			return false
+		}
+	}
+	return true
+}
 
 // liveChanges maps each change of a live line other than skip to its line.
 func liveChanges(s state.State, skip state.LineID) map[state.ChangeID]state.LineID {

@@ -37,6 +37,55 @@ type ghPull struct {
 	} `json:"labels"`
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	// ChangedFiles is the number of files the pull request touches, on a
+	// single pull request (absent in a list).
+	ChangedFiles int `json:"changed_files"`
+}
+
+type ghFile struct {
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+}
+
+// maxFilePages bounds a file listing: the forge serves at most 3,000 files
+// of a pull request, 100 a page.
+const maxFilePages = 30
+
+// Files implements adapter.Filer: every path the change touches, a rename's
+// old name included. The list is whole or it is an error: it is counted
+// against the number of files the pull request itself reports, and a pull
+// request too large to list in full is refused.
+func (c *Client) Files(ctx context.Context, id state.ChangeID) ([]string, error) {
+	n, err := number(id)
+	if err != nil {
+		return nil, err
+	}
+	p, err := c.pull(ctx, n)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	listed := 0
+	for page := 1; page <= maxFilePages; page++ {
+		var fs []ghFile
+		if err := c.do(ctx, http.MethodGet, c.repo("/pulls/%d/files?per_page=100&page=%d", n, page), nil, &fs); err != nil {
+			return nil, err
+		}
+		for _, f := range fs {
+			listed++
+			out = append(out, f.Filename)
+			if f.PreviousFilename != "" {
+				out = append(out, f.PreviousFilename)
+			}
+		}
+		if len(fs) < 100 {
+			break
+		}
+	}
+	if p.ChangedFiles == 0 || listed != p.ChangedFiles {
+		return nil, fmt.Errorf("change %s: %d files listed of the %d it touches: the list is not whole", id, listed, p.ChangedFiles)
+	}
+	return out, nil
 }
 
 func (p ghPull) labelled(name string) bool {

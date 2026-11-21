@@ -28,6 +28,10 @@ type Change struct {
 	Open     bool
 	Approved bool
 	Landed   bool
+	// Files are the paths the change touches. FilesErr makes the listing
+	// fail, as a forge that cannot vouch for a whole list does.
+	Files    []string
+	FilesErr error
 }
 
 // Notice is one message sent.
@@ -527,6 +531,23 @@ func (w *World) Retarget(ctx context.Context, id state.ChangeID) error {
 		w.Acts["retarget"]++
 	}
 	return nil
+}
+
+// Files implements adapter.Filer.
+func (w *World) Files(ctx context.Context, id state.ChangeID) ([]string, error) {
+	if err := w.enter(ctx, "files"); err != nil {
+		return nil, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	c := w.changes[id]
+	if c == nil {
+		return nil, adapter.Permanent(fmt.Errorf("change %s not found", id))
+	}
+	if c.FilesErr != nil {
+		return nil, c.FilesErr
+	}
+	return append([]string(nil), c.Files...), nil
 }
 
 // Rebase implements adapter.Rebaser. A test says what a line's rebase

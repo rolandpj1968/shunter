@@ -21,7 +21,14 @@ type Offer struct {
 
 // GateAccept is the gate's yes (§5.2). Where the line goes next is the
 // machine's decision: waiting, waiting for its base, or parked.
-type GateAccept struct{ Line LineID }
+//
+// Inert says the gate's classifier found every file of every change of the
+// line to be inert content, which no build, test or generator reads (§5.4).
+// It is only ever set on what the forge's whole file list shows.
+type GateAccept struct {
+	Line  LineID
+	Inert bool
+}
 
 // GateRefuse is the gate's no, with its reason.
 type GateRefuse struct {

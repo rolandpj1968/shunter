@@ -23,6 +23,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter/notify"
 	"github.com/rolandpj1968/shunter/daemon"
 	"github.com/rolandpj1968/shunter/state"
+	"github.com/rolandpj1968/shunter/tier"
 )
 
 // Duration is a time.Duration written as "90m" or "5s".
@@ -55,6 +56,7 @@ type File struct {
 	Deadlines Deadlines `toml:"deadlines"`
 	Retry     Retry     `toml:"retry"`
 	Hooks     Hooks     `toml:"hooks"`
+	Tiers     Tiers     `toml:"tiers"`
 	Notify    Notify    `toml:"notify"`
 	Watch     Watch     `toml:"watch"`
 
@@ -130,6 +132,17 @@ type Retry struct {
 	MaxBackoff Duration `toml:"max_backoff"`
 	Effects    int      `toml:"effects"`
 	EffectWait Duration `toml:"effect_backoff"`
+}
+
+// Tiers are the rules of the gate's tier classifier (PROTOCOL.md §5.4):
+// which content is inert, so that a line of nothing else takes the light
+// tier. Patterns are slash-separated, "**" for any number of directories.
+type Tiers struct {
+	// Inert is content no build, test or generator reads.
+	Inert []string `toml:"inert"`
+	// Read is content something does read, though an inert pattern matches
+	// it too. It is never inert.
+	Read []string `toml:"read"`
 }
 
 // Hooks are the repository's own rules.
@@ -291,6 +304,7 @@ func (f *File) Daemon(version string) daemon.Config {
 	d := f.Deadlines
 	return daemon.Config{
 		Version: version,
+		Tiers:   tier.Rules{Inert: f.Tiers.Inert, Read: f.Tiers.Read},
 		Tick:    d.Tick.Duration, Poll: d.Poll.Duration, Call: d.Call.Duration,
 		Build: d.Build.Duration, Open: d.Open.Duration, CI: d.CI.Duration, Push: d.Push.Duration,
 		J1: d.J1.Duration, Park: d.Park.Duration,

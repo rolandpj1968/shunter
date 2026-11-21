@@ -202,6 +202,15 @@ type Pruner interface {
 	Prune(ctx context.Context, live []state.TrainID) error
 }
 
+// Filer lists the files a change touches, for the gate's tier classifier
+// (§5.4): every path added, changed, removed or renamed, a rename's old name
+// included. It answers the WHOLE list or an error: a list it cannot vouch for
+// as complete is an error, and the line is then full. Optional: a forge
+// without it has no light tier.
+type Filer interface {
+	Files(ctx context.Context, id state.ChangeID) ([]string, error)
+}
+
 // Retargeter moves a change stacked on a change that has landed onto trunk
 // (open question 21). Optional, and advisory: the gate accepts such a change
 // whether or not the retarget takes.

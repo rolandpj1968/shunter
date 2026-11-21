@@ -116,6 +116,15 @@ timeout = "20m"
 command = ["./hooks/resolve-conflict"]
 timeout = "5m"
 
+[tiers]
+# Optional. Content that no build, test or generator reads is "inert": a line
+# of nothing else takes the light tier and joins any train whatever its size
+# (PROTOCOL.md §5.4). Patterns are slash-separated; "**" is any number of
+# directories. The classifier can only err towards the full tier: a file
+# under no inert pattern, or under a read pattern, makes its line full.
+# inert = ["docs/**", "**/*.md"]
+# read = ["docs/generated/**", "README.md"]   # read by a test or a generator: never inert
+
 [hooks.rebase]
 # Optional. Asked for a waiting line whose check found that it does not merge
 # onto trunk. In: {"dir","remote","trunk","line":{"ID","Changes":[...]}}.
