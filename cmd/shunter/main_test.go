@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -53,5 +54,29 @@ command = ["` + notify + `"]
 	watchRun(fl)
 	if _, err := os.Stat(sent); err != nil {
 		t.Fatalf("the notify hook did not run without --no-notify: %v", err)
+	}
+}
+
+// TestEveryFlagTheCommandReadsIsOneItParses: a flag main reads (fl["name"])
+// and parse does not know is a flag nobody can give. (--until was read by
+// cancel and judge and refused by parse: it could be set only in tests that
+// built the request by hand.)
+func TestEveryFlagTheCommandReadsIsOneItParses(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := regexp.MustCompile(`fl\["([a-z-]+)"\]`).FindAllStringSubmatch(string(src), -1)
+	if len(read) < 10 {
+		t.Fatalf("only %d flags found in main.go: the scan is broken", len(read))
+	}
+	for _, m := range read {
+		if !boolFlags[m[1]] && !valueFlags[m[1]] {
+			t.Errorf("main reads --%s, and parse refuses it", m[1])
+		}
+	}
+	if _, fl, err := parse([]string{"x", "--until", "landed:fix", "--checks=c.jsonl", "--owners", "o.jsonl", "--live", "l.jsonl"}); err != nil ||
+		fl["until"] != "landed:fix" || fl["checks"] != "c.jsonl" || fl["owners"] != "o.jsonl" || fl["live"] != "l.jsonl" {
+		t.Errorf("parse: %v %v", fl, err)
 	}
 }

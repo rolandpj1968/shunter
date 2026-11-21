@@ -33,6 +33,16 @@ What makes a hard cut-over safe is that both queues move trunk only by fast-forw
        --since 6h --effects would-do.jsonl logs/*.out
    ```
 
+   **Feed the shadow's gate what your queue knows and the forge does not say.** Without it Shunter's gate takes every open line, and the comparison of what it would assemble means little. Three optional files, one JSON object a line, read and never written:
+
+   ```
+       --checks checks.jsonl   {"changes":["12"],"heads":["<head>"],"trunk":"<head>","verdict":"pass|fail|conflict","evidence":"..."}
+       --owners owners.jsonl   {"change":"12","owner":"<who>","fixing":true,"why":"..."}
+       --live   live.jsonl     {"changes":["12"],"takes":true,"why":"..."}
+   ```
+
+   `--checks` are your line-check verdicts, in time order; with `require_check = true` in the shadow's `[queue]`, Shunter's gate takes a line only on a green verdict for the heads it has now. `--owners` say which changes are with their owner, being fixed: such a line is not in Shunter's queue. `--live` is your queue's own answer for each waiting line, and the report then compares the two gates line by line, marks every difference, and counts them ("Gate comparison").
+
    It has no git adapter and no notifier, and its forge client refuses every request but a read before it is sent. The report counts, for every train that opened a pull request, whether Shunter's own reading of the checks on the train's head agrees with the outcome the old queue recorded, and names each divergence by kind: a landing whose head shows no passing verdict, a failure charged on a run that was cancelled, a failure split or returned with nobody named. It lists the effects the machine would have asked for, and puts the lines waiting now through Shunter's gate. `--lines` takes a directory of [line files](#the-line-files) (or a waiting list alone): lines that must ride alone, held lines and parks are read as such and placed as an import places them, so the trains it says it would assemble leave them out as the live queue does.
 5. **Make both queues take the same lock.** One exclusive lock that either runner must hold to push trunk. Then both can never write, even by mistake. See [The trunk lock](#the-trunk-lock) below.
 6. **Write and test the export.** Shunter writes its queue at rest as plain line files ([The line files](#the-line-files) below), the shape a script queue keeps. Map them into the old queue's own files with a small script, and round-trip it: export, map, read back with the old queue's tools, and compare. Rollback depends on it, so prove it works before you need it.

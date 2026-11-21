@@ -205,3 +205,108 @@ func TestShadowReadsAloneHoldsAndParks(t *testing.T) {
 		t.Errorf("would assemble %v", rep.Assemble)
 	}
 }
+
+// TestShadowGateIsFedLineChecksAndOwners: with RequireCheck, Shunter's gate
+// takes a waiting line only on a green line check for the heads it has now,
+// and a line whose change is with its owner is not in the queue at all. Each
+// line's answer is compared with the live queue's own, and every difference
+// is counted and marked.
+func TestShadowGateIsFedLineChecksAndOwners(t *testing.T) {
+	ch := func(id string) adapter.ChangeInfo {
+		return adapter.ChangeInfo{ID: state.ChangeID(id), Head: state.Head("h" + id), Open: true, Approved: true}
+	}
+	r := &reader{changes: map[state.ChangeID]adapter.ChangeInfo{}}
+	for _, id := range []string{"31", "32", "33", "34", "35", "36", "37", "38", "39"} {
+		r.changes[state.ChangeID(id)] = ch(id)
+	}
+	waiting, err := store.ParseWaiting(strings.NewReader("b 31\nb 32\nb 33\nb 34\nb 35\nb 36 37\nb 38\nb 39\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := func(id, head, verdict, ev string) CheckFact {
+		return CheckFact{Changes: []state.ChangeID{state.ChangeID(id)}, Heads: []state.Head{state.Head(head)}, Trunk: "T", Verdict: verdict, Evidence: ev}
+	}
+	in := Input{Lines: store.LineFile{Waiting: waiting}, Read: r, Depth: 2, MaxLines: 8, RequireCheck: true,
+		Checks: []CheckFact{
+			one("31", "h31", "pass", ""),
+			one("33", "h33", "fail", "lint"),
+			one("34", "h34", "conflict", "x.go"),
+			one("36", "h36", "pass", ""), one("37", "h37", "pass", ""), // a composite line, each part green alone
+			one("38", "old", "pass", ""),                                   // green on a head since replaced
+			one("39", "h39", "fail", "lint"), one("39", "h39", "pass", ""), // the last verdict for the heads counts
+		},
+		Owners: []OwnerFact{{Change: "35", Owner: "ann", Fixing: true, Why: "marked as being fixed"}, {Change: "31", Owner: "bob"}},
+		Live: []LiveFact{
+			{Changes: []state.ChangeID{"31"}, Takes: true, Why: "green"},
+			{Changes: []state.ChangeID{"32"}, Takes: true, Why: "the gate was open"}, // the live queue takes an unchecked line
+			{Changes: []state.ChangeID{"33"}, Takes: false, Why: "red"},
+			{Changes: []state.ChangeID{"34"}, Takes: false, Why: "conflict"},
+			{Changes: []state.ChangeID{"35"}, Takes: true, Why: "green"}, // the live queue takes a line its owner is fixing
+			{Changes: []state.ChangeID{"36", "37"}, Takes: true, Why: "green"},
+			{Changes: []state.ChangeID{"38"}, Takes: false, Why: "stale"},
+			// no answer for 39
+		},
+	}
+	rep := Run(context.Background(), in)
+	type want struct {
+		gate, check string
+		takes       bool
+		compare     string
+		whyHas      string
+	}
+	wants := map[string]want{
+		"[31]":    {"waiting", "green", true, "agree", ""},
+		"[32]":    {"waiting", "none", false, "diverge", "no green line check"},
+		"[33]":    {"charged", "charged", false, "agree", "lint"},
+		"[34]":    {"waiting", "conflict", false, "agree", "x.go"},
+		"[35]":    {"with-owner", "", false, "diverge", "ann"},
+		"[36 37]": {"waiting", "green", true, "agree", ""},
+		"[38]":    {"waiting", "none", false, "agree", "no green line check"},
+		"[39]":    {"waiting", "green", true, "", ""},
+	}
+	if len(rep.Waiting) != len(wants) {
+		t.Fatalf("%d lines reported, want %d: %+v", len(rep.Waiting), len(wants), rep.Waiting)
+	}
+	for _, l := range rep.Waiting {
+		w, ok := wants[fmt.Sprint(l.Changes)]
+		if !ok {
+			t.Errorf("an unexpected line %v", l.Changes)
+			continue
+		}
+		if l.Gate != w.gate || l.Check != w.check || l.Takes != w.takes || l.Compare != w.compare || !strings.Contains(l.Why, w.whyHas) {
+			t.Errorf("%v: gate %q check %q takes %v compare %q why %q; want %+v", l.Changes, l.Gate, l.Check, l.Takes, l.Compare, l.Why, w)
+		}
+	}
+	if rep.Compared != 7 || rep.GateAgree != 5 || rep.GateDiverge != 2 {
+		t.Errorf("compared %d, agree %d, diverge %d; want 7, 5, 2", rep.Compared, rep.GateAgree, rep.GateDiverge)
+	}
+	// Shunter's trains take only what its gate takes.
+	took := map[state.LineID]bool{}
+	for _, tr := range rep.Assemble {
+		for _, id := range tr {
+			took[id] = true
+		}
+	}
+	for _, id := range []state.LineID{"32", "33", "34", "35", "38"} {
+		if took[id] {
+			t.Errorf("line %s is in a train Shunter would assemble", id)
+		}
+	}
+	if !took["31"] || !took["36"] || !took["39"] {
+		t.Errorf("the checked lines are not all taken: %v", rep.Assemble)
+	}
+	var b strings.Builder
+	rep.Write(&b, false)
+	out := b.String()
+	if !strings.Contains(out, "Gate comparison: 7 waiting lines the live queue answered for: agree 5, DIVERGE 2.") ||
+		strings.Count(out, " ** ") != 2 || !strings.Contains(out, "DIVERGE\n") {
+		t.Errorf("the report:\n%s", out)
+	}
+	// Without the facts nothing changes: every open line waits and is taken.
+	plain := Run(context.Background(), Input{Lines: store.LineFile{Waiting: waiting}, Read: r, Depth: 2, MaxLines: 8})
+	for _, l := range plain.Waiting {
+		if l.Gate != "waiting" || !l.Takes || l.Check != "" || l.Compare != "" {
+			t.Errorf("with no facts, %v: gate %q takes %v check %q compare %q", l.Changes, l.Gate, l.Takes, l.Check, l.Compare)
+		}
+	}
+}
