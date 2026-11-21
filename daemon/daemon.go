@@ -270,6 +270,9 @@ func stale(s state.State, k store.Keyed) bool {
 		return tr(state.TrainGreen)
 	case state.EffPush:
 		return tr(state.TrainLanding)
+	case state.EffRebase:
+		l := s.Lines[k.Line]
+		return l == nil || l.State.Spent() || l.State == state.LineRiding || l.Conflict == ""
 	}
 	return false
 }

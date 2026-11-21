@@ -99,6 +99,9 @@ type Report struct {
 	Blamed   []state.LineID // Failed: the lines blame names (§5.6), maybe none
 	Evidence string         // Failed: the evidence, naming the failing test
 	Why      string         // NoVerdict, Infra, Flaky: what happened
+	// KnownFlake says a Flaky outcome is a recorded flake (class 2), not a
+	// timing failure (class 3): it never charges a line (§5.5).
+	KnownFlake bool
 	// Checks are the checks read, each the latest run of its name: the
 	// evidence behind the outcome, for the log and for shadow running.
 	Checks []Check
@@ -204,6 +207,21 @@ type Pruner interface {
 // whether or not the retarget takes.
 type Retargeter interface {
 	Retarget(ctx context.Context, id state.ChangeID) error
+}
+
+// Rebaser rebases a waiting line that conflicts with trunk, where that needs
+// no person (§5.2): generated files, a counters file, both sides only adding
+// lines. Optional. It pushes the rebased heads itself, through whatever the
+// producers' own pushes go through.
+type Rebaser interface {
+	Rebase(ctx context.Context, key string, line BuildLine, trunk state.Head) (RebaseResult, error)
+}
+
+// RebaseResult is a rebase's answer: the new head of each change it moved,
+// or the conflict that needs a person.
+type RebaseResult struct {
+	Heads    map[state.ChangeID]state.Head
+	Conflict string
 }
 
 // Notifier tells people.

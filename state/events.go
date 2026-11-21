@@ -8,7 +8,10 @@ type Event interface{ event() string }
 
 // Offer puts a line forward for landing. A spent line that did not land may
 // be offered again; that is a new offer with a new place in the queue.
+// By is who offers. The first offer's By is the line's owner; a line that
+// was charged is offered again only by its owner, and only at new heads.
 type Offer struct {
+	By      string
 	Line    LineID
 	Changes []Change
 	Base    LineID
@@ -95,6 +98,10 @@ type CIPassed struct {
 type CIRerun struct {
 	Train TrainID
 	Why   string
+	// Known says the failure is a recorded flake (class 2), not a timing
+	// failure (class 3). A recorded flake never charges a line: when it
+	// fails again after its one rerun, nothing is judged (§5.5).
+	Known bool
 }
 
 // CINoVerdict reports that nothing was judged (§5.5 classes 0 and 1): the
@@ -209,6 +216,22 @@ type Stale struct {
 // Fresh clears a line's staleness: its head and its base agree again.
 type Fresh struct{ Line LineID }
 
+// HandOver gives a line to another owner (§7): its owner asked, or went
+// silent past the deadline and the judge decided. Recorded, with a reason.
+type HandOver struct {
+	Line LineID
+	To   string
+	Why  string
+}
+
+// RebaseFailed reports that the runner could not rebase a line in conflict
+// by itself (§5.2): the conflict is real, or there is no rebase hook. The
+// line stays in conflict and its owner is told.
+type RebaseFailed struct {
+	Line   LineID
+	Reason string
+}
+
 // LineChecked reports the line check of one line (§5.4): the line
 // alone, merged with trunk, on exactly Heads. A verdict on other heads than
 // the line has now says nothing and changes nothing. A pass is kept on the
@@ -220,6 +243,10 @@ type LineChecked struct {
 	Trunk    Head   // the trunk the line was merged with
 	Pass     bool
 	Evidence string // a failure's evidence; shown to the owner
+	// Conflict, when set, says the line did not merge onto Trunk, and in
+	// what. It is neither a pass nor a failure: nobody is charged, the line
+	// joins no train, and the runner is asked to rebase it (§5.2).
+	Conflict string
 }
 
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).
@@ -255,6 +282,8 @@ func (ExpireBudget) event() string    { return "expire-budget" }
 func (Stale) event() string           { return "stale" }
 func (Fresh) event() string           { return "fresh" }
 func (LineChecked) event() string     { return "line-checked" }
+func (HandOver) event() string        { return "hand-over" }
+func (RebaseFailed) event() string    { return "rebase-failed" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }
@@ -275,6 +304,8 @@ var (
 	ErrJoin      = errors.New("these lines may not ride together")
 	ErrBudget    = errors.New("retry budget spent")
 	ErrTable     = errors.New("transition not in the table (I8)")
+	ErrOwner     = errors.New("only the line's owner may do this")
+	ErrUnfixed   = errors.New("charged, and not changed since")
 )
 
 // EffectKind is what the runner must do in the world.
@@ -292,6 +323,7 @@ const (
 	EffPush      EffectKind = "push"           // fast-forward trunk from Expect to Head
 	EffNotify    EffectKind = "notify"         // tell a line's owner
 	EffAskJudge  EffectKind = "ask-judge"      // open a judgement point
+	EffRebase    EffectKind = "rebase"         // rebase a line in conflict onto trunk, if it can be done without a person (§5.2)
 )
 
 // Effect is one thing to do, as data. Next performs none of them.

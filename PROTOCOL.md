@@ -30,6 +30,8 @@ Pure mechanism handles the common case and fails the rest badly. A rule like "sp
 - **P1, lines are minimal.** A line is one change. A stack is offered as a sequence of lines, base first. A stacked line waits in the queue and rides only behind its base (I3, §5.3). Changes share one line only when neither can pass CI without the other, and the offer says why.
 - **P2, stack only when necessary.** A producer branches each change from trunk, unless it builds on an unlanded change's code: it calls, edits or tests something that change adds. A stacked change's offer says why ("needs A's *X*"). Neighbouring files, a shared session or a shared author are no reason.
 
+- **P3, a returned line has an owner, and only the owner says it is done.** Whoever offers a line first owns it. When the line is charged it is with its owner, **being fixed**, until the owner offers it again; that offer is the owner's word that the fix is complete, and it is refused at the heads the line was charged on (I11). Between the charge and that offer the queue takes nothing from the line, however many pushes it sees: in the queue this protocol grew from, a stand-in owner's half-made pushes were re-queued as fixes and failed four trains in a row. A line changes owner only by a recorded **hand-over**, asked for by its owner or decided by the judge when the owner is silent past its deadline (§7). A line returned uncharged (left out, its base lost) had nothing found wrong with it, and anyone may offer it again as it stands.
+
 The reasons are recorded with the line and shown to the judge. The gate doesn't judge them: a wrong reason costs time, never a wrong landing (I1).
 
 ## 4. Invariants
@@ -45,6 +47,7 @@ These are safety properties. Every reachable state must satisfy them, whatever t
 - **I7, one writer.** At most one actor fast-forwards trunk.
 - **I8, one state, one record.** Every line is in exactly one state of §5.1, held in one store, and so is every train. A transition is a recorded act: the subject, from, to, the actor, the time and the reason. No actor infers a line's state from anything else, and a transition that isn't in the tables of §5.1 can't be written.
 - **I10, checked before assembled.** Where the queue requires line checks (§5.4), no line is assembled into a batch without a green line check on exactly the heads its changes have. A push to any of them ends the check. A push is never taken as a fix: a line that a check charged rides again only when the check has passed on its new heads.
+- **I11, a charge is cleared by a fix.** A line that was charged never rides again at the heads it was charged on, and is offered again only by its owner (§3, P3). A push alone is not "done": anyone's push, a rebase or half a fix all move a head. Nor is an offer a fix: the heads must have moved.
 - **I9, the lander verifies.** Before it fast-forwards trunk, the runner itself reads from the forge that the batch's CI passed on exactly the head it is about to push, that the head is the one it built, that every change's head is the one it assembled (I4), and that trunk is where the batch was built (I5). It never lands on a builder's report, and no protocol message travels in a channel that tools or tests can write to.
 
 Two consequences are worth stating on their own, because the queue this protocol grew from broke both:
@@ -204,6 +207,8 @@ A line whose base is live **waits in the queue** and rides only behind its base 
 
 **A need is read twice, and the readings must agree.** The forge declares each change's base (a pull request's base branch), and ancestry shows it: a change stacked on another must contain that change's head, and a change on trunk must contain no live change's head. Where the two disagree (the base was pushed and the change not rebased onto it, or a change carries another's commits while it targets trunk) the line is **stale**: it waits in the queue, joins no train, and its owner is told why. The gate reads it at the offer, and the runner reads it again while the line waits, so that a rebase clears it and a base pushed later makes it stale. A stale line is a flag on a waiting line, not a state, as "must ride alone" is. Staleness costs time, never a wrong landing (I1).
 
+**The runner rebases what needs no person.** A waiting line that no longer merges onto trunk is not sent back to its owner for that alone: a stale base isn't worth a person's turn, and an owner who has gone quiet strands it. When the line check (§5.4) finds a conflict, nobody is charged; the line joins no train, and the runner asks its rebase hook to rebase it. The hook rebases only what its repository's rule says needs no person (generated files, a counters file, both sides only adding lines), pushes the new heads through whatever tests the producers' own pushes, and answers them; the line is then checked again like any pushed line. A conflict the hook can't resolve, or a queue with no hook, goes to the owner with the files named, uncharged, and the line stays out of trains until a push. A change stacked on a change that has landed is moved onto trunk by the same act. The runner never guesses a resolution: a hook that fails, or answers nothing, leaves the conflict to the owner.
+
 **A gate condition holds at every later transition, not only at the offer.** Whatever would refuse, hold or park a line at the gate (a park, a hold, an unlanded base) is tested again whenever the line would enter the queue or join a batch, including a batch rebuilt after a failure or a void. A line that no longer passes goes to the state the gate would give it. It doesn't ride and fail.
 
 ### 5.3 Batches and speculation
@@ -283,7 +288,9 @@ Each failure gets one class, decided in this order:
 3. **Timing:** only timeouts or lost connections. One rerun.
 4. **Deterministic:** an assertion, or a compile or lint error. No rerun; go to blame.
 
-**A rerun that fails again is evidence.** When a known flake's or a timing failure's one rerun fails the same way, the failure is class 4 from then on: it goes to blame (§5.6), which is asked again with the class forced, and names lines by their files as for any deterministic failure. A line that makes a test slow, or makes a flaky test it touches fail every time, goes back to its owner without a judge. Blame that names none, or all of several, goes to J1 as before.
+**A recorded flake never charges a line.** A test recorded as flaky is known to fail on code where it should pass, so its failure names no line, however often it fails and however small the batch. When a known flake's one rerun fails again, nothing is judged: the batch is void, its lines go back unchanged (class 0), blame isn't asked, and J1 isn't opened. The lines' no-verdict budget (§5.10) brings a test that keeps failing to the judge (J3, then J5: fix it or quarantine it). Draft 0.3 first made the second failure class 4 and blamed it by files; the queue this protocol grew from then charged a batch of one line for a recorded flake it had not caused.
+
+**A timing failure's rerun that fails again is evidence.** When a timing failure's one rerun fails the same way, the failure is class 4 from then on: it goes to blame (§5.6), which is asked again with the class forced, and names lines by their files as for any deterministic failure. A line that makes a test slow, or makes a flaky test it touches fail every time, goes back to its owner without a judge. Blame that names none, or all of several, goes to J1 as before.
 
 ### 5.6 Blame
 
@@ -449,6 +456,10 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **P3 and I11, the owner-state:** a charged line is with its owner until its owner offers it again, at heads other than those it was charged on. New event `hand-over`; `Offer` carries who offers. The model carries the rule on heads as `NoRideAtChargedHead`, with re-offers (`Reoffer`), and a third configuration with two faults reaches them.
+- **§5.2, the runner rebases what needs no person:** the line check may answer a conflict, which charges nobody; new effect `rebase`, new event `rebase-failed`, and an optional `[hooks.rebase]`.
+- **§5.5, a recorded flake never charges a line,** even when its rerun fails again and the batch is one line. A timing failure's second failure is still evidence. This reverses 0.3's own first answer to open question 3 for recorded flakes.
 
 - **§5.3: only the first batch is judged.** A failure reported behind an undecided batch is kept and judged when every batch ahead has landed, or dropped when one doesn't. The model carries it as `JudgedOnlyAtHead`.
 - **J1's default for a batch of one line is a charge by elimination,** not a park of the whole queue.

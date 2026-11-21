@@ -96,6 +96,35 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 			}
 			return result{events: events, actor: "gate", err: err}
 		}, d.cfg.Call
+	case state.EffRebase:
+		l := copyLine(s.Lines[k.Line])
+		trunk := s.Trunk
+		rb, _ := a.Git.(adapter.Rebaser)
+		return func(ctx context.Context) result {
+			if rb == nil {
+				return result{events: evs(state.RebaseFailed{Line: l.ID, Reason: "no rebase hook is configured: rebase it onto trunk"}), actor: "runner"}
+			}
+			res, err := rb.Rebase(ctx, k.Key, adapter.BuildLine{ID: l.ID, Changes: append([]state.Change(nil), l.Changes...)}, trunk)
+			if err != nil {
+				return result{err: err, actor: "runner"}
+			}
+			var out []state.Event
+			if res.Conflict == "" {
+				for _, c := range l.Changes {
+					if h, ok := res.Heads[c.ID]; ok && h != "" && h != c.Head {
+						out = append(out, state.HeadMoved{Line: l.ID, Change: c.ID, Head: h})
+					}
+				}
+			}
+			if len(out) == 0 {
+				why := res.Conflict
+				if why == "" {
+					why = "the rebase hook moved no head"
+				}
+				out = evs(state.RebaseFailed{Line: l.ID, Reason: "a conflict that needs a person: " + why})
+			}
+			return result{events: out, actor: "runner"}
+		}, d.cfg.Build
 	case state.EffBuild:
 		t := s.Trains[k.Train]
 		req := adapter.BuildRequest{Train: t.ID, Base: k.Expect}

@@ -1,7 +1,8 @@
 # Model-checks tla/Shunter.tla with TLC on every change to the model, and
 # fails on any invariant or liveness violation, a parse error, or the time
 # limit. The bounds are the small configurations: tla/Shunter.cfg, and
-# tla/Stack.cfg, the same with one line stacked on the other.
+# tla/Stack.cfg, the same with one line stacked on the other; and
+# tla/Reoffer.cfg, with two faults, which reaches a fixed line's re-offer.
 name: tlc
 
 on:
@@ -58,3 +59,5 @@ jobs:
             -workers auto -deadlock -cleanup -config Shunter.cfg Shunter.tla
           timeout 25m java -XX:+UseParallelGC -Xmx5g -cp ../tla2tools.jar tlc2.TLC \
             -workers auto -deadlock -cleanup -config Stack.cfg Stack.tla
+          timeout 25m java -XX:+UseParallelGC -Xmx5g -cp ../tla2tools.jar tlc2.TLC \
+            -workers auto -deadlock -cleanup -config Reoffer.cfg Shunter.tla

@@ -116,6 +116,16 @@ timeout = "20m"
 command = ["./hooks/resolve-conflict"]
 timeout = "5m"
 
+[hooks.rebase]
+# Optional. Asked for a waiting line whose check found that it does not merge
+# onto trunk. In: {"dir","remote","trunk","line":{"ID","Changes":[...]}}.
+# Out: {"heads":{"<change>":"<new head>"}} once it has rebased and PUSHED
+# them (through whatever tests the producers' own pushes), or
+# {"conflict":"<what needs a person>"}. Rebase only what needs no person:
+# generated files, a counters file, both sides only adding lines.
+# command = ["./hooks/rebase"]
+# timeout = "15m"
+
 [hooks.blame]
 # In: {"train","head","lines":[...],"checks":[...],"evidence":"..."}
 # Out: {"class":"deterministic","blamed":["<line>"],"evidence":"..."}, or

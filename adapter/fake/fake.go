@@ -66,6 +66,8 @@ type World struct {
 	Pruned [][]state.TrainID
 	// Retargeted is the changes moved onto trunk, in order.
 	Retargeted []state.ChangeID
+	// Rebases is what Rebase answers for a line.
+	Rebases map[state.LineID]adapter.RebaseResult
 
 	// BuildHook, when set, decides a build. It may block on ctx.
 	BuildHook func(ctx context.Context, req adapter.BuildRequest) (adapter.BuildResult, error)
@@ -98,7 +100,8 @@ func New(trunk state.Head) *World {
 		builds: map[string]adapter.BuildResult{}, prs: map[string]string{}, open: map[state.TrainID]string{},
 		heads: map[state.TrainID]state.Head{}, verdict: map[state.TrainID]state.Head{}, report: map[state.TrainID]adapter.Report{},
 		reruns: map[state.TrainID]int{}, cancels: map[state.TrainID]int{}, nextPR: 100,
-		Calls: map[string]int{}, Acts: map[string]int{}, blocks: map[string]chan struct{}{}, waiters: map[chan struct{}]int{},
+		Rebases: map[state.LineID]adapter.RebaseResult{},
+		Calls:   map[string]int{}, Acts: map[string]int{}, blocks: map[string]chan struct{}{}, waiters: map[chan struct{}]int{},
 	}
 }
 
@@ -524,6 +527,28 @@ func (w *World) Retarget(ctx context.Context, id state.ChangeID) error {
 		w.Acts["retarget"]++
 	}
 	return nil
+}
+
+// Rebase implements adapter.Rebaser. A test says what a line's rebase
+// answers with Rebases; a line with no entry has a conflict that needs a
+// person. A rebased head is the world's too, as a real rebase pushes it.
+func (w *World) Rebase(ctx context.Context, key string, line adapter.BuildLine, trunk state.Head) (adapter.RebaseResult, error) {
+	if err := w.enter(ctx, "rebase"); err != nil {
+		return adapter.RebaseResult{}, err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.Acts["rebase"]++
+	res, ok := w.Rebases[line.ID]
+	if !ok {
+		return adapter.RebaseResult{Conflict: "both sides changed the same lines"}, nil
+	}
+	for id, h := range res.Heads {
+		if c := w.changes[id]; c != nil {
+			c.Head = h
+		}
+	}
+	return res, nil
 }
 
 // Prunes returns a copy of the live trains each prune was told.

@@ -136,6 +136,7 @@ type Retry struct {
 type Hooks struct {
 	Preflight Hook `toml:"preflight"`
 	Conflict  Hook `toml:"conflict"`
+	Rebase    Hook `toml:"rebase"`
 	Blame     Hook `toml:"blame"`
 }
 
@@ -363,7 +364,7 @@ func (f *File) Adapters() (adapter.Set, *gitrepo.Repo, error) {
 	g, err := gitrepo.New(gitrepo.Config{
 		Dir: f.Git.Dir, Remote: f.Git.Remote, Trunk: f.Repo.Trunk, BranchPrefix: f.Git.BranchPrefix,
 		ChangeRef: f.Git.ChangeRef, Strategy: f.Git.Strategy, Env: f.Git.Env, Policy: f.policy(),
-		Preflight: f.hook(f.Hooks.Preflight, f.Git.Dir), Conflict: f.hook(f.Hooks.Conflict, f.Git.Dir),
+		Preflight: f.hook(f.Hooks.Preflight, f.Git.Dir), Conflict: f.hook(f.Hooks.Conflict, f.Git.Dir), Rebase: f.hook(f.Hooks.Rebase, f.Git.Dir),
 		TrunkLock: f.Git.TrunkLock, TrunkLockWait: f.Git.TrunkLockWait.Duration, TrunkLockMaxHold: f.Git.TrunkLockMaxHold.Duration,
 	})
 	if err != nil {
