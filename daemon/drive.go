@@ -150,6 +150,7 @@ func (d *Daemon) tick() {
 		}
 	}
 	d.restores(now)
+	d.reviews(now, s)
 	d.restack(now, d.st.State())
 	rerunning := map[state.TrainID]bool{}
 	for _, k := range d.st.Pending() {
@@ -242,6 +243,13 @@ func (d *Daemon) sameTest(t *state.Train) bool {
 	if at <= 0 || mine == "" {
 		return false
 	}
+	if fs[at].TreeWide {
+		// A test that scans the whole tree fails for any change that
+		// breaks its set, whatever the change touches: the same failure
+		// in an unrelated train is no evidence that trunk is broken, and
+		// the queue is not parked on it (§5.6).
+		return false
+	}
 	prev := fs[at-1]
 	if prev.Evidence != mine {
 		return false
@@ -329,7 +337,7 @@ func report(id state.TrainID, r adapter.Report) []state.Event {
 	case adapter.Passed:
 		return evs(state.CIPassed{Train: id, Head: r.Head})
 	case adapter.Failed:
-		return evs(state.CIFailed{Train: id, Blamed: r.Blamed, Evidence: r.Evidence})
+		return evs(state.CIFailed{Train: id, Blamed: r.Blamed, Evidence: r.Evidence, TreeWide: r.TreeWide})
 	case adapter.NoVerdict:
 		return evs(state.CINoVerdict{Train: id, Why: orWhy(r.Why, "the run gave no verdict")})
 	case adapter.Infra:
@@ -394,5 +402,33 @@ func (d *Daemon) pollDone(r result) {
 			ev = state.CIFailed{Train: rr.Train, Evidence: "failed again after its one rerun: " + rr.Why}
 		}
 		d.apply(r.actor, ev)
+	}
+}
+
+// reviews raises what stands too long with nobody looking (L1, L3): a hold
+// past its review time, and a charged line that has stayed with its owner.
+// Both are alerts, each repeated once every period that passes, and neither
+// acts: a hold ends only by its release, and a line leaves its owner only by
+// its owner's offer or a recorded hand-over (a wait never acts on a clock).
+func (d *Daemon) reviews(now time.Time, s state.State) {
+	since := d.st.Since().Lines
+	for id, l := range s.Lines {
+		at, ok := since[id]
+		if !ok {
+			continue
+		}
+		age := now.Sub(at)
+		switch {
+		case l.State == state.LineHeld && age > d.cfg.Review:
+			n := int(age / d.cfg.Review)
+			d.alert(fmt.Sprintf("hold:%s:%d", id, n), fmt.Sprintf("line %s has been held for %s (%s): look at it again; release it, or it stays held", id, age.Round(time.Minute), l.Reason))
+		case l.State == state.LineReturned && l.Cause == state.CauseCharged && age > d.cfg.Owner:
+			n := int(age / d.cfg.Owner)
+			who := l.Owner
+			if who == "" {
+				who = "nobody on record"
+			}
+			d.alert(fmt.Sprintf("owner:%s:%d", id, n), fmt.Sprintf("line %s was charged %s ago and is still with its owner (%s), not offered again: ask, or hand it over", id, age.Round(time.Minute), who))
+		}
 	}
 }

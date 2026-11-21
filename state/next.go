@@ -325,6 +325,7 @@ func (m *machine) apply(ev Event) error {
 		if t.State != TrainTesting || t.Behind != nil {
 			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
+		t.TreeWide = e.TreeWide
 		return m.failed(t, e.Blamed, e.Evidence)
 	case Built:
 		t, err := m.train(e.Train)
@@ -730,17 +731,24 @@ func (m *machine) lineChecked(e LineChecked) error {
 	}
 	if e.Pass {
 		l.Checked, l.CheckedOn = append([]Head(nil), e.Heads...), e.Trunk
-		l.Conflict = ""
+		l.Conflict, l.ConflictOn = "", ""
 		return nil
 	}
 	if e.Conflict != "" {
 		// Not a failure: nobody is charged. The line joins no train, and
 		// the runner is asked to rebase it. One that rides was assembled,
 		// so it merged: its train judges it.
-		if l.State != LineRiding && l.Conflict != e.Conflict {
+		//
+		// The rebase is asked for once for these heads against this trunk:
+		// a second verdict of the same conflict asks nothing, and one found
+		// against a trunk that has moved asks again (what the hook could
+		// not resolve then, it may now).
+		if l.State != LineRiding && (l.Conflict == "" || l.ConflictOn != e.Trunk) {
 			l.Checked, l.CheckedOn = nil, ""
-			l.Conflict = e.Conflict
+			l.Conflict, l.ConflictOn = e.Conflict, e.Trunk
 			m.emit(Effect{Kind: EffRebase, Line: l.ID, Reason: e.Conflict})
+		} else if l.State != LineRiding {
+			l.Conflict = e.Conflict
 		}
 		return nil
 	}
@@ -1098,14 +1106,14 @@ func (m *machine) headMoved(e HeadMoved) error {
 			return nil
 		}
 		l.Changes[i].Head, l.NoVerdicts = e.Head, 0
-		l.Checked, l.CheckedOn, l.Conflict, l.Inert = nil, "", "", false
+		l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert = nil, "", "", "", false
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("change %s moved while it rode (I4)", e.Change), nil)
 		return nil
 	}
 	l.Changes[i].Head, l.NoVerdicts = e.Head, 0
 	// A push may bring anything: the line is full until the gate has read
 	// its files again.
-	l.Checked, l.CheckedOn, l.Conflict, l.Inert = nil, "", "", false
+	l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert = nil, "", "", "", false
 	return nil
 }
 

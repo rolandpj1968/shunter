@@ -45,6 +45,15 @@ type Config struct {
 	// Park is the deadline of a park whose condition the runner cannot
 	// test (§6.4): it is restored then, with an alert. Default 24h.
 	Park time.Duration
+	// Review is how long a hold may stand before the judge is asked to
+	// look at it again, and again each time that long passes. A hold has
+	// no deadline and is never released by a clock: this is an alert, not
+	// a release. Default 24h.
+	Review time.Duration
+	// Owner is how long a charged line may stay with its owner, not offered
+	// again, before the judge is told: the owner may have gone silent, and
+	// the line may need handing over (§7). An alert only. Default 12h.
+	Owner time.Duration
 
 	// MaxLines caps the lines of one train (J4's bounds). Default 8.
 	MaxLines int
@@ -74,6 +83,8 @@ func (c Config) withDefaults() Config {
 	d(&c.Push, 5*time.Minute)
 	d(&c.J1, 10*time.Minute)
 	d(&c.Park, 24*time.Hour)
+	d(&c.Review, 24*time.Hour)
+	d(&c.Owner, 12*time.Hour)
 	d(&c.Backoff, 5*time.Second)
 	if c.MaxLines <= 0 {
 		c.MaxLines = 8

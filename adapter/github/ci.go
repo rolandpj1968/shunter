@@ -266,6 +266,10 @@ type BlameAnswer struct {
 	Blamed   []state.LineID `json:"blamed,omitempty"`
 	Evidence string         `json:"evidence,omitempty"`
 	Why      string         `json:"why,omitempty"`
+	// TreeWide, with class "deterministic": the failing test scans the whole
+	// tree, so that a change can break it without touching it. The hook says
+	// so by its repository's own rule (a naming convention, a list).
+	TreeWide bool `json:"tree_wide,omitempty"`
 }
 
 // blame asks the hook what a failure is. A hook that fails, or answers
@@ -304,6 +308,7 @@ func (c *Client) blame(ctx context.Context, t state.TrainID, rep adapter.Report,
 	case "no-verdict":
 		rep.Outcome, rep.Why = adapter.NoVerdict, orDefault(a.Why, "no verdict, by the blame hook")
 	case "deterministic":
+		rep.TreeWide = a.TreeWide
 		for _, id := range a.Blamed {
 			if member[id] {
 				rep.Blamed = append(rep.Blamed, id)

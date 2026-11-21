@@ -123,6 +123,14 @@ func TestALineInConflictWaitsForARebase(t *testing.T) {
 		t.Fatalf("a failed rebase of a line not in conflict: %v", err)
 	}
 	apply(t, next, HeadMoved{Line: "a", Change: "a", Head: "a2"}, assemble("t1", "a"))
+	// Asked once for these heads against this trunk; again only when a check
+	// finds the conflict against a trunk that has moved.
+	moved := conflict
+	moved.Trunk = "trunk1"
+	_, fx, err = Next(next, moved)
+	if err != nil || len(fx) != 1 || fx[0].Kind != EffRebase {
+		t.Fatalf("a conflict with a new trunk did not ask for a rebase: %v %v", fx, err)
+	}
 }
 
 // §5.5: a recorded flake never charges a line. When it fails again after its
@@ -156,7 +164,7 @@ func TestRandomWalkOfOwnersConflictsAndFlakes(t *testing.T) {
 		names := []string{"a", "b", "c", "d"}
 		who := []string{"ann", "bob"}
 		pick := func() LineID { return LineID(names[r.Intn(len(names))]) }
-		trains, charges, reoffers := 0, 0, 0
+		trains, charges, reoffers, rebases := 0, 0, 0, 0
 		for i := 0; i < 600; i++ {
 			var ev Event
 			tr := TrainID(fmt.Sprintf("t%d", max(1, trains-r.Intn(2))))
@@ -214,12 +222,24 @@ func TestRandomWalkOfOwnersConflictsAndFlakes(t *testing.T) {
 					was[id] = l.Cause
 				}
 			}
-			next, _, err := Next(s, ev)
+			next, fx, err := Next(s, ev)
 			if err != nil {
 				continue
 			}
 			if errs := Check(next); len(errs) > 0 {
 				t.Fatalf("seed %d, step %d, %s %+v: %v", seed, i, Name(ev), ev, errs)
+			}
+			// The runner is asked to rebase a line only when its check has
+			// just found it in conflict with trunk: never a line that merges.
+			for _, e := range fx {
+				if e.Kind != EffRebase {
+					continue
+				}
+				rebases++
+				lc, ok := ev.(LineChecked)
+				if !ok || lc.Conflict == "" || lc.Line != e.Line || next.Lines[e.Line].Conflict == "" {
+					t.Fatalf("seed %d, step %d: a rebase of line %s was asked for by %s %+v", seed, i, e.Line, Name(ev), ev)
+				}
 			}
 			if o, ok := ev.(Offer); ok && was[o.Line] == CauseCharged {
 				reoffers++
@@ -235,8 +255,8 @@ func TestRandomWalkOfOwnersConflictsAndFlakes(t *testing.T) {
 			}
 			s = next
 		}
-		if seed == 1 && (charges == 0 || reoffers == 0) {
-			t.Fatalf("the walk proves nothing: %d charges, %d offers of a charged line", charges, reoffers)
+		if seed == 1 && (charges == 0 || reoffers == 0 || rebases == 0) {
+			t.Fatalf("the walk proves nothing: %d charges, %d offers of a charged line, %d rebases asked", charges, reoffers, rebases)
 		}
 	}
 }

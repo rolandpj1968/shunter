@@ -125,6 +125,11 @@ type CIFailed struct {
 	Train    TrainID
 	Blamed   []LineID
 	Evidence string
+	// TreeWide says the failing test scans the whole tree: it holds every
+	// member of a repository-wide set to a rule, so a change breaks it
+	// without touching it. Two unrelated trains failing on it are two
+	// changes each breaking the set, never a sign that trunk is broken.
+	TreeWide bool
 }
 
 // JudgeAction is a choice from J1's menu.

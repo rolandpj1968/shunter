@@ -99,6 +99,9 @@ type Report struct {
 	Blamed   []state.LineID // Failed: the lines blame names (§5.6), maybe none
 	Evidence string         // Failed: the evidence, naming the failing test
 	Why      string         // NoVerdict, Infra, Flaky: what happened
+	// TreeWide says a Failed outcome is of a test that scans the whole tree
+	// (§5.6): no train's failure on it says anything about another's.
+	TreeWide bool
 	// KnownFlake says a Flaky outcome is a recorded flake (class 2), not a
 	// timing failure (class 3): it never charges a line (§5.5).
 	KnownFlake bool

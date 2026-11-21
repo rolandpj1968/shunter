@@ -1346,3 +1346,130 @@ func TestATrainOfInertLinesOnlyIsLight(t *testing.T) {
 		t.Fatalf("the documents' train: light %v\n%s", r.train(t1).Light, daemon.Status(r.state(), nil))
 	}
 }
+
+// TestTheRunnerRebasesOnlyALineInConflict: the runner's rebase never touches
+// a line that merges onto trunk. A rebase moves the head, and a moved head
+// ends the line's check: a needless one would leave a line that needed
+// nothing with no verdict, for ever. So the rebase hook is called only for a
+// line its check has just found in conflict, once for those heads against
+// that trunk, and a line's head otherwise moves only by its owner's push.
+func TestTheRunnerRebasesOnlyALineInConflict(t *testing.T) {
+	r := newRig(t)
+	r.open("clean", "unchecked", "conf")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "check before any train"})
+	for _, id := range []string{"clean", "unchecked", "conf"} {
+		r.queue(id)
+	}
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"clean", "T0", "clean-1"}, Action: "pass"})
+	for i := 0; i < 5; i++ {
+		r.tick(time.Hour)
+	}
+	if n := r.w.Count("rebase", false); n != 0 {
+		t.Fatalf("%d rebases with no line in conflict", n)
+	}
+	for _, id := range []string{"clean", "unchecked", "conf"} {
+		if h := r.state().Lines[state.LineID(id)].Changes[0].Head; h != state.Head(id+"-1") {
+			t.Fatalf("line %s's head moved to %s with no push and no conflict", id, h)
+		}
+	}
+	// A conflict the hook cannot resolve: asked once, the head stays.
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"conf", "T0", "conf-1"}, Action: "conflict", Reason: "x.go"})
+	r.tick(time.Second)
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"conf", "T0", "conf-1"}, Action: "conflict", Reason: "x.go"})
+	r.tick(time.Hour)
+	if n := r.w.Count("rebase", false); n != 1 {
+		t.Fatalf("%d rebases for one conflict of one head with one trunk, want 1", n)
+	}
+	told := false
+	for i := 0; i < 400 && !told; i++ {
+		told = len(r.w.NoticesTo("owner", "not rebased by the runner")) > 0
+		if !told {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if !told {
+		t.Fatal("the owner was not told of a conflict the runner could not rebase")
+	}
+	// The same heads against a trunk that has moved: asked again, and this
+	// time the hook can do it.
+	r.w.Rebases["conf"] = adapter.RebaseResult{Heads: map[state.ChangeID]state.Head{"conf": "conf-2"}}
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"conf", "T1", "conf-1"}, Action: "conflict", Reason: "x.go"})
+	r.tick(time.Second)
+	if n := r.w.Count("rebase", false); n != 2 {
+		t.Fatalf("%d rebases after the conflict was found against a new trunk, want 2", n)
+	}
+	if l := r.state().Lines["conf"]; l.Changes[0].Head != "conf-2" || l.Conflict != "" {
+		t.Fatalf("line conf after its rebase: head %s, conflict %q", l.Changes[0].Head, l.Conflict)
+	}
+	// The other lines were never touched.
+	for _, id := range []string{"clean", "unchecked"} {
+		if h := r.state().Lines[state.LineID(id)].Changes[0].Head; h != state.Head(id+"-1") {
+			t.Fatalf("line %s's head moved to %s", id, h)
+		}
+	}
+	if !r.state().Lines["clean"].CheckCurrent() {
+		t.Fatal("the clean line lost its green check")
+	}
+}
+
+// TestATreeWideFailureInTwoUnrelatedTrainsDoesNotParkTheQueue: J1's default
+// parks the queue when the same test failed in the train before with
+// unrelated lines, since trunk or a fixture is then suspect. A test that
+// scans the whole tree is the exception: any change can break the set it
+// holds without touching it, so two unrelated trains failing on it are two
+// changes that each broke it.
+func TestATreeWideFailureInTwoUnrelatedTrainsDoesNotParkTheQueue(t *testing.T) {
+	for _, treeWide := range []bool{true, false} {
+		r := newRig(t)
+		r.open("a", "b")
+		for _, id := range []string{"a", "b"} {
+			r.queue(id)
+			tr := r.trainOf(id)
+			r.w.Report(tr, adapter.Report{Outcome: adapter.Failed, Head: r.train(tr).Head, Evidence: "TestEveryMemberIsRegistered failed", TreeWide: treeWide})
+			r.tick(time.Second)
+			r.tick(11 * time.Minute) // J1's deadline: its default applies
+		}
+		parked := len(r.state().Parks) > 0
+		switch {
+		case treeWide && (parked || r.line("b") != state.LineReturned):
+			t.Fatalf("a tree-wide test: parks %d, line b %s; want no park and b charged by elimination", len(r.state().Parks), r.line("b"))
+		case !treeWide && !parked:
+			t.Fatalf("an ordinary test failing in two unrelated trains did not park the queue (line b %s)", r.line("b"))
+		}
+	}
+}
+
+// TestAHoldAndASilentOwnerAreRaisedAndNeverActedOn: a hold has no deadline,
+// and a charged line waits for its owner. Both are told to the judge when
+// they have stood too long, once every period, and nothing is released or
+// handed over by the clock.
+func TestAHoldAndASilentOwnerAreRaisedAndNeverActedOn(t *testing.T) {
+	r := newRig(t)
+	r.open("h", "c")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("h")
+	r.exec(daemon.Request{Cmd: "hold", Args: []string{"h"}, Reason: "waits for a decision"})
+	r.queue("c")
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"c", "T0", "c-1"}, Action: "fail", Reason: "lint fails; it passes on trunk alone"})
+	r.wantLine("c", state.LineReturned)
+	r.tick(13 * time.Hour)
+	if !r.alerted("line c was charged") {
+		t.Fatal("no alert for a charged line twelve hours with its owner")
+	}
+	if len(r.w.NoticesTo("judge", "line h has been held")) != 0 {
+		t.Fatal("the hold was raised before its review time")
+	}
+	r.tick(12 * time.Hour)
+	if !r.alerted("line h has been held") {
+		t.Fatal("no alert for a hold past its review time")
+	}
+	r.tick(25 * time.Hour)
+	for i := 0; i < 400 && len(r.w.NoticesTo("judge", "line h has been held")) < 2; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if n := len(r.w.NoticesTo("judge", "line h has been held")); n != 2 {
+		t.Fatalf("%d alerts for a hold two review periods old, want 2", n)
+	}
+	r.wantLine("h", state.LineHeld)
+	r.wantLine("c", state.LineReturned)
+}
