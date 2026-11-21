@@ -132,6 +132,26 @@ type Line struct {
 	// Late is a head pushed while the line's train was landing. It did not
 	// land, and the owner is told so.
 	Late Head
+	// Checked is the line check's green verdict (§5.4): the heads of
+	// the line's changes it passed on, in order, and CheckedOn the trunk it
+	// was merged with. A verdict belongs to exactly those heads: a push to
+	// any change ends it.
+	Checked   []Head
+	CheckedOn Head
+}
+
+// CheckCurrent reports whether the line holds a green line check on exactly
+// the heads its changes have now.
+func (l *Line) CheckCurrent() bool {
+	if len(l.Checked) == 0 || len(l.Checked) != len(l.Changes) {
+		return false
+	}
+	for i, c := range l.Changes {
+		if l.Checked[i] != c.Head {
+			return false
+		}
+	}
+	return true
 }
 
 // Train is the single record of a train.
@@ -172,6 +192,9 @@ type Config struct {
 	Depth           int // trains riding at once: 1 is no speculation
 	NoVerdictBudget int // no-verdict trains a line may ride before J3
 	PushRetries     int // transient push refusals before J3
+	// RequireCheck turns the line check into a gate (§5.4): no line
+	// is assembled into a train without a current green line check.
+	RequireCheck bool
 }
 
 // State is the whole queue. Treat it as a value: Next never changes its
@@ -212,6 +235,7 @@ func (s State) clone() State {
 	for k, v := range s.Lines {
 		l := *v
 		l.Changes = append([]Change(nil), v.Changes...)
+		l.Checked = append([]Head(nil), v.Checked...)
 		c.Lines[k] = &l
 	}
 	c.Trains = make(map[TrainID]*Train, len(s.Trains))

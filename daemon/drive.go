@@ -64,6 +64,11 @@ func join(s state.State, c Caps) []state.LineID {
 		if l.Stale != "" || !s.NeedMet(l, taken) {
 			continue
 		}
+		if s.Config.RequireCheck && !l.CheckCurrent() {
+			// No current green line check (I10): it waits for one. A line
+			// stacked on it waits too, since its need is then unmet.
+			continue
+		}
 		switch {
 		case len(out) == 0 && l.Alone:
 			return []state.LineID{id}

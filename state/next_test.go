@@ -190,6 +190,13 @@ func fix(id string) Event {
 // transitions has at least one case for every row of Table.
 // TestEveryTransition fails if a row is not exercised.
 var transitions = []tcase{
+	{name: "line check fails: the waiting line is charged", setup: ready("a"), ev: LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Evidence: "lint fails on the line; it passes on trunk alone"}, lines: lineWant{"a": LineReturned},
+		fx: []EffectKind{EffNotify}, check: func(t *testing.T, s State) {
+			if s.Lines["a"].Cause != CauseCharged {
+				t.Errorf("cause %s", s.Lines["a"].Cause)
+			}
+		}},
+
 	// A line: offer and the gate.
 	{name: "offer", ev: offer("a"), lines: lineWant{"a": LineOffered}},
 	{name: "offer again after a refusal", setup: cat(offer("a"), GateRefuse{Line: "a", Reason: "not approved"}), ev: offer("a"), lines: lineWant{"a": LineOffered}},
@@ -422,6 +429,10 @@ var transitions = []tcase{
 // refusals are the illegal transitions: each is an error, and each leaves the
 // state untouched (step checks that).
 var refusals = []tcase{
+	// I6 at the line check: a failure with no evidence charges nobody.
+	{name: "line check fails without evidence", setup: ready("a"), ev: LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0"}, err: ErrEvidence},
+	{name: "line check of a spent line", setup: cat(ready("a"), Withdraw{Line: "a"}), ev: LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Pass: true}, err: ErrState},
+
 	// Offers and the gate.
 	{name: "offer with no change", ev: Offer{Line: "a"}, err: ErrInput},
 	{name: "offer a live line", setup: ready("a"), ev: offer("a"), err: ErrDuplicate},
