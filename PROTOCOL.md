@@ -241,6 +241,7 @@ There are three tiers of checking, and a fourth the runner may put between the f
 - **What runs:** every deterministic check of tier 2, on the line alone merged with trunk, with no skip list, and without stopping at the first failure, so the owner gets the whole list in one round.
 - **When:** while the line waits, in parallel with batches and with other lines' checks, on capacity the batches aren't using. It holds no batch slot.
 - **The verdict belongs to the heads it was taken on.** It is stored against the trunk and the heads checked. A push to any change of the line ends it (I10). Trunk moving does not end a green verdict at once: re-checking every waiting line at every landing costs more than it finds, and what trunk's movement breaks in a line is exactly what tier 2 catches on the true tree. A queue bounds a green verdict's age instead, and refreshes the oldest when idle.
+- **A charge is on the heads the line has now, and on that line only.** A check takes time, and its verdict can arrive after a push. A failure on heads the line no longer has is nobody's: it charges nothing and the line is checked again. And the line is the unit of a charge: lines that only share a batch, its rest after a blame, or a half of a split are not one line, and no change is charged for another's failure. (The queue this protocol grew from once checked a batch's rest as one line, judged it on one change's old head, and marked all four of its changes as being fixed.)
 - **A failure charges the line, with evidence** (I6): the failing check is run on trunk alone, and passes there. A check that fails on trunk alone is trunk's fault, charges nobody, and is J2's business.
 - **No verdict is no verdict:** a timeout, a full disk or an unreadable forge is tried again, and never charges (§5.5, class 0).
 - **The gate:** no line is assembled without a current green check (I10; L15's guard; a failure is L33). A line stacked on another is checked with its base beneath it, after its base is green.
@@ -456,6 +457,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§5.4: a charge is on the heads the line has now, and on that line only.** The model has a line check in flight (`LineCheckStart`, `LineCheckDropped`) and the property `ChargedOnlyAtPresentHead`.
 
 - **P3 and I11, the owner-state:** a charged line is with its owner until its owner offers it again, at heads other than those it was charged on. New event `hand-over`; `Offer` carries who offers. The model carries the rule on heads as `NoRideAtChargedHead`, with re-offers (`Reoffer`), and a third configuration with two faults reaches them.
 - **§5.2, the runner rebases what needs no person:** the line check may answer a conflict, which charges nobody; new effect `rebase`, new event `rebase-failed`, and an optional `[hooks.rebase]`.

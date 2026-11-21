@@ -240,3 +240,91 @@ func TestRandomWalkOfOwnersConflictsAndFlakes(t *testing.T) {
 		}
 	}
 }
+
+// A charge is only ever on the heads the line has at that moment. A line
+// check takes time, and its verdict may arrive after a push: a failure on
+// heads the line no longer has charges nobody, and the line stays where it
+// is to be checked again. A train's charge is on the heads it was assembled
+// at, which cannot have moved, since a push to a riding line voids its train.
+func TestAChargeIsOnlyOnPresentHeads(t *testing.T) {
+	for seed := int64(1); seed <= 80; seed++ {
+		r := rand.New(rand.NewSource(seed))
+		s := New("trunk0", Config{Depth: 2})
+		names := []string{"a", "b", "c"}
+		pick := func() LineID { return LineID(names[r.Intn(len(names))]) }
+		old := map[LineID]Head{} // a head each line had before its last push
+		trains, charges, late := 0, 0, 0
+		for i := 0; i < 500; i++ {
+			var ev Event
+			tr := TrainID(fmt.Sprintf("t%d", max(1, trains-r.Intn(2))))
+			switch r.Intn(12) {
+			case 0, 1:
+				id := pick()
+				ev = Offer{By: "ann", Line: id, Changes: []Change{{ID: ChangeID(id), Head: Head(fmt.Sprintf("%s%d", id, i))}}}
+			case 2, 3:
+				ev = GateAccept{Line: pick()}
+			case 4, 5:
+				// a failing verdict, on the present head or on one since replaced
+				id := pick()
+				l := s.Lines[id]
+				if l == nil {
+					continue
+				}
+				h := l.Changes[0].Head
+				if o, ok := old[id]; ok && r.Intn(2) == 0 {
+					h = o
+				}
+				ev = LineChecked{Line: id, Heads: []Head{h}, Trunk: s.Trunk, Evidence: "e"}
+			case 6, 7:
+				id := pick()
+				if l := s.Lines[id]; l != nil {
+					old[id] = l.Changes[0].Head
+				}
+				ev = HeadMoved{Line: id, Change: ChangeID(id), Head: Head(fmt.Sprintf("m%d", i))}
+			case 8:
+				w := s.Waiting()
+				if len(w) == 0 {
+					continue
+				}
+				trains++
+				ev = Assemble{Train: TrainID(fmt.Sprintf("t%d", trains)), Lines: w[:1+r.Intn(len(w))]}
+			case 9:
+				ev = Built{Train: tr, Head: Head("h-" + string(tr))}
+			case 10:
+				ev = Opened{Train: tr, PR: "n", Head: Head("h-" + string(tr))}
+			case 11:
+				ev = CIFailed{Train: tr, Blamed: []LineID{pick()}, Evidence: "e"}
+			}
+			before := map[LineID]bool{}
+			for id, l := range s.Lines {
+				before[id] = l.State == LineReturned && l.Cause == CauseCharged
+			}
+			next, _, err := Next(s, ev)
+			if err != nil {
+				continue
+			}
+			lc, isCheck := ev.(LineChecked)
+			for id, l := range next.Lines {
+				if l.State != LineReturned || l.Cause != CauseCharged || before[id] {
+					continue
+				}
+				charges++
+				if len(l.ChargedAt) != 1 || l.ChargedAt[0] != l.Changes[0].Head {
+					t.Fatalf("seed %d, step %d: line %s charged at %v with its head at %s", seed, i, id, l.ChargedAt, l.Changes[0].Head)
+				}
+				if isCheck && (lc.Line != id || lc.Heads[0] != l.Changes[0].Head) {
+					t.Fatalf("seed %d, step %d: a verdict on %s at %s charged line %s at %s", seed, i, lc.Line, lc.Heads[0], id, l.Changes[0].Head)
+				}
+			}
+			if isCheck {
+				if l := s.Lines[lc.Line]; l != nil && lc.Heads[0] != l.Changes[0].Head {
+					late++
+				}
+			}
+			s = next
+		}
+		if seed == 1 && (charges == 0 || late == 0) {
+			t.Fatalf("the walk proves nothing: %d charges, %d verdicts on a replaced head", charges, late)
+		}
+	}
+}
