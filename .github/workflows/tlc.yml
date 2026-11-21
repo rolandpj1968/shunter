@@ -1,6 +1,7 @@
 # Model-checks tla/Shunter.tla with TLC on every change to the model, and
 # fails on any invariant or liveness violation, a parse error, or the time
-# limit. The bounds are the small configuration in tla/Shunter.cfg.
+# limit. The bounds are the small configurations: tla/Shunter.cfg, and
+# tla/Stack.cfg, the same with one line stacked on the other.
 name: tlc
 
 on:
@@ -43,7 +44,9 @@ jobs:
 
       - name: Parse and check semantics (SANY)
         working-directory: tla
-        run: java -cp ../tla2tools.jar tla2sany.SANY Shunter.tla
+        run: |
+          java -cp ../tla2tools.jar tla2sany.SANY Shunter.tla
+          java -cp ../tla2tools.jar tla2sany.SANY Stack.tla
 
       # TLC exits non-zero on any invariant or property violation, and on a
       # parse or configuration error. -deadlock: a queue with every line spent
@@ -53,3 +56,5 @@ jobs:
         run: |
           timeout 25m java -XX:+UseParallelGC -Xmx5g -cp ../tla2tools.jar tlc2.TLC \
             -workers auto -deadlock -cleanup -config Shunter.cfg Shunter.tla
+          timeout 25m java -XX:+UseParallelGC -Xmx5g -cp ../tla2tools.jar tlc2.TLC \
+            -workers auto -deadlock -cleanup -config Stack.cfg Stack.tla

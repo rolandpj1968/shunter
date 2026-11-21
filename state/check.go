@@ -29,7 +29,25 @@ func Check(s State) []error {
 			riders[l] = id
 		}
 	}
+	// A train is judged only at the head of the chain (§5.3): one at J1 is
+	// first, and one whose failure waits is behind another and not yet
+	// judged, in the state it reported from.
+	for i, id := range s.Chain {
+		t := s.Trains[id]
+		if t == nil {
+			continue
+		}
+		if t.State == TrainJudging && i > 0 {
+			fail("§5.3", "train %s is at J1 behind train %s, which is not decided", id, s.Chain[0])
+		}
+		if t.Behind != nil && (i == 0 || (t.State != TrainAssembling && t.State != TrainTesting)) {
+			fail("§5.3", "train %s holds an unjudged failure at place %d, in state %s", id, i+1, t.State)
+		}
+	}
 	for id, t := range s.Trains {
+		if t.Behind != nil && !t.State.Live() {
+			fail("§5.3", "ended train %s still holds an unjudged failure", id)
+		}
 		if t.State.Live() != live[id] {
 			fail("I8", "train %s is %s and its place in the chain disagrees", id, t.State)
 		}

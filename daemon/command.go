@@ -24,6 +24,10 @@ type Request struct {
 	// Plain is an import from line files (store.LineFile).
 	Plain *store.LineFile `json:"plain,omitempty"`
 	Actor string          `json:"actor,omitempty"`
+	// Until is a park's restore condition (§6.4), for cancel --action park
+	// and judge park: "landed:<line>" is one the runner tests, and such a
+	// park ends only when that line lands or by a restore.
+	Until string `json:"until,omitempty"`
 }
 
 // Response is a command's answer.
@@ -83,6 +87,15 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 			heads = append(heads, state.Head(h))
 		}
 		return d.act(actor, state.LineChecked{Line: l, Heads: heads, Trunk: state.Head(req.Args[1]), Pass: req.Action == "pass", Evidence: req.Reason}, "line "+string(l)+" check recorded: "+req.Action)
+	case "restore":
+		// restore <park> --reason <why>: the judge ends a park (§6.4).
+		if len(req.Args) != 1 || req.Reason == "" {
+			return errResp(errors.New("usage: restore <park> --reason <why>"))
+		}
+		if err := d.st.Note(actor, "restore "+req.Args[0]+": "+req.Reason); err != nil {
+			return errResp(err)
+		}
+		return d.act(actor, state.Restore{Park: state.ParkID(req.Args[0])}, "park "+req.Args[0]+" restored")
 	case "release":
 		if len(req.Args) != 1 {
 			return errResp(errors.New("usage: release <line|change>"))
@@ -247,6 +260,9 @@ func (d *Daemon) cancel(actor string, req Request) Response {
 	if kind == state.ParkIt {
 		disp.Park = state.ParkID("cancel-" + string(t.ID))
 		disp.Cond = "deadline " + d.now().Add(d.cfg.Park).UTC().Format("2006-01-02T15:04Z") + ", or a restore by hand"
+		if req.Until != "" {
+			disp.Cond = req.Until
+		}
 	}
 	lines := map[state.LineID]state.Dispose{}
 	for _, id := range t.Lines {
@@ -273,6 +289,9 @@ func (d *Daemon) judge(actor string, req Request) Response {
 	case state.JudgePark:
 		j.Park = state.ParkID("j1-" + string(t))
 		j.Cond = "deadline " + d.now().Add(d.cfg.Park).UTC().Format("2006-01-02T15:04Z") + ", or a restore by hand"
+		if req.Until != "" {
+			j.Cond = req.Until
+		}
 	}
 	return d.act(actor, j, fmt.Sprintf("train %s: %s", t, j.Action))
 }

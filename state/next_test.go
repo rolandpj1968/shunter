@@ -270,8 +270,48 @@ var transitions = []tcase{
 		lines: lineWant{"a": LineWaiting, "b": LineWaiting}, trains: trainWant{"t1": TrainFailed}},
 	{name: "judge silent, same test failed before: park", setup: cat(ready("a", "b"), testing_("t1", "a", "b"), CIFailed{Train: "t1"}), ev: JudgeTimeout{Train: "t1", SameTestBefore: true},
 		lines: lineWant{"a": LineParked, "b": LineParked}, trains: trainWant{"t1": TrainFailed}},
-	{name: "judge silent on one line: park, never an uncharged return", setup: cat(ready("a"), testing_("t1", "a"), CIFailed{Train: "t1"}), ev: JudgeTimeout{Train: "t1"},
+	{name: "judge silent on one line: charged by elimination, and the queue is not parked", setup: cat(ready("a", "b"), testing_("t1", "a"), CIFailed{Train: "t1"}), ev: JudgeTimeout{Train: "t1"},
+		lines: lineWant{"a": LineReturned, "b": LineWaiting}, trains: trainWant{"t1": TrainFailed},
+		check: func(t *testing.T, s State) {
+			if l := s.Lines["a"]; l.Cause != CauseCharged || !strings.Contains(l.Reason, "by elimination") {
+				t.Errorf("line a: cause %s, reason %q", l.Cause, l.Reason)
+			}
+			if len(s.Parks) != 0 {
+				t.Errorf("the queue was parked: %v", s.Parks)
+			}
+		}},
+	{name: "judge silent on one line, same test failed before: park", setup: cat(ready("a"), testing_("t1", "a"), CIFailed{Train: "t1"}), ev: JudgeTimeout{Train: "t1", SameTestBefore: true},
 		lines: lineWant{"a": LineParked}, trains: trainWant{"t1": TrainFailed}},
+
+	// §5.3: only the first train of the chain is judged.
+	{name: "train 2 fails behind an undecided train 1: nothing is judged", setup: cat(ready("a", "b"), testing_("t1", "a"), testing_("t2", "b")), ev: CIFailed{Train: "t2", Blamed: ids("b"), Evidence: "b's test fails"},
+		lines: lineWant{"a": LineRiding, "b": LineRiding}, trains: trainWant{"t1": TrainTesting, "t2": TrainTesting},
+		check: func(t *testing.T, s State) {
+			if s.Trains["t2"].Behind == nil {
+				t.Error("the failure was not kept")
+			}
+		}},
+	{name: "train 1 then fails: train 2's failure was inherited, and charges nobody", setup: cat(ready("a", "b"), testing_("t1", "a"), testing_("t2", "b"), CIFailed{Train: "t2", Blamed: ids("b"), Evidence: "b's test fails"}),
+		ev:    CIFailed{Train: "t1", Blamed: ids("a"), Evidence: "a's test fails"},
+		lines: lineWant{"a": LineReturned, "b": LineWaiting}, trains: trainWant{"t1": TrainFailed, "t2": TrainVoid},
+		check: func(t *testing.T, s State) {
+			if s.Lines["b"].Cause == CauseCharged || s.Trains["t2"].Behind != nil {
+				t.Errorf("line b: cause %s; train 2 still holds a failure: %v", s.Lines["b"].Cause, s.Trains["t2"].Behind != nil)
+			}
+		}},
+	{name: "train 1 lands: train 2's failure is its own, and is judged then", setup: cat(ready("a", "b"), testing_("t1", "a"), testing_("t2", "b"), CIFailed{Train: "t2", Blamed: ids("b"), Evidence: "b's test fails"}, CIPassed{Train: "t1", Head: "h-t1"}, verifyOf("t1")),
+		ev:    PushOK{Train: "t1"},
+		lines: lineWant{"a": LineLanded, "b": LineReturned}, trains: trainWant{"t1": TrainLanded, "t2": TrainFailed},
+		check: func(t *testing.T, s State) {
+			if s.Lines["b"].Cause != CauseCharged {
+				t.Errorf("line b: cause %s", s.Lines["b"].Cause)
+			}
+		}},
+	{name: "train 1 lands: train 2's unblamed failure goes to J1 then", setup: cat(ready("a", "b", "c"), testing_("t1", "a"), testing_("t2", "b", "c"), CIFailed{Train: "t2"}, CIPassed{Train: "t1", Head: "h-t1"}, verifyOf("t1")),
+		ev:    PushOK{Train: "t1"},
+		lines: lineWant{"b": LineRiding, "c": LineRiding}, trains: trainWant{"t2": TrainJudging}, fx: []EffectKind{EffAskJudge}},
+	{name: "a pre-flight failure behind an undecided train is kept too", setup: cat(ready("a", "b"), testing_("t1", "a"), assemble("t2", "b")), ev: PreflightFailed{Train: "t2", Blamed: ids("b"), Evidence: "lint"},
+		lines: lineWant{"b": LineRiding}, trains: trainWant{"t2": TrainAssembling}},
 
 	// Void: nothing was judged.
 	{name: "no verdict while assembling", setup: cat(ready("a"), assemble("t1", "a")), ev: CINoVerdict{Train: "t1", Why: "the builder died"}, lines: lineWant{"a": LineWaiting}, trains: trainWant{"t1": TrainVoid}},
@@ -429,6 +469,12 @@ var transitions = []tcase{
 // refusals are the illegal transitions: each is an error, and each leaves the
 // state untouched (step checks that).
 var refusals = []tcase{
+	// A train whose failure waits for the train ahead takes no other report.
+	{name: "a pass after a kept failure", setup: cat(ready("a", "b"), testing_("t1", "a"), testing_("t2", "b"), CIFailed{Train: "t2", Blamed: ids("b"), Evidence: "e"}), ev: CIPassed{Train: "t2", Head: "h-t2"}, err: ErrState},
+	{name: "a second failure after a kept failure", setup: cat(ready("a", "b"), testing_("t1", "a"), testing_("t2", "b"), CIFailed{Train: "t2", Blamed: ids("b"), Evidence: "e"}), ev: CIFailed{Train: "t2"}, err: ErrState},
+	{name: "no verdict after a kept failure", setup: cat(ready("a", "b"), testing_("t1", "a"), testing_("t2", "b"), CIFailed{Train: "t2", Blamed: ids("b"), Evidence: "e"}), ev: CINoVerdict{Train: "t2", Why: "w"}, err: ErrState},
+	{name: "a kept blame still needs evidence", setup: cat(ready("a", "b"), testing_("t1", "a"), testing_("t2", "b")), ev: CIFailed{Train: "t2", Blamed: ids("b")}, err: ErrEvidence},
+
 	// I6 at the line check: a failure with no evidence charges nobody.
 	{name: "line check fails without evidence", setup: ready("a"), ev: LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0"}, err: ErrEvidence},
 	{name: "line check of a spent line", setup: cat(ready("a"), Withdraw{Line: "a"}), ev: LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Pass: true}, err: ErrState},

@@ -111,6 +111,9 @@ func (d *Daemon) tick() {
 		age := now.Sub(at)
 		var ev state.Event
 		switch {
+		case t.Behind != nil:
+			// Its failure is in and waits for the train ahead (§5.3): no
+			// deadline of its own runs meanwhile.
 		case t.State == state.TrainAssembling && age > d.cfg.Build:
 			ev = state.CINoVerdict{Train: id, Infra: true, Why: "the builder's deadline passed"}
 		case t.State == state.TrainBuilt && age > d.cfg.Open:
@@ -136,7 +139,7 @@ func (d *Daemon) tick() {
 	}
 	for _, id := range s.Chain {
 		t := s.Trains[id]
-		if t.State != state.TrainTesting || d.polls[id] || rerunning[id] || d.ad.CI == nil {
+		if t.State != state.TrainTesting || t.Behind != nil || d.polls[id] || rerunning[id] || d.ad.CI == nil {
 			continue
 		}
 		if last, ok := d.polled[id]; ok && now.Sub(last) < d.cfg.Poll {
@@ -234,18 +237,34 @@ func (d *Daemon) sameTest(t *state.Train) bool {
 }
 
 // restores tests each park's restore condition (§6.4). A condition the
-// runner can test is "landed:<line>". Any other condition has the park's
-// deadline, after which the park is restored with an alert.
+// runner can test is "landed:<line>": such a park ends when that line lands,
+// or by the judge's restore, and never on a clock. Any other condition is
+// words the runner cannot test, and has the park's deadline, after which the
+// park is restored with an alert.
 func (d *Daemon) restores(now time.Time) {
 	s := d.st.State()
 	for id, p := range s.Parks {
-		if line, ok := strings.CutPrefix(p.Cond, "landed:"); ok {
-			if l := s.Lines[state.LineID(line)]; l != nil && l.State == state.LineLanded {
+		at, ok := d.st.Since().Parks[id]
+		if line, isLanded := strings.CutPrefix(p.Cond, "landed:"); isLanded {
+			l := s.Lines[state.LineID(line)]
+			switch {
+			case l != nil && l.State == state.LineLanded:
 				d.apply("runner", state.Restore{Park: id})
 				return
+			case l != nil && l.State.Spent():
+				// The line it waits for was returned or dropped: this offer
+				// of it will not land, and the wait cannot end by itself.
+				// The judge is told; nothing is restored. (A line not yet
+				// offered, or offered again, may still land.)
+				d.alert("park-void:"+string(id), fmt.Sprintf("park %s waits for line %s to land, and that line is %s: the wait cannot end; restore the park or park again on another condition", id, line, l.State))
+			case ok && now.Sub(at) > d.cfg.Park:
+				// A condition the runner can test is never met by a clock
+				// (a wait that acted on its timeout released lines whose
+				// fix had not landed). Past the deadline the judge is told.
+				d.alert("park-late:"+string(id), fmt.Sprintf("park %s has waited past its deadline for line %s to land; it stays parked until that line lands or the judge restores it", id, line))
 			}
+			continue
 		}
-		at, ok := d.st.Since().Parks[id]
 		if ok && now.Sub(at) > d.cfg.Park {
 			d.alert("park:"+string(id), fmt.Sprintf("park %s restored at its deadline; its condition was: %s", id, p.Cond))
 			d.apply("timer", state.Restore{Park: id})

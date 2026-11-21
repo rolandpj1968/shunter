@@ -331,15 +331,20 @@ func TestJ1DefaultParksWhenTheSameTestFailedBefore(t *testing.T) {
 	r.tick(time.Second)
 	r.w.Fail(r.trainOf("b"), "TestFixture failed")
 	r.tick(time.Second)
-	// J1's deadline passes. The first half is one line: its default is park,
-	// which parks the queue; the second half had the same failure as the
-	// train before it, with unrelated lines: park too.
+	// J1's deadline passes. The first half is one line at the head of the
+	// chain, and its failure was not seen in an unrelated train before: it
+	// is charged by elimination, and the queue is not parked for it. The
+	// second half's failure, reported behind the first, was not judged; it
+	// rides again, fails on the same test, and now the same failure was seen
+	// in the train before it, with unrelated lines: the queue parks.
 	r.tick(11 * time.Minute)
+	r.wantLine("a", state.LineReturned)
+	r.wantLine("b", state.LineRiding)
+	r.w.Fail(r.trainOf("b"), "TestFixture failed")
+	r.tick(time.Second)
 	r.tick(11 * time.Minute)
-	for _, id := range []string{"a", "b"} {
-		if st := r.line(id); st != state.LineParked {
-			t.Fatalf("line %s is %s; want parked by J1's default\n%s", id, st, daemon.Status(r.state(), nil))
-		}
+	if st := r.line("b"); st != state.LineParked {
+		t.Fatalf("line b is %s; want parked by J1's default\n%s", st, daemon.Status(r.state(), nil))
 	}
 	// New arrivals park too, until the park's deadline restores the queue.
 	r.queue("c")
@@ -1086,5 +1091,74 @@ func TestStaleAtTheGateWhenItCarriesALiveChange(t *testing.T) {
 	}
 	if st := r.exec(daemon.Request{Cmd: "status"}); !strings.Contains(st, "STALE") {
 		t.Fatalf("the status doesn't show b stale:\n%s", st)
+	}
+}
+
+// alerted waits for an alert to the judge that holds s. An alert is sent from
+// a goroutine of its own, so it may arrive a moment after the tick that
+// raised it.
+func (r *rig) alerted(s string) bool {
+	r.t.Helper()
+	for i := 0; i < 400; i++ {
+		if len(r.w.NoticesTo("judge", s)) > 0 {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// TestAParkOnALandingNeverEndsOnAClock: a park whose condition the runner can
+// test ("landed:<line>") ends when that line lands, or by the judge's
+// restore. Its deadline restores nothing: a wait that acted on its timeout
+// released lines whose fix had not landed. If the line it waits for is spent
+// without landing, the judge is told that the wait cannot end.
+func TestAParkOnALandingNeverEndsOnAClock(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "fix")
+	r.queue("a")
+	r.exec(daemon.Request{Cmd: "cancel", Args: []string{"a"}, Action: "park", Reason: "wait for the fix", Until: "landed:fix"})
+	r.wantLine("a", state.LineParked)
+	// The deadline passes: nothing is restored, and the judge is told.
+	r.tick(25 * time.Hour)
+	r.wantLine("a", state.LineParked)
+	if !r.alerted("stays parked until that line lands") {
+		t.Fatal("no alert when the park passed its deadline")
+	}
+	// The fix is offered and then withdrawn: it will not land.
+	r.queue("fix")
+	r.exec(daemon.Request{Cmd: "withdraw", Args: []string{"fix"}})
+	r.tick(time.Minute)
+	r.wantLine("a", state.LineParked)
+	if !r.alerted("the wait cannot end") {
+		t.Fatalf("no alert when the awaited line was spent without landing\n%s\nfix is %s", daemon.Status(r.state(), nil), r.line("fix"))
+	}
+	// Only the judge's restore ends it.
+	var park string
+	for id := range r.state().Parks {
+		park = string(id)
+	}
+	r.exec(daemon.Request{Cmd: "restore", Args: []string{park}, Reason: "the fix was abandoned; a rides as it is"})
+	if r.line("a") == state.LineParked {
+		t.Fatal("the judge's restore did not end the park")
+	}
+}
+
+// TestAParkOnALandingEndsWhenThatLineLands is the other half: the condition,
+// not a clock, ends the park.
+func TestAParkOnALandingEndsWhenThatLineLands(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "fix")
+	r.queue("a")
+	r.exec(daemon.Request{Cmd: "cancel", Args: []string{"a"}, Action: "park", Reason: "wait for the fix", Until: "landed:fix"})
+	r.wantLine("a", state.LineParked)
+	r.queue("fix")
+	r.w.Pass(r.trainOf("fix"))
+	r.tick(time.Second)
+	r.tick(time.Second)
+	r.wantLine("fix", state.LineLanded)
+	r.tick(time.Second)
+	if r.line("a") == state.LineParked {
+		t.Fatalf("the park did not end when its line landed\n%s", daemon.Status(r.state(), nil))
 	}
 }

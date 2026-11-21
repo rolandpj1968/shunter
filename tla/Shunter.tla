@@ -14,6 +14,14 @@
 (* and then only for its defaults: a deadline at J1 and a release for      *)
 (* every hold.                                                             *)
 (*                                                                         *)
+(* Needs first (I3) is modelled: Needs says which line is stacked on which, *)
+(* a line is assembled only behind its base, and a line whose base is      *)
+(* returned or dropped goes back too.                                      *)
+(*                                                                         *)
+(* A train is judged only at the head of the chain (§5.3): a failure       *)
+(* reported behind an undecided train is kept ("red") and judged when      *)
+(* every train ahead has landed, or dropped when one does not.             *)
+(*                                                                         *)
 (* The line check of §5.4 is modelled: a waiting line is checked alone,    *)
 (* its green verdict belongs to the version of its head it was taken on,   *)
 (* and no line is assembled without one (I10).                             *)
@@ -28,10 +36,15 @@ EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS
     Lines,      \* the lines offered
+    Needs,      \* pairs <<l, b>>: line l is stacked on line b, its base (I3)
     MaxTrains,  \* trains are numbered 1..MaxTrains as they are assembled
     Depth,      \* trains that may ride at once; 1 is no speculation
     MaxFaults   \* the adversary's budget
 
+ASSUME Needs \subseteq Lines \X Lines
+\* A line has at most one base, and is not its own.
+ASSUME \A p, q \in Needs : p[1] = q[1] => p = q
+ASSUME \A p \in Needs : p[1] # p[2]
 ASSUME Depth \in Nat \ {0}
 ASSUME MaxFaults \in Nat
 \* Enough trains that the runner never runs out: each landing and each
@@ -61,7 +74,7 @@ vars == <<line, ride, ver, green, tstate, cargo, asm, checked, base, verdict, re
 
 Trains == 1..MaxTrains
 Spent  == {"landed", "returned", "dropped"}
-Live   == {"testing", "judging", "green", "landing"}
+Live   == {"testing", "red", "judging", "green", "landing"}
 Ended  == {"landed", "failed", "void", "aborted"}
 
 Tip        == IF trunk = <<>> THEN 0 ELSE trunk[Len(trunk)]
@@ -69,6 +82,8 @@ Riders(t)  == {l \in Lines : ride[l] = t}
 Pos(t)     == CHOOSE i \in 1..Len(chain) : chain[i] = t
 Behind(t)  == {chain[i] : i \in (Pos(t) + 1)..Len(chain)}
 Landed     == {trunk[i] : i \in 1..Len(trunk)}
+BaseOf(l)  == {p[2] : p \in {q \in Needs : q[1] = l}}
+First(t)   == chain # <<>> /\ chain[1] = t
 
 TypeOK ==
     /\ line \in [Lines -> {"waiting", "held", "riding"} \cup Spent]
@@ -133,6 +148,8 @@ Checked(l) == green[l] = ver[l] + 1
 \* is kept against the version checked.
 LineCheckPass(l) ==
     /\ line[l] = "waiting" /\ ~Checked(l)
+    \* a stacked line is checked with its base beneath it, after its base
+    /\ \A b \in BaseOf(l) : Checked(b) \/ line[b] \in {"riding", "landed"}
     /\ green' = [green EXCEPT ![l] = ver[l] + 1]
     /\ NoFault
     /\ UNCHANGED <<line, ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used>>
@@ -150,6 +167,9 @@ LineCheckFail(l) ==
 \* the train ahead, or on trunk.
 Assemble(S) ==
     /\ S # {} /\ \A l \in S : line[l] = "waiting" /\ Checked(l)
+    \* I3: a line rides only behind its base: landed, riding already (so in
+    \* an earlier train), or taken into this train with it
+    /\ \A l \in S : \A b \in BaseOf(l) : line[b] \in {"landed", "riding"} \/ b \in S
     /\ Len(chain) < Depth
     /\ used < MaxTrains
     /\ LET t == used + 1 IN
@@ -223,10 +243,20 @@ NoVerdict(t) ==
     /\ End(t, "void", Requeue)
     /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green>>
 
+\* A failure is reported for a train that is not first.  The train ahead
+\* is undecided, and the failure may be its own, inherited: nothing is
+\* judged.  The report is kept.
+FailBehind(t) ==
+    /\ tstate[t] = "testing" /\ ~First(t)
+    /\ tstate' = [tstate EXCEPT ![t] = "red"]
+    /\ NoFault
+    /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green>>
+
 \* A deterministic failure, and blame names some lines and not all (or the
-\* only one): they return, charged; the rest go again.
+\* only one): they return, charged; the rest go again.  Only the first
+\* train is judged: one reporting now, or one whose report was kept.
 FailBlamed(t, B) ==
-    /\ tstate[t] = "testing"
+    /\ tstate[t] \in {"testing", "red"} /\ First(t)
     /\ B # {} /\ B \subseteq Riders(t)
     /\ B # Riders(t) \/ Cardinality(Riders(t)) = 1
     /\ End(t, "failed", [l \in Lines |-> IF l \in B THEN "returned" ELSE "waiting"])
@@ -235,7 +265,7 @@ FailBlamed(t, B) ==
 
 \* A fault: a failure blame cannot attribute.  The train waits at J1.
 FailUnblamed(t) ==
-    /\ tstate[t] = "testing"
+    /\ tstate[t] \in {"testing", "red"} /\ First(t)
     /\ Fault
     /\ tstate' = [tstate EXCEPT ![t] = "judging"]
     /\ UNCHANGED <<line, ride, ver, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green>>
@@ -297,11 +327,20 @@ Release(l) ==
 \* A fault: the judge aborts a train at any stage before its push, and says
 \* which lines return; the rest go back to waiting.
 Abort(t, R) ==
-    /\ tstate[t] \in {"testing", "judging", "green"}
+    /\ tstate[t] \in {"testing", "red", "judging", "green"}
     /\ R \subseteq Riders(t)
     /\ Fault
     /\ End(t, "aborted", [l \in Lines |-> IF l \in R THEN "returned" ELSE "waiting"])
     /\ UNCHANGED <<ver, cargo, asm, checked, base, verdict, rerun, trunk, used, green>>
+
+\* I3: a waiting line whose base was returned or dropped goes back too,
+\* uncharged: what it was built on will not land as it is.
+BaseLost(l) ==
+    /\ line[l] = "waiting"
+    /\ \E b \in BaseOf(l) : line[b] \in {"returned", "dropped"}
+    /\ line' = [line EXCEPT ![l] = "returned"]
+    /\ NoFault
+    /\ UNCHANGED <<ride, ver, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, green>>
 
 \* An owner takes a waiting line back.
 Withdraw(l) ==
@@ -314,10 +353,10 @@ Next ==
     \/ \E S \in SUBSET Lines : Assemble(S)
     \/ \E t \in Trains :
         \/ CIPass(t) \/ FalseGreen(t) \/ Verify(t) \/ Push(t) \/ PushRefused(t)
-        \/ NoVerdict(t) \/ FailUnblamed(t) \/ JudgeRequeue(t) \/ JudgeRerun(t)
+        \/ NoVerdict(t) \/ FailBehind(t) \/ FailUnblamed(t) \/ JudgeRequeue(t) \/ JudgeRerun(t)
         \/ \E B \in SUBSET Lines : FailBlamed(t, B) \/ JudgeCharge(t, B) \/ Abort(t, B)
     \/ \E l \in Lines : HeadMove(l) \/ Hold(l) \/ Release(l) \/ Withdraw(l)
-    \/ \E l \in Lines : LineCheckPass(l) \/ LineCheckFail(l)
+    \/ \E l \in Lines : LineCheckPass(l) \/ LineCheckFail(l) \/ BaseLost(l)
 
 (***************************************************************************)
 (* Fairness, which is what liveness assumes of the world:                  *)
@@ -325,6 +364,8 @@ Next ==
 (*   - the line checker answers for every waiting line (a pass or a        *)
 (*     failure: either way the line is not left unchecked for ever);       *)
 (*   - CI eventually answers a run it is left to finish;                   *)
+(*   - a kept failure is judged once its train is first;                   *)
+(*   - a line whose base is lost is returned;                              *)
 (*   - J1's deadline passes, and its default applies;                      *)
 (*   - every hold is eventually released.                                  *)
 (* Nothing is assumed of the adversary but its budget, MaxFaults.          *)
@@ -336,8 +377,10 @@ Fairness ==
         /\ WF_vars(Verify(t))
         /\ WF_vars(Push(t))
         /\ WF_vars(JudgeRequeue(t))
+        /\ WF_vars(tstate[t] = "red" /\ \E B \in SUBSET Lines : FailBlamed(t, B))
     /\ \A l \in Lines : WF_vars(Release(l))
     /\ \A l \in Lines : WF_vars(LineCheckPass(l) \/ LineCheckFail(l))
+    /\ \A l \in Lines : WF_vars(BaseLost(l))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -370,6 +413,27 @@ Frozen ==
     \A t \in Trains :
         tstate[t] \in {"landing", "landed"} =>
             \A l \in cargo[t] : checked[t][l] = asm[t][l]
+
+\* I3, needs first: a line rides only behind its base, and lands only
+\* after it.
+LandedIn(l) == CHOOSE t \in Landed : l \in cargo[t]
+TrunkPos(t) == CHOOSE i \in 1..Len(trunk) : trunk[i] = t
+NeedsFirst ==
+    \A l \in Lines : \A b \in BaseOf(l) :
+        /\ line[l] = "riding" =>
+              \/ line[b] = "landed"
+              \/ line[b] = "riding" /\ Pos(ride[b]) <= Pos(ride[l])
+        /\ line[l] = "landed" =>
+              line[b] = "landed" /\ TrunkPos(LandedIn(b)) <= TrunkPos(LandedIn(l))
+
+\* §5.3: a train is judged only at the head of the chain.  It enters J1, or
+\* ends as failed (a charge, a split, a park), only when it is first: its
+\* base is then trunk, and its failure is its own.  A train that reports a
+\* failure behind an undecided train charges nobody.
+JudgedOnlyAtHead ==
+    [][\A t \in Trains :
+          tstate'[t] \in {"judging", "failed"} /\ tstate[t] \notin {"judging", "failed"}
+              => First(t) /\ base[t] = Tip]_vars
 
 \* I10: a line rides only on a green line check of the very head it was
 \* assembled at.  A push to a riding line voids its train (HeadMove), and a
