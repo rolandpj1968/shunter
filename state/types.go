@@ -3,7 +3,11 @@
 // is returned as data (effects), and an illegal transition is an error.
 package state
 
-import "sort"
+import (
+	"slices"
+	"sort"
+	"time"
+)
 
 type (
 	// LineID names a line for its whole life. A line is never identified by
@@ -157,6 +161,39 @@ type Line struct {
 	// not ride on those heads again: a charge is cleared by a fix, and a fix
 	// is a push.
 	ChargedAt []Head
+	// Claim is the checker's claim on the line's check in flight, if any:
+	// no other checker is given the line while it stands (§5.4).
+	Claim *Claim
+}
+
+// CheckKey is what a line check judges: the line's heads, in order, merged
+// with Trunk. A claim and the verdict it brings must have the same key.
+type CheckKey struct {
+	Heads []Head
+	Trunk Head
+}
+
+// Equal reports whether two keys are the same.
+func (k CheckKey) Equal(o CheckKey) bool { return k.Trunk == o.Trunk && slices.Equal(k.Heads, o.Heads) }
+
+// Claim is one checker's claim on a line check, until a time.
+type Claim struct {
+	Key   CheckKey
+	By    string
+	Until time.Time
+}
+
+// OnHeads reports whether the key is on exactly the heads the line has now.
+func (l *Line) OnHeads(k CheckKey) bool {
+	if len(k.Heads) != len(l.Changes) {
+		return false
+	}
+	for i, c := range l.Changes {
+		if k.Heads[i] != c.Head {
+			return false
+		}
+	}
+	return true
 }
 
 // AtChargedHeads reports whether the line's changes are at exactly the heads
@@ -287,6 +324,11 @@ func (s State) clone() State {
 		l.Changes = append([]Change(nil), v.Changes...)
 		l.Checked = append([]Head(nil), v.Checked...)
 		l.ChargedAt = append([]Head(nil), v.ChargedAt...)
+		if v.Claim != nil {
+			cl := *v.Claim
+			cl.Key.Heads = append([]Head(nil), v.Claim.Key.Heads...)
+			l.Claim = &cl
+		}
 		c.Lines[k] = &l
 	}
 	c.Trains = make(map[TrainID]*Train, len(s.Trains))

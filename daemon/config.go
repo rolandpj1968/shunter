@@ -66,6 +66,10 @@ type Config struct {
 	// before the judge is told, and again each Owner that passes. An alert
 	// only. Default 1h.
 	Ownerless time.Duration
+	// Claim is how long a checker's claim on a line check stands (§5.4),
+	// unless the claim names its own lease. At its end the line may be
+	// claimed again, and the judge is told. Default 30m.
+	Claim time.Duration
 
 	// MaxLines caps the lines of one train (J4's bounds). Default 8.
 	MaxLines int
@@ -99,6 +103,7 @@ func (c Config) withDefaults() Config {
 	d(&c.Owner, 12*time.Hour)
 	d(&c.Alive, 30*time.Minute)
 	d(&c.Ownerless, time.Hour)
+	d(&c.Claim, 30*time.Minute)
 	d(&c.Backoff, 5*time.Second)
 	if c.MaxLines <= 0 {
 		c.MaxLines = 8

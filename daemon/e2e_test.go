@@ -1570,3 +1570,50 @@ func TestALineWithAGoneOwnerHasNoOwner(t *testing.T) {
 		t.Fatalf("g's owner is %q: the clock handed it over", got)
 	}
 }
+
+// TestAClaimedCheckIsGivenToNoOtherCheckerAcrossARestart: a checker claims
+// a line's check, and the claim is in the store (§5.4). No other claim is
+// given the line, after a restart too; a verdict on another key is refused;
+// a claim past its lease is given up, the judge is told, and the line is
+// given to the next checker.
+func TestAClaimedCheckIsGivenToNoOtherCheckerAcrossARestart(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "b")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("a")
+	r.queue("b")
+	claim := func(worker string) string {
+		t.Helper()
+		return r.exec(daemon.Request{Cmd: "claim", Actor: worker})
+	}
+	if got := claim("w1"); got != "a T0 a-1" {
+		t.Fatalf("first claim: %q", got)
+	}
+	if got := claim("w2"); got != "b T0 b-1" {
+		t.Fatalf("second claim: %q", got)
+	}
+	r.restart()
+	if got := claim("w3"); got != "" {
+		t.Fatalf("after a restart a claimed line was given again: %q", got)
+	}
+	if e := r.execErr(daemon.Request{Cmd: "claim", Args: []string{"a"}, Actor: "w3"}); !strings.Contains(e, "claimed by w1") {
+		t.Fatalf("a named claim on a claimed line: %q", e)
+	}
+	if st := r.exec(daemon.Request{Cmd: "status"}); !strings.Contains(st, "checking: w1") {
+		t.Fatalf("the status doesn't show the claim:\n%s", st)
+	}
+	if e := r.execErr(daemon.Request{Cmd: "checked", Args: []string{"a", "T9", "a-1"}, Action: "pass"}); !strings.Contains(e, "claimed") {
+		t.Fatalf("a verdict on another key: %q", e)
+	}
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"a", "T0", "a-1"}, Action: "pass"})
+	if !r.state().Lines["a"].CheckCurrent() {
+		t.Fatal("the claim's verdict was not kept")
+	}
+	r.tick(31 * time.Minute)
+	if !r.alerted("the line check of b claimed by w2 ran past its lease") {
+		t.Fatal("no alert for a lease run out")
+	}
+	if got := claim("w3"); got != "b T0 b-1" {
+		t.Fatalf("after the lease: %q", got)
+	}
+}

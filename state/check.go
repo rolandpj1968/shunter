@@ -84,6 +84,10 @@ func Check(s State) []error {
 		if l.State == LineRiding && l.Conflict != "" {
 			fail("§5.2", "line %s rides in conflict with trunk: %s", id, l.Conflict)
 		}
+		// A claim is on a waiting line, at the heads it has (§5.4).
+		if l.Claim != nil && (l.State != LineWaiting || !l.OnHeads(l.Claim.Key)) {
+			fail("§5.4", "line %s is %s and holds a check claim on other heads or out of the queue", id, l.State)
+		}
 		if l.State == LineRiding && l.AtChargedHeads() {
 			fail("§7", "line %s rides at the heads it was charged on", id)
 		}

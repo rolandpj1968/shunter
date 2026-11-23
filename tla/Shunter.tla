@@ -245,6 +245,18 @@ LineCheckDropped(l) ==
     /\ NoFault
     /\ UNCHANGED <<line, ride, ver, green, charged, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, inert, light, conflict, by>>
 
+\* checking is the claim on the check in flight, and it is in the store: a
+\* checker that restarts is given no line whose check is claimed, so one
+\* check is in flight a line at most.  A fault: the checker dies, and its
+\* claim's lease runs out.  The line may be claimed again.  (A late verdict
+\* from the dead checker on the same heads is the same verdict as a new
+\* check's, and is not modelled apart.)
+ClaimExpired(l) ==
+    /\ checking[l] # 0
+    /\ Fault
+    /\ checking' = [checking EXCEPT ![l] = 0]
+    /\ UNCHANGED <<line, ride, ver, green, charged, tstate, cargo, asm, checked, base, verdict, rerun, chain, trunk, used, inert, light, conflict, by>>
+
 \* The runner joins waiting lines into the next train, on the exact head of
 \* the train ahead, or on trunk.
 Assemble(S) ==
@@ -462,7 +474,7 @@ Next ==
         \/ \E B \in SUBSET Lines : FailBlamed(t, B) \/ JudgeCharge(t, B) \/ Abort(t, B)
     \/ \E l \in Lines : HeadMove(l) \/ Hold(l) \/ Release(l) \/ Withdraw(l)
     \/ \E l \in Lines : LineCheckStart(l) \/ LineCheckPass(l) \/ LineCheckFail(l) \/ LineCheckDropped(l)
-    \/ \E l \in Lines : BaseLost(l) \/ Reoffer(l) \/ LineCheckConflict(l) \/ Rebase(l)
+    \/ \E l \in Lines : BaseLost(l) \/ Reoffer(l) \/ LineCheckConflict(l) \/ Rebase(l) \/ ClaimExpired(l)
 
 (***************************************************************************)
 (* Fairness, which is what liveness assumes of the world:                  *)

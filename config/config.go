@@ -127,6 +127,8 @@ type Deadlines struct {
 	// this long, a charged line this long with its owner.
 	Review Duration `toml:"review"`
 	Owner  Duration `toml:"owner"`
+	// Claim is a checker's claim on a line check, unless it names its own.
+	Claim Duration `toml:"claim"`
 }
 
 // Retry is the two retry budgets: the adapters' short one, inside a call,
@@ -323,7 +325,7 @@ func (f *File) Daemon(version string) daemon.Config {
 		Tiers:   tier.Rules{Inert: f.Tiers.Inert, Read: f.Tiers.Read},
 		Tick:    d.Tick.Duration, Poll: d.Poll.Duration, Call: d.Call.Duration,
 		Build: d.Build.Duration, Open: d.Open.Duration, CI: d.CI.Duration, Push: d.Push.Duration,
-		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration,
+		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration, Claim: d.Claim.Duration,
 		MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
 		Heartbeats: f.path(f.Owners.Heartbeats), Alive: f.Owners.Alive.Duration, Ownerless: f.Owners.Ownerless.Duration,
 	}
