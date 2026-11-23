@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -45,17 +46,22 @@ type rig struct {
 	// maxLines and tiers are the daemon's train cap and tier rules.
 	maxLines int
 	tiers    tier.Rules
+	// heartbeats is the daemon's owners' heartbeat directory, if any.
+	heartbeats string
 }
 
 func newRig(t *testing.T) *rig { return newRigWith(t, 0, tier.Rules{}) }
 
 // newRigWith is a rig whose daemon caps a train's lines and classifies lines
-// by the tier rules given.
-func newRigWith(t *testing.T, maxLines int, tiers tier.Rules) *rig {
+// by the tier rules given; opts set the rest before the daemon starts.
+func newRigWith(t *testing.T, maxLines int, tiers tier.Rules, opts ...func(*rig)) *rig {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	r := &rig{t: t, ctx: ctx, dir: t.TempDir(), w: fake.New("T0"), clk: &clock{t: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)}, maxLines: maxLines, tiers: tiers}
+	for _, o := range opts {
+		o(r)
+	}
 	r.start()
 	r.settle()
 	t.Cleanup(func() {
@@ -77,7 +83,7 @@ func (r *rig) start() {
 	r.st = st
 	// The real ticker never fires in a test; the test ticks by hand.
 	r.d = daemon.New(st, r.w.Set(), daemon.Config{Version: "test", Now: r.clk.Now, Tick: time.Hour, Poll: time.Nanosecond, Backoff: time.Second,
-		MaxLines: r.maxLines, Tiers: r.tiers}, nil)
+		MaxLines: r.maxLines, Tiers: r.tiers, Heartbeats: r.heartbeats}, nil)
 	ctx, cancel := context.WithCancel(r.ctx)
 	r.cancel, r.done = cancel, make(chan error, 1)
 	go func() { r.done <- r.d.Run(ctx) }()
@@ -1519,4 +1525,48 @@ func TestAHoldAndASilentOwnerAreRaisedAndNeverActedOn(t *testing.T) {
 	}
 	r.wantLine("h", state.LineHeld)
 	r.wantLine("c", state.LineReturned)
+}
+
+// TestALineWithAGoneOwnerHasNoOwner: an owner entry names a live owner
+// (§7). A charged line whose owner's heartbeat is missing or old is raised
+// within the hour as having no owner, not after the twelve hours a live
+// owner gets; a live owner's line is not. Nothing is handed over by it.
+func TestALineWithAGoneOwnerHasNoOwner(t *testing.T) {
+	beats := t.TempDir()
+	r := newRigWith(t, 0, tier.Rules{}, func(r *rig) { r.heartbeats = beats })
+	beat := func(owner string, at time.Time) {
+		t.Helper()
+		p := filepath.Join(beats, owner)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.open("a", "g", "n")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	for _, o := range []struct{ line, owner string }{{"a", "alive"}, {"g", "finished"}, {"n", "never-beat"}} {
+		r.exec(daemon.Request{Cmd: "queue", Args: []string{o.line}, Actor: o.owner})
+		r.exec(daemon.Request{Cmd: "checked", Args: []string{o.line, "T0", o.line + "-1"}, Action: "fail", Reason: "lint fails; it passes on trunk alone"})
+		r.wantLine(o.line, state.LineReturned)
+	}
+	beat("finished", r.clk.Now().Add(-3*time.Hour))
+	beat("alive", r.clk.Now().Add(2*time.Hour)) // fresh when the clock gets there
+	r.tick(2 * time.Hour)
+	if !r.alerted("line g has waited 2h0m0s on its owner (finished), who is not live") {
+		t.Fatal("no alert for a line whose owner has finished")
+	}
+	if !r.alerted("line n has waited 2h0m0s on its owner (never-beat), who is not live") {
+		t.Fatal("no alert for a line whose owner never beat")
+	}
+	if len(r.w.NoticesTo("judge", "line a has waited")) != 0 {
+		t.Fatal("a line with a live owner was raised as ownerless")
+	}
+	for _, id := range []string{"a", "g", "n"} {
+		r.wantLine(id, state.LineReturned)
+	}
+	if got := r.state().Lines["g"].Owner; got != "finished" {
+		t.Fatalf("g's owner is %q: the clock handed it over", got)
+	}
 }

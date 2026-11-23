@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -405,8 +407,39 @@ func (d *Daemon) pollDone(r result) {
 	}
 }
 
-// reviews raises what stands too long with nobody looking (L1, L3): a hold
-// past its review time, and a charged line that has stayed with its owner.
+// waitsOnOwner reports whether only the line's owner can move it on: it was
+// charged, or it waits stale or in conflict for a rebase.
+func waitsOnOwner(l *state.Line) bool {
+	switch l.State {
+	case state.LineReturned:
+		return l.Cause == state.CauseCharged
+	case state.LineWaiting:
+		return l.Stale != "" || l.Conflict != ""
+	}
+	return false
+}
+
+// ownerLive reports whether the owner has shown a sign of life within
+// Alive: its heartbeat file, in Heartbeats, is that fresh. An owner that
+// has finished leaves no fresh heartbeat, so it counts as no owner (§7).
+// Without Heartbeats, every named owner counts as live.
+func (d *Daemon) ownerLive(owner string, now time.Time) bool {
+	if d.cfg.Heartbeats == "" {
+		return owner != ""
+	}
+	if owner == "" || owner != filepath.Base(owner) || owner == "." || owner == ".." {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(d.cfg.Heartbeats, owner))
+	if err != nil {
+		return false
+	}
+	return now.Sub(fi.ModTime()) <= d.cfg.Alive
+}
+
+// reviews raises what stands too long with nobody looking (L1, L3): a line
+// that waits on an owner who is not live, a hold past its review time, and
+// a charged line that has stayed with its owner.
 // Both are alerts, each repeated once every period that passes, and neither
 // acts: a hold ends only by its release, and a line leaves its owner only by
 // its owner's offer or a recorded hand-over (a wait never acts on a clock).
@@ -419,6 +452,13 @@ func (d *Daemon) reviews(now time.Time, s state.State) {
 		}
 		age := now.Sub(at)
 		switch {
+		case waitsOnOwner(l) && age > d.cfg.Ownerless && !d.ownerLive(l.Owner, now):
+			n := int((age - d.cfg.Ownerless) / d.cfg.Owner)
+			who := l.Owner
+			if who == "" {
+				who = "nobody on record"
+			}
+			d.alert(fmt.Sprintf("ownerless:%s:%d", id, n), fmt.Sprintf("line %s has waited %s on its owner (%s), who is not live: it has no owner; hand it over", id, age.Round(time.Minute), who))
 		case l.State == state.LineHeld && age > d.cfg.Review:
 			n := int(age / d.cfg.Review)
 			d.alert(fmt.Sprintf("hold:%s:%d", id, n), fmt.Sprintf("line %s has been held for %s (%s): look at it again; release it, or it stays held", id, age.Round(time.Minute), l.Reason))

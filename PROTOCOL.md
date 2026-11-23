@@ -437,7 +437,7 @@ The protocol assumes all of the following, and must stay safe under any combinat
 - trunk breaks without any batch's fault;
 - producers push to a riding change, retire mid-line, offer duplicate lines, or hang silently (a producer stuck in a tool call holds its work invisibly: each producer needs a liveness signal, and work held by a silent producer is handed on after a deadline);
 - the judge is slow, silent or wrong (safety must still hold; only liveness may suffer);
-- a hold is forgotten, or an owner goes silent with a charged line. Neither is acted on by a clock: a hold ends only by its release, and a line leaves its owner only by the owner's offer or a recorded hand-over. Both are *raised*: a hold that has stood past its review time, and a charged line that has stayed with its owner, are told to the judge, again each time the period passes (L3);
+- a hold is forgotten, or an owner goes silent with a charged line. Neither is acted on by a clock: a hold ends only by its release, and a line leaves its owner only by the owner's offer or a recorded hand-over. Both are *raised*: a hold that has stood past its review time, and a charged line that has stayed with its owner, are told to the judge, again each time the period passes (L3). **An owner entry names a live owner.** A producer that has finished, or shows no sign of life (its heartbeat is missing or old), is no owner: a line that waits on it (charged, or stale or in conflict) is raised within the hour as having no owner, not after the period a live owner gets. (In the queue this protocol grew from, two lines stranded for hours because the owner list still named an agent that had finished, so the alarm saw an owner and stayed quiet.);
 - the runner restarts at any point. All its state is in one store (I8), and it resumes from what it finds. **To replace it between trains, pause it:** a pause starts no new batch, the batches in flight finish and land, and lines offered meanwhile wait in order; then stop it, start the new one, and resume. Nothing is held by hand and nothing is killed mid-batch. (The queue this protocol grew from was reloaded by holding every line and killing the runner, and new lines outran the holds twice.)
 - a builder's report is wrong, or its output carries text that looks like a report (I9);
 - the runner's own code is replaced while it runs. A new version is checked before it's started (it parses, it can execute, it passes its own tests), the running version is recorded in the store, and a version that fails to start leaves the old one in place and alerts;
@@ -476,6 +476,7 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 
 **0.3, unreleased.**
 
+- **§7: an owner entry names a live owner.** A line that waits on an owner with no fresh heartbeat has no owner, and is raised after `ownerless` (1h). New `[owners]` in the configuration: `heartbeats`, `alive`, `ownerless`.
 - **§5.5: a seeded failure is never a flake.** A failure that names the seed of a randomised test is class 4, and its seed is kept in the evidence. The example blame hook's `seeded` patterns find it.
 
 - **I13 and §5.2: the runner rebases only a line in conflict,** once for its heads against a trunk. The model carries it as `NeededRebaseOnly` and `NoRideInConflict`, with the conflict and the rebase as actions.
