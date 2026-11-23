@@ -67,3 +67,15 @@ jobs:
         run: |
           timeout 25m java -XX:+UseParallelGC -Xmx5g -cp ../tla2tools.jar tlc2.TLC \
             -workers auto -deadlock -cleanup -config ${{ matrix.cfg }} ${{ matrix.module }}
+
+      # The witnesses must fail: each names a state the properties are about,
+      # and a pass would mean the model never reaches it.
+      - name: Witnesses (TLC must report each violated)
+        if: matrix.cfg == 'Shunter.cfg'
+        working-directory: tla
+        run: |
+          for w in forced:NeverForcedPast void:NeverVoided; do
+            timeout 10m java -XX:+UseParallelGC -Xmx5g -cp ../tla2tools.jar tlc2.TLC \
+              -workers auto -deadlock -cleanup -config "Witness-${w%%:*}.cfg" Shunter.tla | tee witness.out || true
+            grep -q "${w##*:} is violated" witness.out
+          done

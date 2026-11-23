@@ -43,8 +43,8 @@
 (*                                                                         *)
 (* The queue is a bag (docs/queue-as-bag.md): waiting lines have no place. *)
 (* Assembly takes them by policy: a manual priority first, then a starving *)
-(* line, then the oldest (Rank is the order the lines were first offered   *)
-(* in; a base is older than what is stacked on it).  A ready line is       *)
+(* line, then the oldest (Rank is that order: by first offer, a base       *)
+(* before what is stacked on it).  A ready line is                         *)
 (* passed only by a prioritised line or by a starving one.  A line starves *)
 (* when its count of cycles it did not cause (a conflict found, a train    *)
 (* ended by another line or by the train ahead) reaches StarveAt; a        *)
@@ -149,8 +149,9 @@ First(t)   == chain # <<>> /\ chain[1] = t
 RECURSIVE Under(_)
 Under(l) == BaseOf(l) \cup UNION {Under(b) : b \in BaseOf(l)}
 
-\* The order the lines were first offered in: lower is older.  A base was
-\* offered before what is stacked on it.  Nothing the queue does changes it.
+\* The bag's order: by the first offer of the bottom of a line's stack,
+\* then up the stack; lower goes first.  A base is before what is stacked
+\* on it.  Nothing the queue does changes it.
 Rank == CHOOSE f \in [Lines -> 1..Cardinality(Lines)] :
             /\ \A a, b \in Lines : a # b => f[a] # f[b]
             /\ \A p \in Needs : f[p[2]] < f[p[1]]
@@ -826,6 +827,20 @@ ChargedOnlyAtPresentHead ==
 \* push is needed before it is offered again; an offer is not a fix.
 NoRideAtChargedHead ==
     \A l \in Lines : line[l] = "riding" => asm[ride[l]][l] + 1 # charged[l]
+
+----------------------------------------------------------------------------
+(* Witnesses.  Each is false of the model, and CI checks that TLC says so: *)
+(* the properties above would hold emptily if these states were never      *)
+(* reached.  Witness-forced.cfg and Witness-void.cfg name them.            *)
+
+\* No starving line ever rides while an older line that could ride waits.
+NeverForcedPast ==
+    \A k, l \in Lines :
+        ~ ( /\ line[l] = "riding" /\ Starving(l) /\ Rank[k] < Rank[l]
+            /\ line[k] = "waiting" /\ Checked(k) /\ ~conflict[k] )
+
+\* No charge is ever voided.
+NeverVoided == [][\A l \in Lines : ~(charged[l] # 0 /\ charged'[l] = 0)]_vars
 
 ----------------------------------------------------------------------------
 (* Liveness. *)
