@@ -46,8 +46,14 @@ Configuration (JSON, --config FILE):
                   "describes": "(closes|fixes) #{}\\b"}],
     "test_files": ["_test\\.go$"],
     "timing": ["panic: test timed out"], "deterministic": ["Error Trace:"],
-    "flaky": ["connection reset"]
+    "flaky": ["connection reset"],
+    "seeded": ["\\b(?:[A-Z][A-Z0-9_]*_)?SEED=\\S+"]  # the default
   }
+
+A failure whose text names a seed ("seeded") is deterministic whatever else
+it shows, and its evidence leads with the seeds, so the failure can be
+filed and reproduced: a rerun draws another seed, and its pass proves
+nothing (PROTOCOL.md §5.5).
 """
 
 import json
@@ -138,8 +144,12 @@ def main():
     for w in why:
         sh.log("blame:", w)
     ev = (doc.get("evidence") or "a check failed").strip()
+    seeds = rules.seeds(text)
+    if seeds:
+        ev = "seeded, never a flake (reproduce with %s); %s" % (" ".join(seeds), ev)
     if blamed:
-        ev = ("%s; blame: %s" % (ev, "; ".join(why)))[:2000]
+        ev = "%s; blame: %s" % (ev, "; ".join(why))
+    ev = ev[:2000]
     sh.answer({"class": "deterministic", "blamed": blamed, "evidence": ev})
 
 

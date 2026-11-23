@@ -1,0 +1,31 @@
+{
+  "config": {
+    "flaky": [
+      "connection reset"
+    ],
+    "seeded": []
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "connection reset\nSEED=77",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "flaky",
+    "blamed": []
+  }
+}

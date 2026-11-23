@@ -134,6 +134,9 @@ DEFAULT_FILE = r"(?<![A-Za-z0-9_./:-])(?:\./)?((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.
 # A bare file name with a line number ("foo_test.go:88"), as test runners
 # print the file of a failed assertion. Kept only when it is a test file.
 DEFAULT_TEST_REF = r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+\.[A-Za-z0-9]+):\d+"
+# A randomised test that fails prints the seed that reproduces it, as
+# NAME_SEED=value (or SEED=value).
+DEFAULT_SEEDED = [r"\b(?:[A-Z][A-Z0-9_]*_)?SEED=\S+"]
 DEFAULT_TEST_FILES = [r"_test\.go$", r"\.(spec|test)\.[cm]?[jt]sx?$", r"(^|/)test_[^/]+\.py$", r"_test\.py$"]
 
 
@@ -203,6 +206,8 @@ class BlameRules:
         self.flaky = [re.compile(x, re.M) for x in cfg.get("flaky") or []]
         self.deterministic = [re.compile(x, re.M) for x in cfg.get("deterministic") or []]
         self.timing = [re.compile(x, re.M) for x in cfg.get("timing") or []]
+        seeded = cfg.get("seeded")
+        self.seeded = [re.compile(x, re.M) for x in (DEFAULT_SEEDED if seeded is None else seeded)]
 
     def is_test(self, path):
         return any(r.search(path) for r in self.test_files)
@@ -249,10 +254,24 @@ class BlameRules:
                         why.append("line %s: its description matches %r, which the failure names" % (lid, v))
         return named, why
 
+    def seeds(self, text):
+        """The seeds the failure names, in order, each once."""
+        out = []
+        for r in self.seeded:
+            for m in r.finditer(text):
+                if m.group(0) not in out:
+                    out.append(m.group(0))
+        return out
+
     def kind(self, text):
-        """flaky or deterministic, as the old queue judged a failure: a
-        timing pattern makes it flaky; else a deterministic pattern makes it
-        deterministic; else a flaky pattern makes it flaky."""
+        """flaky or deterministic. A failure that names a seed is
+        deterministic, whatever else it shows (PROTOCOL.md §5.5): a rerun
+        draws another seed, and its pass says nothing about this one. Else,
+        as the old queue judged a failure: a timing pattern makes it flaky;
+        else a deterministic pattern makes it deterministic; else a flaky
+        pattern makes it flaky."""
+        if self.seeds(text):
+            return "deterministic"
         if any(r.search(text) for r in self.timing):
             return "flaky"
         if any(r.search(text) for r in self.deterministic):

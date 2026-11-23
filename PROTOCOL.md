@@ -302,6 +302,8 @@ Each failure gets one class, decided in this order:
 
 **A recorded flake never charges a line.** A test recorded as flaky is known to fail on code where it should pass, so its failure names no line, however often it fails and however small the batch. When a known flake's one rerun fails again, nothing is judged: the batch is void, its lines go back unchanged (class 0), blame isn't asked, and J1 isn't opened. The lines' no-verdict budget (§5.10) brings a test that keeps failing to the judge (J3, then J5: fix it or quarantine it). Draft 0.3 first made the second failure class 4 and blamed it by files; the queue this protocol grew from then charged a batch of one line for a recorded flake it had not caused.
 
+**A seeded failure is never a flake.** A randomised test (a fuzz or property test) that fails prints the seed that reproduces it. Such a failure is class 4 whatever else it shows, a timeout, a lost connection or a test recorded as flaky: a rerun draws another seed, so its pass says nothing about the seed that failed. The seed is kept in the evidence, so that the failure can be reproduced and filed. If blame names no line, J1 decides as for any deterministic failure; a seed whose bug was already on trunk is J1's or J2's to judge, and the bug is filed either way. The queue this protocol grew from let a fuzz test's rerun pass on a new seed and landed the train as "passed on its rerun", over a real defect the first seed had found.
+
 **A timing failure's rerun that fails again is evidence.** When a timing failure's one rerun fails the same way, the failure is class 4 from then on: it goes to blame (§5.6), which is asked again with the class forced, and names lines by their files as for any deterministic failure. A line that makes a test slow, or makes a flaky test it touches fail every time, goes back to its owner without a judge. Blame that names none, or all of several, goes to J1 as before.
 
 ### 5.6 Blame
@@ -471,6 +473,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§5.5: a seeded failure is never a flake.** A failure that names the seed of a randomised test is class 4, and its seed is kept in the evidence. The example blame hook's `seeded` patterns find it.
 
 - **I13 and §5.2: the runner rebases only a line in conflict,** once for its heads against a trunk. The model carries it as `NeededRebaseOnly` and `NoRideInConflict`, with the conflict and the rebase as actions.
 - **§5.6: a test that scans the whole tree** is marked by the blame hook (`tree_wide`), and its failure in two unrelated batches no longer parks the queue at J1.

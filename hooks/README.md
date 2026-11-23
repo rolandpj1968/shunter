@@ -98,6 +98,7 @@ Generated files can also be stale only in combination, with nothing conflicting.
 - **Each line's files** are what its last change's head changes since it left trunk, read with git in `git_dir` (a clone holding the changes: Shunter's own works, read-only). A head that isn't there is fetched from the `fetch` remotes; one that still can't be read answers `no-verdict`.
 - **A forced class.** When a known flake's or a timing failure's one rerun fails again, Shunter asks once more with `"force_class": "deterministic"` (PROTOCOL.md §5.5). The hook then skips the flake test below and names lines by the rules, as for any deterministic failure.
 - **Flake or not** (optional): a `timing` pattern makes the failure flaky (Shunter reruns it once); else a `deterministic` pattern makes it deterministic; else a `flaky` pattern makes it flaky.
+- **A seed is never a flake.** A failure that matches a `seeded` pattern is deterministic before any of the patterns above is asked, and its evidence leads with the seeds it names (PROTOCOL.md §5.5): a rerun draws another seed, and its pass proves nothing. The default, `\b(?:[A-Z][A-Z0-9_]*_)?SEED=\S+`, finds `SEED=…` and `ANY_NAME_SEED=…`; `"seeded": []` turns it off.
 
 ### The blame rules
 
