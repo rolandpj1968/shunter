@@ -152,6 +152,7 @@ func (d *Daemon) tick() {
 		}
 	}
 	d.restores(now)
+	d.claims(now, s)
 	d.reviews(now, s)
 	d.restack(now, d.st.State())
 	rerunning := map[state.TrainID]bool{}
@@ -440,6 +441,23 @@ func (d *Daemon) ownerLive(owner string, now time.Time) bool {
 // reviews raises what stands too long with nobody looking (L1, L3): a line
 // that waits on an owner who is not live, a hold past its review time, and
 // a charged line that has stayed with its owner.
+// claims ends each check claim whose lease has run out: its checker died or
+// hung, and the line may be claimed again. The judge is told (L3: a checker
+// that stops is watched).
+func (d *Daemon) claims(now time.Time, s state.State) {
+	for _, id := range s.Waiting() {
+		c := s.Lines[id].Claim
+		if c == nil || !now.After(c.Until) {
+			continue
+		}
+		if d.apply("timer", state.ClaimExpired{Line: id}) == nil {
+			d.alert(fmt.Sprintf("claim:%s:%s", id, c.Until.UTC().Format(time.RFC3339)), fmt.Sprintf("the line check of %s claimed by %s ran past its lease and was given up: is the checker alive?", id, c.By))
+		}
+	}
+}
+
+// reviews raises what stands too long with nobody looking (L1, L3): a hold
+// past its review time, and a charged line that has stayed with its owner.
 // Both are alerts, each repeated once every period that passes, and neither
 // acts: a hold ends only by its release, and a line leaves its owner only by
 // its owner's offer or a recorded hand-over (a wait never acts on a clock).

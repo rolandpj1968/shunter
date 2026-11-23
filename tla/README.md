@@ -41,7 +41,7 @@ Liveness assumes, and the module states as `Fairness`:
 - a line in conflict is rebased (every conflict in the model is one the runner can resolve);
 - J1's deadline passes and its default applies;
 - every hold is eventually released;
-- the adversary has a finite budget, `MaxFaults`: false greens, lost verdicts, refused pushes, pushes to riding changes, holds and aborts.
+- the adversary has a finite budget, `MaxFaults`: false greens, lost verdicts, refused pushes, pushes to riding changes, holds and aborts, and a line checker that dies with its claim standing (`ClaimExpired`).
 
 `MaxTrains` must be at least `Depth × (lines + MaxFaults)`, so the runner never runs out of trains. The module asserts it.
 

@@ -3,6 +3,7 @@ package state
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Next applies one event. It returns the new state and the effects the runner
@@ -69,6 +70,9 @@ func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 	l.State, l.Cause, l.Reason = to, c, reason
 	if to != LineRiding {
 		l.Train = ""
+	}
+	if to != LineWaiting {
+		l.Claim = nil
 	}
 	if to != LineParked && to != LineHeld {
 		l.Park = ""
@@ -282,6 +286,14 @@ func (m *machine) apply(ev Event) error {
 		return m.withdraw(e)
 	case LineChecked:
 		return m.lineChecked(e)
+	case CheckClaimed:
+		return m.claim(e)
+	case ClaimExpired:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		l.Claim = nil
 	case HandOver:
 		l, err := m.line(e.Line)
 		if err != nil {
@@ -710,6 +722,37 @@ func (m *machine) withdraw(e Withdraw) error {
 	return nil
 }
 
+// claim records a checker's claim on a waiting line's check (§5.4). One
+// claim stands at a time; its own checker may renew it on the same key.
+// A stacked line is checked with its base beneath it, after its base.
+func (m *machine) claim(e CheckClaimed) error {
+	l, err := m.line(e.Line)
+	if err != nil {
+		return err
+	}
+	if e.By == "" || e.Until.IsZero() {
+		return bad(ErrReason, "a claim names its checker and its time")
+	}
+	switch {
+	case l.State != LineWaiting:
+		return bad(ErrState, "line %s is %s, not waiting", l.ID, l.State)
+	case l.Conflict != "":
+		return bad(ErrState, "line %s is in conflict with trunk and waits for a rebase", l.ID)
+	case l.Stale != "":
+		return bad(ErrState, "line %s is stale and waits for a rebase", l.ID)
+	case !l.OnHeads(e.Key):
+		return bad(ErrState, "line %s is not at the heads claimed", l.ID)
+	}
+	if b := m.s.Lines[l.Base]; b != nil && !b.CheckCurrent() && b.State != LineRiding && b.State != LineLanded {
+		return bad(ErrState, "line %s is checked after its base %s", l.ID, b.ID)
+	}
+	if c := l.Claim; c != nil && (c.By != e.By || !c.Key.Equal(e.Key)) {
+		return bad(ErrClaimed, "line %s is claimed by %s until %s", l.ID, c.By, c.Until.UTC().Format(time.RFC3339))
+	}
+	l.Claim = &Claim{Key: CheckKey{Heads: append([]Head(nil), e.Key.Heads...), Trunk: e.Key.Trunk}, By: e.By, Until: e.Until}
+	return nil
+}
+
 // lineChecked records a line check's verdict. Only a verdict on the heads the
 // line has now counts. A failure charges a waiting line. A line that is held
 // or parked only loses its green; one that rides keeps it (see below).
@@ -720,6 +763,13 @@ func (m *machine) lineChecked(e LineChecked) error {
 	}
 	if l.State.Spent() {
 		return bad(ErrState, "line %s is %s", l.ID, l.State)
+	}
+	if c := l.Claim; c != nil {
+		// A claimed check answers on its own key or not at all.
+		if !c.Key.Equal(CheckKey{Heads: e.Heads, Trunk: e.Trunk}) {
+			return bad(ErrClaimed, "line %s is claimed by %s on trunk %s at %v, not this verdict's key", l.ID, c.By, c.Key.Trunk, c.Key.Heads)
+		}
+		l.Claim = nil
 	}
 	if len(e.Heads) != len(l.Changes) {
 		return nil
@@ -1106,14 +1156,14 @@ func (m *machine) headMoved(e HeadMoved) error {
 			return nil
 		}
 		l.Changes[i].Head, l.NoVerdicts = e.Head, 0
-		l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert = nil, "", "", "", false
+		l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert, l.Claim = nil, "", "", "", false, nil
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("change %s moved while it rode (I4)", e.Change), nil)
 		return nil
 	}
 	l.Changes[i].Head, l.NoVerdicts = e.Head, 0
 	// A push may bring anything: the line is full until the gate has read
 	// its files again.
-	l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert = nil, "", "", "", false
+	l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert, l.Claim = nil, "", "", "", false, nil
 	return nil
 }
 

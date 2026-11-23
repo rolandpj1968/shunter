@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rolandpj1968/shunter/adapter"
 	"github.com/rolandpj1968/shunter/state"
@@ -28,6 +29,9 @@ type Request struct {
 	// and judge park: "landed:<line>" is one the runner tests, and such a
 	// park ends only when that line lands or by a restore.
 	Until string `json:"until,omitempty"`
+	// Lease is how long a check claim stands, for claim ("20m"); empty
+	// takes the configured Claim.
+	Lease string `json:"lease,omitempty"`
 }
 
 // Response is a command's answer.
@@ -94,6 +98,8 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 			ev.Conflict = req.Reason
 		}
 		return d.act(actor, ev, "line "+string(l)+" check recorded: "+req.Action)
+	case "claim":
+		return d.claim(actor, req)
 	case "handover":
 		// handover <line> <new owner> --reason <why>: a line, live or returned.
 		if len(req.Args) != 2 || req.Reason == "" {
@@ -169,6 +175,68 @@ func (d *Daemon) act(actor string, ev state.Event, ok string) Response {
 	}
 	d.drive()
 	return Response{Output: ok}
+}
+
+// claim gives a checker one waiting line's check (§5.4): the line named, or
+// the first in the queue that is due one, and records the claim in the
+// store, so that no other checker is given it, a restarted one included,
+// until its verdict or the lease's end. The output is the arguments that
+// checked takes, "<line> <trunk> <head>...", or nothing when no line is due.
+func (d *Daemon) claim(actor string, req Request) Response {
+	if len(req.Args) > 1 {
+		return errResp(errors.New("usage: claim [<line|change>] [--lease 20m]"))
+	}
+	lease := d.cfg.Claim
+	if req.Lease != "" {
+		v, err := time.ParseDuration(req.Lease)
+		if err != nil || v <= 0 {
+			return errResp(fmt.Errorf("lease %q: a duration such as 20m", req.Lease))
+		}
+		lease = v
+	}
+	s := d.st.State()
+	var l *state.Line
+	if len(req.Args) == 1 {
+		id, err := d.findLine(req.Args[0])
+		if err != nil {
+			return errResp(err)
+		}
+		l = s.Lines[id]
+	} else {
+		for _, id := range s.Waiting() {
+			if c := s.Lines[id]; dueCheck(s, c) {
+				l = c
+				break
+			}
+		}
+		if l == nil {
+			return Response{}
+		}
+	}
+	key := state.CheckKey{Trunk: s.Trunk}
+	for _, c := range l.Changes {
+		key.Heads = append(key.Heads, c.Head)
+	}
+	ev := state.CheckClaimed{Line: l.ID, Key: key, By: actor, Until: d.now().Add(lease)}
+	if err := d.apply(actor, ev); err != nil {
+		return errResp(err)
+	}
+	out := []string{string(l.ID), string(key.Trunk)}
+	for _, h := range key.Heads {
+		out = append(out, string(h))
+	}
+	return Response{Output: strings.Join(out, " ")}
+}
+
+// dueCheck reports whether a waiting line is due a line check: it has no
+// green check on its present heads, no claim on it stands, it waits for no
+// rebase, and its base, if any, is checked or rides already.
+func dueCheck(s state.State, l *state.Line) bool {
+	if l.State != state.LineWaiting || l.Claim != nil || l.CheckCurrent() || l.Conflict != "" || l.Stale != "" {
+		return false
+	}
+	b := s.Lines[l.Base]
+	return b == nil || b.CheckCurrent() || b.State == state.LineRiding || b.State == state.LineLanded
 }
 
 // findLine resolves a line's name, or a change of a live line.
@@ -442,6 +510,9 @@ func Status(s state.State, pending []store.Keyed) string {
 			}
 			if l.Alone {
 				b.WriteString(" alone")
+			}
+			if c := l.Claim; c != nil {
+				fmt.Fprintf(&b, "  checking: %s until %s", c.By, c.Until.UTC().Format("15:04Z"))
 			}
 			if l.Reason != "" {
 				fmt.Fprintf(&b, "  (%s)", l.Reason)
