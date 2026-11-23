@@ -54,6 +54,18 @@ type Config struct {
 	// again, before the judge is told: the owner may have gone silent, and
 	// the line may need handing over (§7). An alert only. Default 12h.
 	Owner time.Duration
+	// Heartbeats is a directory with one file a producer, named as the
+	// producer offers lines, whose modification time is its last sign of
+	// life (§7). An owner whose file is missing, or older than Alive, is
+	// not live, and its line counts as having no owner. Empty: every
+	// owner counts as live.
+	Heartbeats string
+	// Alive is how old a heartbeat may be. Default 30m.
+	Alive time.Duration
+	// Ownerless is how long a line may wait on an owner that is not live
+	// before the judge is told, and again each Owner that passes. An alert
+	// only. Default 1h.
+	Ownerless time.Duration
 
 	// MaxLines caps the lines of one train (J4's bounds). Default 8.
 	MaxLines int
@@ -85,6 +97,8 @@ func (c Config) withDefaults() Config {
 	d(&c.Park, 24*time.Hour)
 	d(&c.Review, 24*time.Hour)
 	d(&c.Owner, 12*time.Hour)
+	d(&c.Alive, 30*time.Minute)
+	d(&c.Ownerless, time.Hour)
 	d(&c.Backoff, 5*time.Second)
 	if c.MaxLines <= 0 {
 		c.MaxLines = 8
