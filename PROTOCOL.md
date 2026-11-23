@@ -343,6 +343,8 @@ Flakes set *p*, the chance that a batch passes on its merits, and *p* sets batch
 
 The judge may abort a riding batch at any stage before its push: assembling, pre-flight, CI, at J1, or passed and waiting to land. An abort names what becomes of each line: back to waiting (the default), parked with a restore condition, or returned with the reason. The runner honours it at every stage, lands nothing of an aborted batch, stops its CI, closes its pull request, and voids the batches built on it (I5), which are rebuilt.
 
+**An abort asked for one line acts on that line, not on the train's other lines.** A cancel names a change; it acts on the line that holds it, and on the lines stacked on that line (I3): they go back with it, uncharged, when it is returned, and wait behind it while it is parked. Every other line of the train goes back to waiting, at the place it had. The queue this protocol grew from dropped a whole train of eleven when one of its changes was cancelled, and the other ten were queued again by hand.
+
 An abort is not a failure. It charges no change (I6) and uses no retry budget. Aborting twice is the same as once. The one stage an abort can't reach is the push itself (§5.1, "landing"): the request is refused, and the caller hears that the batch is past the point of no return.
 
 ### 5.10 Retry budgets
