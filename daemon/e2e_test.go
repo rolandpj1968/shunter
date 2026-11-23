@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -748,6 +749,52 @@ func TestReturnedBaseTakesItsStackUncharged(t *testing.T) {
 	r.w.Pass(r.trainOf("c"))
 	r.tick(time.Second)
 	r.wantLine("c", state.LineLanded)
+}
+
+// TestCancelOfOneLineTakesOnlyItAndItsStack: a cancel that names a line
+// acts on that line and the lines stacked on it (§5.9). The train's other
+// lines go again, in the order they had.
+func TestCancelOfOneLineTakesOnlyItAndItsStack(t *testing.T) {
+	for _, action := range []string{"drop", "park"} {
+		t.Run(action, func(t *testing.T) {
+			r := newRig(t)
+			r.open("c", "a", "d", "e")
+			r.stack("b", "a")
+			r.exec(daemon.Request{Cmd: "pause", Reason: "gather a train"})
+			for _, id := range []string{"c", "a", "b", "d", "e"} {
+				r.queue(id)
+			}
+			r.exec(daemon.Request{Cmd: "resume"})
+			t1 := r.trainOf("a")
+			if n := len(r.train(t1).Lines); n != 5 {
+				t.Fatalf("the train took %v; want all five", r.train(t1).Lines)
+			}
+			r.exec(daemon.Request{Cmd: "cancel", Args: []string{"a"}, Action: action, Reason: "a is wrong"})
+			r.wantTrain(t1, state.TrainAborted)
+			s := r.state()
+			switch action {
+			case "drop":
+				if s.Lines["a"].State != state.LineReturned || s.Lines["a"].Cause != state.CauseAbort {
+					t.Fatalf("a is %s (%s), want returned by the abort", s.Lines["a"].State, s.Lines["a"].Cause)
+				}
+				if s.Lines["b"].State != state.LineReturned || s.Lines["b"].Cause != state.CauseBaseLost {
+					t.Fatalf("b is %s (%s), want returned with its base, uncharged", s.Lines["b"].State, s.Lines["b"].Cause)
+				}
+			case "park":
+				r.wantLine("a", state.LineParked)
+				r.wantLine("b", state.LineWaiting) // behind its parked base
+			}
+			t2 := r.trainOf("c")
+			if got := r.train(t2).Lines; !slices.Equal(got, []state.LineID{"c", "d", "e"}) {
+				t.Fatalf("the rest rode again as %v; want [c d e]", got)
+			}
+			r.w.Pass(t2)
+			r.tick(time.Second)
+			for _, id := range []string{"c", "d", "e"} {
+				r.wantLine(id, state.LineLanded)
+			}
+		})
+	}
 }
 
 // TestBlamedStackLeavesItsBase: blame names only the stacked line; its base
