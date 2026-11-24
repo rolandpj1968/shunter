@@ -283,6 +283,36 @@ func TestStatusClassifies(t *testing.T) {
 	}
 }
 
+// TestStatusReadsEveryPage: a head that became trunk collects other
+// workflows' checks and runs by the hundred, and the verdict is on a later
+// page than the first. Reading one page found no required check and read
+// a landed train as pending.
+func TestStatusReadsEveryPage(t *testing.T) {
+	for _, workflow := range []string{"", "ci.yml"} {
+		s, c := newServer(t)
+		c.cfg.Workflow = workflow
+		s.refs["main"] = "h"
+		for i := range int64(70) {
+			s.runOf("lines.yml", 100+i, 100+i, "h", "main", "completed", "success")
+			s.checkIn(100+i, "h", "line", "completed", "success", t0.Add(time.Hour))
+			s.checkIn(100+i, "h", "plan", "completed", "success", t0.Add(time.Hour))
+		}
+		s.runOf("ci.yml", 10, 1, "h", "shunter/t1", "completed", "success")
+		s.checkIn(10, "h", "test (1)", "completed", "success", t0)
+		s.checkIn(10, "h", "check", "completed", "success", t0)
+		rep, err := c.Status(ctx, "t1", "h", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Outcome != adapter.Passed {
+			t.Errorf("workflow %q: outcome %d (%s)", workflow, rep.Outcome, rep.Why)
+		}
+		if r, err := c.ReadLanding(ctx, "t1", "h", nil); err != nil || r.Verdict != "h" {
+			t.Errorf("workflow %q: the lander reads %+v %v", workflow, r, err)
+		}
+	}
+}
+
 // TestStatusCountsOnlyItsOwnWorkflow: another workflow's failed checks on
 // the same commit (a nightly run on a head that has landed) are not the
 // train's CI. With a workflow configured, only its runs' check suites are

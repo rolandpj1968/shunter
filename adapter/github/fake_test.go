@@ -66,6 +66,20 @@ func (s *server) check(sha, name, status, conclusion string, started time.Time) 
 	s.checkIn(0, sha, name, status, conclusion, started)
 }
 
+// page is one page of a listing, as the forge pages it: per_page (30 when
+// unset) and page (from 1).
+func page(q map[string][]string, all []map[string]any) []map[string]any {
+	per, n := 30, 1
+	if v := q["per_page"]; len(v) > 0 {
+		per, _ = strconv.Atoi(v[0])
+	}
+	if v := q["page"]; len(v) > 0 {
+		n, _ = strconv.Atoi(v[0])
+	}
+	lo, hi := min((n-1)*per, len(all)), min(n*per, len(all))
+	return append([]map[string]any{}, all[lo:hi]...)
+}
+
 // checkIn is a check run in a check suite (one workflow run's checks).
 func (s *server) checkIn(suite int64, sha, name, status, conclusion string, started time.Time) {
 	var c any
@@ -226,12 +240,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(out)
 	case r.Method == "GET" && len(parts) == 3 && parts[0] == "commits" && parts[2] == "check-runs":
 		cs := s.checks[parts[1]]
-		if cs == nil {
-			cs = []map[string]any{}
-		}
-		reply(map[string]any{"total_count": len(cs), "check_runs": cs})
+		reply(map[string]any{"total_count": len(cs), "check_runs": page(q, cs)})
 	case r.Method == "GET" && (path == "/actions/runs" || (len(parts) == 4 && parts[0] == "actions" && parts[1] == "workflows" && parts[3] == "runs")):
-		out := []any{}
+		out := []map[string]any{}
 		for _, run := range s.runs {
 			if sha := q.Get("head_sha"); sha != "" && run["head_sha"] != sha {
 				continue
@@ -244,7 +255,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			out = append(out, run)
 		}
-		reply(map[string]any{"total_count": len(out), "workflow_runs": out})
+		reply(map[string]any{"total_count": len(out), "workflow_runs": page(q, out)})
 	case r.Method == "POST" && len(parts) == 4 && parts[0] == "actions" && parts[1] == "runs":
 		id, _ := strconv.ParseInt(parts[2], 10, 64)
 		for _, run := range s.runs {

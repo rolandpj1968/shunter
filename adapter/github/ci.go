@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -45,16 +46,29 @@ func (c *Client) checks(ctx context.Context, head state.Head) ([]adapter.Check, 
 	if head == "" {
 		return nil, adapter.Permanent(fmt.Errorf("no head to read checks on"))
 	}
-	q := url.Values{"per_page": {"100"}, "filter": {"latest"}}
-	if err := c.do(ctx, http.MethodGet, c.repo("/commits/%s/check-runs?%s", url.PathEscape(string(head)), q.Encode()), nil, &page); err != nil {
-		return nil, err
+	// A head that became trunk collects other workflows' checks by the
+	// hundred; the verdict may be on any page.
+	var all []ghCheckRun
+	for n := 1; ; n++ {
+		if n > maxListPages {
+			return nil, fmt.Errorf("checks on %s: more than %d pages", head, maxListPages)
+		}
+		q := url.Values{"per_page": {"100"}, "filter": {"latest"}, "page": {strconv.Itoa(n)}}
+		page.Runs = nil
+		if err := c.do(ctx, http.MethodGet, c.repo("/commits/%s/check-runs?%s", url.PathEscape(string(head)), q.Encode()), nil, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Runs...)
+		if len(page.Runs) < 100 || len(all) >= page.Total {
+			break
+		}
 	}
 	suites, err := c.workflowSuites(ctx, head)
 	if err != nil {
 		return nil, err
 	}
 	latest := map[string]adapter.Check{}
-	for _, r := range page.Runs {
+	for _, r := range all {
 		if r.HeadSHA != "" && r.HeadSHA != string(head) {
 			continue
 		}
@@ -408,19 +422,33 @@ type ghRun struct {
 // runs lists the workflow runs that match q, limited to Workflow when it is
 // set.
 func (c *Client) runs(ctx context.Context, q url.Values) ([]ghRun, error) {
-	var page struct {
-		Runs []ghRun `json:"workflow_runs"`
+	var all []ghRun
+	for n := 1; ; n++ {
+		if n > maxListPages {
+			return nil, fmt.Errorf("workflow runs: more than %d pages", maxListPages)
+		}
+		var page struct {
+			Total int     `json:"total_count"`
+			Runs  []ghRun `json:"workflow_runs"`
+		}
+		q.Set("per_page", "100")
+		q.Set("page", strconv.Itoa(n))
+		path := c.repo("/actions/runs?%s", q.Encode())
+		if c.cfg.Workflow != "" {
+			path = c.repo("/actions/workflows/%s/runs?%s", url.PathEscape(c.cfg.Workflow), q.Encode())
+		}
+		if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Runs...)
+		if len(page.Runs) < 100 || len(all) >= page.Total {
+			return all, nil
+		}
 	}
-	q.Set("per_page", "50")
-	path := c.repo("/actions/runs?%s", q.Encode())
-	if c.cfg.Workflow != "" {
-		path = c.repo("/actions/workflows/%s/runs?%s", url.PathEscape(c.cfg.Workflow), q.Encode())
-	}
-	if err := c.do(ctx, http.MethodGet, path, nil, &page); err != nil {
-		return nil, err
-	}
-	return page.Runs, nil
 }
+
+// maxListPages bounds a listing of checks or runs on one head or branch.
+const maxListPages = 20
 
 // Rerun implements adapter.CI: the failed jobs of every completed run on the
 // head that did not succeed. A run on the head that is still going is taken
