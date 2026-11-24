@@ -1,0 +1,12 @@
+pre-flight: lane:wording skipped (the skip list; CI runs it)
+BATCH-BRANCH batch/20261124-075244
+  this train's PR is based on train 1's branch batch/20261124-074828
+batch: draft #917 opened for #119; its pre-flight runs now, and CI only once it passes
+BATCH-DRAFT 917 25ccfc1777d25423bca8213e790d9d3ef8577f3f
+batch: pre-flight of #119 on the CI hosts: https://ci.example/runs/45351544393
+batch: pre-flight (pass) took 133 s on the CI hosts, 204 s from the dispatch
+batch: pre-flight passed for #119
+BATCH-READY 25ccfc1777d25423bca8213e790d9d3ef8577f3f 119
+batch #917 ready for #119: its CI runs now
+BATCH-IN 119
+BATCH-OPENED 917 25ccfc1777d25423bca8213e790d9d3ef8577f3f

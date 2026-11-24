@@ -119,6 +119,7 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 		"908": "green-on-another-head",
 		"914": "agree",
 		"915": "agree",
+		"917": "agree", // opened as a draft at assembly; its checks are pending
 	}
 	for pr, k := range want {
 		if got[pr] != k {
