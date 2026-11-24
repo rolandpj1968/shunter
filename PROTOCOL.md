@@ -267,6 +267,8 @@ Tier 2 runs on every batch, before any CI is spent. A failure there sends the ch
 
 **A pre-flight may leave a line out instead.** Some failures say "this line didn't fit this train", not "this line broke it": it doesn't build on the train, or a generated part clashes with another line's (two changes taking the same number). A pre-flight may answer a leave-out for such a line, with a reason, as assembly leaves out a conflict (L16). The line stays in the bag uncharged, at its age, and counts the cycle; the train is built again without it, and pre-flight runs again on the rest. A leave-out is not a charge (I6), so it needs no evidence beyond its reason, and it uses no retry budget.
 
+**A pre-flight may commit to the batch.** Some of what a pre-flight finds is the batch's own to fix, not any line's: generated files stale only in combination, with nothing in conflict, or a counter the combination improves, recorded. A passing pre-flight may add commits on top of the merged batch, and the batch's head is then its last commit: CI judges that head, and that head is what lands (I1, I2). It may only add: a head that no longer holds the merged batch (reset, amended, rebased) or that adds a merge would land something the batch doesn't say, so it is no verdict (§5.5 class 0). A failed pre-flight's commits are dropped with the batch.
+
 **Test scope is an axis of its own.** Every test has one scope, and the scope decides when it runs:
 - **Package tests** test one unit. They're selected by the dependency graph: the changed units plus everything that depends on them.
 - **Feature tests** exercise one feature or screen, including UI (browser) tests of a single screen. They're tagged by feature area and selected by what changed.
@@ -487,6 +489,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§5.4: a pre-flight may commit to the batch,** only on top of the merged batch and with no merge; the head CI judges and trunk takes is its last commit.
 
 - **Conflicts by kind** (owner's ruling of 24 Nov). A conflict with trunk that the rebase can't resolve sends the line back to its owner, uncharged, and an offer once it merges keeps its age, count and starving (new row L36); the runner offers such a line again itself once it merges (the re-offerer, an optional `adapter.Merger`). A line left out of a batch for a conflict with other lines, or any other leave-out, stays in the bag (L16 now ends in waiting), and the starving rule bounds it.
 - **I14: a verdict is its checker's.** Greens, claims and charges name their checker's version, and a change voids them (rows L34, L35). New event `checker-changed`, command `checker`, `--version` on `checked`, and the optional `adapter.Versioner`.
