@@ -522,6 +522,45 @@ func (r *Repo) Contains(ctx context.Context, head, ancestor state.Head, ids []st
 	return r.isAncestor(ctx, ancestor, head)
 }
 
+// Merges implements adapter.Merger: the line's last head merged onto trunk
+// in memory (git merge-tree, git 2.38 or later), after fetching what the
+// clone lacks. Like Contains it takes no lock on the work tree. The merge
+// drivers of [git] env apply, as they do at a build.
+func (r *Repo) Merges(ctx context.Context, line adapter.BuildLine, trunk state.Head) (string, error) {
+	if len(line.Changes) == 0 || trunk == "" {
+		return "", adapter.Permanent(errors.New("nothing to merge"))
+	}
+	top := line.Changes[len(line.Changes)-1].Head
+	if !r.has(ctx, top) || !r.has(ctx, trunk) {
+		ids := make([]state.ChangeID, len(line.Changes))
+		for i, c := range line.Changes {
+			ids[i] = c.ID
+		}
+		if err := r.fetch(ctx, ids); err != nil {
+			return "", err
+		}
+		if !r.has(ctx, top) || !r.has(ctx, trunk) {
+			return "", fmt.Errorf("%s or %s is not in the clone after a fetch", short(top), short(trunk))
+		}
+	}
+	out, err := r.git(ctx, "merge-tree", "--write-tree", "--name-only", "--no-messages", string(trunk), string(top))
+	var ge *bound.GitError
+	switch {
+	case err == nil:
+		return "", nil
+	case errors.As(err, &ge) && ge.Code == 1:
+		// The first line is the tree written; the rest name the files in
+		// conflict.
+		files := strings.Split(strings.TrimSpace(out), "\n")
+		if len(files) < 2 {
+			return "a conflict", nil
+		}
+		return strings.Join(files[1:], " "), nil
+	default:
+		return "", err
+	}
+}
+
 // reset leaves the clone with nothing in progress.
 func (r *Repo) reset(ctx context.Context) {
 	r.git(ctx, "rebase", "--abort")

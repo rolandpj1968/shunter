@@ -73,6 +73,9 @@ type World struct {
 	Retargeted []state.ChangeID
 	// Rebases is what Rebase answers for a line.
 	Rebases map[state.LineID]adapter.RebaseResult
+	// Merging is the lines that merge cleanly onto trunk (adapter.Merger);
+	// any other is in conflict.
+	Merging map[state.LineID]bool
 
 	// BuildHook, when set, decides a build. It may block on ctx.
 	BuildHook func(ctx context.Context, req adapter.BuildRequest) (adapter.BuildResult, error)
@@ -105,8 +108,8 @@ func New(trunk state.Head) *World {
 		builds: map[string]adapter.BuildResult{}, prs: map[string]string{}, open: map[state.TrainID]string{},
 		heads: map[state.TrainID]state.Head{}, verdict: map[state.TrainID]state.Head{}, report: map[state.TrainID]adapter.Report{},
 		reruns: map[state.TrainID]int{}, drafts: map[state.TrainID]string{}, cancels: map[state.TrainID]int{}, nextPR: 100,
-		Rebases: map[state.LineID]adapter.RebaseResult{},
-		Calls:   map[string]int{}, Acts: map[string]int{}, blocks: map[string]chan struct{}{}, waiters: map[chan struct{}]int{},
+		Rebases: map[state.LineID]adapter.RebaseResult{}, Merging: map[state.LineID]bool{},
+		Calls: map[string]int{}, Acts: map[string]int{}, blocks: map[string]chan struct{}{}, waiters: map[chan struct{}]int{},
 	}
 }
 
@@ -632,6 +635,19 @@ func (w *World) Rebase(ctx context.Context, key string, line adapter.BuildLine, 
 		}
 	}
 	return res, nil
+}
+
+// Merges implements adapter.Merger: a line in Merging merges cleanly.
+func (w *World) Merges(ctx context.Context, line adapter.BuildLine, trunk state.Head) (string, error) {
+	if err := w.enter(ctx, "merges"); err != nil {
+		return "", err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.Merging[line.ID] {
+		return "", nil
+	}
+	return "x.go", nil
 }
 
 // Prunes returns a copy of the live trains each prune was told.

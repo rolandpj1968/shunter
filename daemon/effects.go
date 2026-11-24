@@ -389,6 +389,10 @@ func (d *Daemon) complete(r result) {
 		d.pruneDone(r)
 		return
 	}
+	if r.reoffer != nil {
+		d.reofferDone(r)
+		return
+	}
 	if r.restack {
 		d.restackDone(r)
 		return
