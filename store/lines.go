@@ -127,7 +127,9 @@ type Described struct {
 // FromLines turns line files into a document for Import, reading each
 // line's heads and base with describe. A line is named by its first change,
 // as an offer from the CLI is; its base is the line that holds its first
-// change's base, when the file holds one before it.
+// change's base, when the files hold one anywhere. Lines keep the files'
+// order, except that a base comes before the lines stacked on it: a script
+// queue's list may name a stacked line first, and an offer needs its base.
 func FromLines(lf LineFile, describe func([]state.ChangeID) ([]Described, error)) (Document, error) {
 	d := Document{Format: ExportFormat, Lines: []ExportLine{}}
 	held := map[string]string{}
@@ -135,6 +137,7 @@ func FromLines(lf LineFile, describe func([]state.ChangeID) ([]Described, error)
 		held[key(h.Changes)] = h.Reason
 	}
 	owner := map[state.ChangeID]state.LineID{}
+	baseOf := map[state.LineID]state.ChangeID{}
 	add := func(pl PlainLine, st string, park state.ParkID) error {
 		if len(pl.Changes) == 0 {
 			return errors.New("lines: a line with no changes")
@@ -153,9 +156,7 @@ func FromLines(lf LineFile, describe func([]state.ChangeID) ([]Described, error)
 			}
 			e.Changes = append(e.Changes, state.Change{ID: c.ID, Head: c.Head})
 		}
-		if b := info[0].Base; b != "" {
-			e.Base = owner[b]
-		}
+		baseOf[e.ID] = info[0].Base
 		if r, ok := held[key(pl.Changes)]; ok && st == "waiting" {
 			e.State, e.Reason = "held", r
 			delete(held, key(pl.Changes))
@@ -185,6 +186,33 @@ func FromLines(lf LineFile, describe func([]state.ChangeID) ([]Described, error)
 	for k := range held {
 		return Document{}, fmt.Errorf("lines: a hold on %s, which is no waiting line", k)
 	}
+	byID := map[state.LineID]*ExportLine{}
+	for i := range d.Lines {
+		l := &d.Lines[i]
+		if b := owner[baseOf[l.ID]]; b != l.ID {
+			l.Base = b
+		}
+		byID[l.ID] = l
+	}
+	ordered := make([]ExportLine, 0, len(d.Lines))
+	placed := map[state.LineID]bool{}
+	var place func(l *ExportLine)
+	place = func(l *ExportLine) {
+		if placed[l.ID] {
+			return
+		}
+		// Marked first, so that a cycle of bases (which the forge's
+		// ancestry rules out) ends here and is refused by the offer.
+		placed[l.ID] = true
+		if b := byID[l.Base]; b != nil {
+			place(b)
+		}
+		ordered = append(ordered, *l)
+	}
+	for i := range d.Lines {
+		place(&d.Lines[i])
+	}
+	d.Lines = ordered
 	return d, nil
 }
 
