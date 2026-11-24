@@ -550,6 +550,14 @@ func Status(s state.State, pending []store.Keyed) string {
 			if p := l.Priority; p != nil {
 				fmt.Fprintf(&b, "  priority until %s (%s)", p.Until.UTC().Format("15:04Z"), p.Reason)
 			}
+			switch {
+			case l.Starving && l.Stuck != "":
+				fmt.Fprintf(&b, "  STARVING, STUCK: %s", l.Stuck)
+			case l.Starving:
+				b.WriteString("  STARVING: rides alone and first")
+			case l.Count > 0:
+				fmt.Fprintf(&b, "  cycles: %d", l.Count)
+			}
 			if l.Reason != "" {
 				fmt.Fprintf(&b, "  (%s)", l.Reason)
 			}

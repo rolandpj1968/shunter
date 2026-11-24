@@ -167,6 +167,20 @@ type Line struct {
 	// Priority is a manual priority, if one stands: the one act that lets
 	// a line pass an older one (docs/queue-as-bag.md §2).
 	Priority *Priority
+	// Count is the cycles the line went round that riding alone and first
+	// would have avoided (docs/queue-as-bag.md §4). A failure of its own
+	// halves it; nothing else lowers it, not a push, a rebase or a new offer.
+	Count int
+	// Starving says the runner found the line past a starvation threshold:
+	// its count, or its queue time. A starving line is forced (Forced). A
+	// failure of its own, or its offer ending, clears it; the runner marks
+	// it again while a threshold still holds.
+	Starving bool
+	// Stuck is why the runner could not rebase the line out of its present
+	// conflict. A stuck line is not forced: it needs a person, and a
+	// starving one is raised to the judge at once. A new conflict verdict
+	// against another trunk, a pass or a push ends it.
+	Stuck string
 }
 
 // Priority is a manual priority: who gave it, why, and until when.
@@ -401,20 +415,33 @@ func (s State) inState(st LineState) []LineID {
 
 // SortByPolicy sorts lines into the order assembly takes them in
 // (docs/queue-as-bag.md §3): lines with a manual priority, and the lines
-// they are stacked on, first; then by the age of the bottom of each line's
-// stack, then up the stack. A base always sorts before what is stacked on
-// it. Nothing the queue does changes the order: it is read from facts.
+// they are stacked on, first; then the forced line's train; then by the age
+// of the bottom of each line's stack, then up the stack. A base always sorts
+// before what is stacked on it. Nothing the queue does changes the order: it
+// is read from facts.
 func (s State) SortByPolicy(ids []LineID) {
 	type key struct {
-		prio       bool
+		class      int
 		bottom, up int
 		age        int
 	}
 	keys := make(map[LineID]key, len(ids))
-	prio := s.prioritised()
+	prio := s.Prioritised()
+	forced := map[LineID]bool{}
+	if f := s.Forced(); f != "" {
+		for _, id := range s.ForcedTrain(f) {
+			forced[id] = true
+		}
+	}
 	for _, id := range ids {
 		l := s.Lines[id]
-		k := key{prio: prio[id], bottom: l.Seq, age: l.Seq}
+		k := key{class: 2, bottom: l.Seq, age: l.Seq}
+		switch {
+		case prio[id]:
+			k.class = 0
+		case forced[id]:
+			k.class = 1
+		}
 		for b, n := s.Lines[l.Base], 0; b != nil && b.State != LineLanded && n <= len(s.Lines); b, n = s.Lines[b.Base], n+1 {
 			k.bottom, k.up = b.Seq, k.up+1
 		}
@@ -423,8 +450,8 @@ func (s State) SortByPolicy(ids []LineID) {
 	sort.SliceStable(ids, func(i, j int) bool {
 		a, b := keys[ids[i]], keys[ids[j]]
 		switch {
-		case a.prio != b.prio:
-			return a.prio
+		case a.class != b.class:
+			return a.class < b.class
 		case a.bottom != b.bottom:
 			return a.bottom < b.bottom
 		case a.up != b.up:
@@ -434,9 +461,9 @@ func (s State) SortByPolicy(ids []LineID) {
 	})
 }
 
-// prioritised is the set of live lines a manual priority covers: the line
+// Prioritised is the set of live lines a manual priority covers: the line
 // that has it, and every line beneath it in its stack.
-func (s State) prioritised() map[LineID]bool {
+func (s State) Prioritised() map[LineID]bool {
 	out := map[LineID]bool{}
 	for id, l := range s.Lines {
 		if l.Priority == nil || l.State.Spent() {
@@ -445,6 +472,41 @@ func (s State) prioritised() map[LineID]bool {
 		out[id] = true
 		for b, n := s.Lines[l.Base], 0; b != nil && !b.State.Spent() && n <= len(s.Lines); b, n = s.Lines[b.Base], n+1 {
 			out[b.ID] = true
+		}
+	}
+	return out
+}
+
+// Forced is the line forced through alone (docs/queue-as-bag.md §4), or
+// none: the oldest starving line that is the queue's to move. It waits, is
+// not stuck, and nothing beneath it is held, parked or spent.
+func (s State) Forced() LineID {
+	for _, id := range s.lineIDs() {
+		l := s.Lines[id]
+		if l.State != LineWaiting || !l.Starving || l.Stuck != "" {
+			continue
+		}
+		ok := true
+		for b, n := s.Lines[l.Base], 0; b != nil && n <= len(s.Lines); b, n = s.Lines[b.Base], n+1 {
+			if b.State != LineWaiting && b.State != LineRiding && b.State != LineLanded {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return id
+		}
+	}
+	return ""
+}
+
+// ForcedTrain is the train the forced line f rides in: f and whatever
+// beneath it in its stack still waits, bottom first.
+func (s State) ForcedTrain(f LineID) []LineID {
+	out := []LineID{f}
+	for b, n := s.Lines[s.Lines[f].Base], 0; b != nil && n <= len(s.Lines); b, n = s.Lines[b.Base], n+1 {
+		if b.State == LineWaiting {
+			out = append([]LineID{b.ID}, out...)
 		}
 	}
 	return out

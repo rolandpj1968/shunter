@@ -95,6 +95,21 @@ type Since struct {
 	// has been with its owner.
 	Lines    map[state.LineID]time.Time `json:"lines,omitempty"`
 	Failures []Failure                  `json:"failures,omitempty"`
+	// Queued is each line's queue time in its ended stints, and Waits the
+	// start of the stint it is in: the time it has waited while the queue
+	// was not paused (docs/queue-as-bag.md §4). A parked line is not
+	// waiting. Nothing but landing or a withdrawal clears it.
+	Queued map[state.LineID]time.Duration `json:"queued,omitempty"`
+	Waits  map[state.LineID]time.Time     `json:"waits,omitempty"`
+}
+
+// QueueTime is the line's queue time at now.
+func (s Since) QueueTime(id state.LineID, now time.Time) time.Duration {
+	d := s.Queued[id]
+	if at, ok := s.Waits[id]; ok && now.After(at) {
+		d += now.Sub(at)
+	}
+	return d
 }
 
 // Failure is a train's deterministic failure, as its record states it.
@@ -349,6 +364,7 @@ func (st *Store) track(before state.State, keyed []Keyed, at time.Time) {
 			delete(st.since.Lines, id)
 		}
 	}
+	st.queueClock(at)
 	for id := range st.s.Parks {
 		if before.Parks[id] == nil {
 			st.since.Parks[id] = at
@@ -357,6 +373,32 @@ func (st *Store) track(before state.State, keyed []Keyed, at time.Time) {
 	for id := range st.since.Parks {
 		if st.s.Parks[id] == nil {
 			delete(st.since.Parks, id)
+		}
+	}
+}
+
+// queueClock starts and stops each line's queue time at an applied record.
+func (st *Store) queueClock(at time.Time) {
+	if st.since.Queued == nil {
+		st.since.Queued = map[state.LineID]time.Duration{}
+	}
+	if st.since.Waits == nil {
+		st.since.Waits = map[state.LineID]time.Time{}
+	}
+	for id, l := range st.s.Lines {
+		on := l.State == state.LineWaiting && !st.s.Paused
+		start, was := st.since.Waits[id]
+		switch {
+		case was && !on:
+			if at.After(start) {
+				st.since.Queued[id] += at.Sub(start)
+			}
+			delete(st.since.Waits, id)
+		case on && !was:
+			st.since.Waits[id] = at
+		}
+		if l.State == state.LineLanded || l.State == state.LineDropped {
+			delete(st.since.Queued, id)
 		}
 	}
 }

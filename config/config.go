@@ -113,6 +113,26 @@ type Queue struct {
 	// Drafts: each train is shown from assembly as a draft pull request,
 	// promoted when its pre-flight passes (PROTOCOL.md §5.4).
 	Drafts bool `toml:"drafts"`
+	// StarveAfterCycles, StarveAfterHours and StarveAlert are the
+	// starvation thresholds (docs/queue-as-bag.md §4, §9.4). Unset, they
+	// take the ruled values; 0 turns each off.
+	StarveAfterCycles *int `toml:"starve_after_cycles"`
+	StarveAfterHours  *int `toml:"starve_after_hours"`
+	StarveAlert       *int `toml:"starve_alert"`
+}
+
+// The ruled starvation thresholds (docs/queue-as-bag.md §9.4).
+const (
+	defaultStarveCycles = 3
+	defaultStarveHours  = 12
+	defaultStarveAlert  = 3
+)
+
+func orDefault(p *int, def int) int {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // Deadlines are every wait's bound; zero takes the daemon's default.
@@ -308,6 +328,11 @@ func (f *File) check() error {
 	if len(f.CI.Checks) == 0 {
 		errs = append(errs, errors.New("ci.checks: name the checks whose success is the verdict"))
 	}
+	for k, p := range map[string]*int{"starve_after_cycles": f.Queue.StarveAfterCycles, "starve_after_hours": f.Queue.StarveAfterHours, "starve_alert": f.Queue.StarveAlert} {
+		if p != nil && *p < 0 {
+			errs = append(errs, fmt.Errorf("queue.%s %d: 0 (off) or more", k, *p))
+		}
+	}
 	if f.Queue.MaxChanges < 0 {
 		errs = append(errs, fmt.Errorf("queue.max_changes %d: 0 (no cap) or more", f.Queue.MaxChanges))
 	}
@@ -331,6 +356,9 @@ func (f *File) Daemon(version string) daemon.Config {
 		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration, Claim: d.Claim.Duration,
 		MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, Drafts: f.Queue.Drafts, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
 		Heartbeats: f.path(f.Owners.Heartbeats), Alive: f.Owners.Alive.Duration, Ownerless: f.Owners.Ownerless.Duration,
+		StarveCycles: orDefault(f.Queue.StarveAfterCycles, defaultStarveCycles),
+		StarveAfter:  time.Duration(orDefault(f.Queue.StarveAfterHours, defaultStarveHours)) * time.Hour,
+		StarveAlert:  orDefault(f.Queue.StarveAlert, defaultStarveAlert),
 	}
 }
 

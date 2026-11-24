@@ -2,6 +2,7 @@ package state
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -84,11 +85,14 @@ func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 	if !to.Spent() {
 		return
 	}
-	l.Priority = nil
+	l.Priority, l.Starving = nil, false
 	if to == LineLanded {
 		l.NoVerdicts, l.Group = 0, 0
 	}
 	if to == LineReturned && c == CauseCharged {
+		// A failure of its own: the line needs its owner's fix, not
+		// priority (docs/queue-as-bag.md §4).
+		l.Count /= 2
 		l.ChargedAt = l.ChargedAt[:0]
 		for _, ch := range l.Changes {
 			l.ChargedAt = append(l.ChargedAt, ch.Head)
@@ -104,6 +108,19 @@ func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 			m.place(d, CauseBaseLanded) // a line queued before needs first
 		case (d.State == LineWaiting || d.State == LineWaitingBase) && to != LineLanded:
 			m.setLine(d, LineReturned, CauseBaseLost, baseLost(l))
+		}
+	}
+}
+
+// bump counts a cycle the line went round and did not cause
+// (docs/queue-as-bag.md §4).
+func bump(l *Line) { l.Count++ }
+
+// bumpRiders counts a cycle for each line riding t but the one named.
+func (m *machine) bumpRiders(t *Train, but LineID) {
+	for _, id := range t.Lines {
+		if l := m.s.Lines[id]; id != but && l.State == LineRiding && l.Train == t.ID {
+			bump(l)
 		}
 	}
 }
@@ -177,6 +194,7 @@ func (m *machine) end(t *Train, to TrainState, c Cause, reason string, dispose f
 	}
 	m.finish(t, to, c, reason, dispose)
 	for _, id := range behind {
+		m.bumpRiders(m.s.Trains[id], "")
 		m.finish(m.s.Trains[id], TrainVoid, CauseVoid, fmt.Sprintf("train %s ahead of it did not land", t.ID), nil)
 	}
 }
@@ -340,6 +358,7 @@ func (m *machine) apply(ev Event) error {
 		if e.Reason == "" {
 			return bad(ErrReason, "a rebase that failed")
 		}
+		l.Stuck = e.Reason
 		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "conflicts with trunk (" + l.Conflict + ") and was not rebased by the runner: " + e.Reason})
 	case Assemble:
 		return m.assemble(e)
@@ -576,6 +595,21 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrState, "line %s is %s", l.ID, l.State)
 		}
 		l.NoVerdicts = 0
+	case Starving:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		switch {
+		case e.Why == "":
+			return bad(ErrReason, "a starving line")
+		case l.State != LineWaiting:
+			return bad(ErrState, "line %s is %s, not waiting", l.ID, l.State)
+		case l.Starving:
+			return bad(ErrState, "line %s is starving already", l.ID)
+		}
+		l.Starving = true
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "starving: it rides alone and first (" + e.Why + ")"})
 	default:
 		return bad(ErrInput, "unknown event %T", ev)
 	}
@@ -632,8 +666,9 @@ func (m *machine) offer(e Offer) error {
 	l := &Line{ID: e.Line, State: from, Seq: m.s.NextSeq, Changes: append([]Change(nil), e.Changes...), Base: e.Base, Alone: e.Alone, Fix: e.Fix, Owner: e.By}
 	if old != nil {
 		// A line's age is its first offer, for good (docs/queue-as-bag.md
-		// §2): coming back costs nothing and gains nothing.
-		l.Seq = old.Seq
+		// §2): coming back costs nothing and gains nothing. Its count
+		// stays too (§4).
+		l.Seq, l.Count = old.Seq, old.Count
 		// The owner-state (§7): a returned line is with its owner until its
 		// owner says it is done, by offering it again. A push is not that:
 		// anyone's push, a rebase, a half-made fix all move the head.
@@ -677,6 +712,7 @@ func (m *machine) hold(e Hold) error {
 		if t.State == TrainLanding {
 			return bad(ErrLanding, "train %s", t.ID)
 		}
+		m.bumpRiders(t, l.ID)
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("line %s was held: %s", l.ID, e.Reason), func(x *Line) bool {
 			if x.ID != l.ID {
 				return false
@@ -749,6 +785,7 @@ func (m *machine) withdraw(e Withdraw) error {
 		if t.State == TrainLanding {
 			return bad(ErrLanding, "train %s", t.ID)
 		}
+		m.bumpRiders(t, l.ID)
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("line %s was withdrawn", l.ID), func(x *Line) bool {
 			if x.ID != l.ID {
 				return false
@@ -823,7 +860,7 @@ func (m *machine) lineChecked(e LineChecked) error {
 	}
 	if e.Pass {
 		l.Checked, l.CheckedOn = append([]Head(nil), e.Heads...), e.Trunk
-		l.Conflict, l.ConflictOn = "", ""
+		l.Conflict, l.ConflictOn, l.Stuck = "", "", ""
 		return nil
 	}
 	if e.Conflict != "" {
@@ -837,7 +874,9 @@ func (m *machine) lineChecked(e LineChecked) error {
 		// not resolve then, it may now).
 		if l.State != LineRiding && (l.Conflict == "" || l.ConflictOn != e.Trunk) {
 			l.Checked, l.CheckedOn = nil, ""
-			l.Conflict, l.ConflictOn = e.Conflict, e.Trunk
+			l.Conflict, l.ConflictOn, l.Stuck = e.Conflict, e.Trunk, ""
+			// Trunk moved against it: a cycle it did not cause (§4).
+			bump(l)
 			m.emit(Effect{Kind: EffRebase, Line: l.ID, Reason: e.Conflict})
 		} else if l.State != LineRiding {
 			l.Conflict = e.Conflict
@@ -872,6 +911,9 @@ func (m *machine) assemble(e Assemble) error {
 	}
 	if len(m.s.Chain) >= m.s.Config.Depth {
 		return bad(ErrChain, "%d trains ride already", len(m.s.Chain))
+	}
+	if err := m.forcedFirst(e.Lines); err != nil {
+		return err
 	}
 	base := m.s.Trunk
 	if n := len(m.s.Chain); n > 0 {
@@ -935,6 +977,33 @@ func (m *machine) assemble(e Assemble) error {
 	return nil
 }
 
+// forcedFirst refuses a train that would pass the forced line
+// (docs/queue-as-bag.md §4): while one is forced, the only train assembled
+// is its own, alone, with the chain empty, or one of prioritised lines.
+func (m *machine) forcedFirst(lines []LineID) error {
+	f := m.s.Forced()
+	if f == "" {
+		return nil
+	}
+	prio := m.s.Prioritised()
+	all := true
+	for _, id := range lines {
+		all = all && prio[id]
+	}
+	if all {
+		return nil
+	}
+	want := m.s.ForcedTrain(f)
+	ok := len(m.s.Chain) == 0 && len(lines) == len(want)
+	for _, id := range want {
+		ok = ok && slices.Contains(lines, id)
+	}
+	if !ok {
+		return bad(ErrJoin, "line %s is starving: it rides alone and first, in a train of %v when the chain is empty", f, want)
+	}
+	return nil
+}
+
 func (t *Train) has(id LineID) bool {
 	for _, x := range t.Lines {
 		if x == id {
@@ -969,6 +1038,8 @@ func (m *machine) leaveOut(e LeaveOut) error {
 		return bad(ErrReason, "line %s left out of train %s", e.Line, t.ID)
 	}
 	t.drop(e.Line)
+	// It did not fit with the lines taken: a cycle it did not cause (§4).
+	bump(m.s.Lines[e.Line])
 	m.setLine(m.s.Lines[e.Line], LineReturned, CauseLeftOut, e.Reason)
 	// A line of the train that needs a line left out is left out too (I3):
 	// the train would hold it without its base.
@@ -978,6 +1049,7 @@ func (m *machine) leaveOut(e LeaveOut) error {
 			d := m.s.Lines[id]
 			if b := m.s.Lines[d.Base]; d.Base != "" && b != nil && (b.State == LineReturned || b.State == LineDropped) {
 				t.drop(id)
+				bump(d)
 				m.setLine(d, LineReturned, CauseLeftOut, fmt.Sprintf("its base %s was left out of train %s", b.ID, t.ID))
 				again = true
 				break
@@ -1080,6 +1152,7 @@ func (m *machine) charge(t *Train, c Cause, blamed []LineID, evidence string) {
 	}
 	m.end(t, TrainFailed, c, evidence, func(l *Line) bool {
 		if !named[l.ID] {
+			bump(l) // another line's failure ended its train (§4)
 			return false
 		}
 		m.setLine(l, LineReturned, CauseCharged, evidence)
@@ -1151,6 +1224,7 @@ func (m *machine) judge(e Judge) error {
 			m.s.Lines[id].Group = g
 		}
 		m.s.NextGroup += 2
+		m.bumpRiders(t, "")
 		m.end(t, TrainFailed, CauseJudged, "split: "+e.Why, nil)
 	case JudgePark:
 		// The failure is not the train's: trunk or a shared fixture is
@@ -1160,6 +1234,7 @@ func (m *machine) judge(e Judge) error {
 				return err
 			}
 		}
+		m.bumpRiders(t, "")
 		m.end(t, TrainFailed, CauseJudged, "park: "+e.Why, nil)
 	case JudgeRerun:
 		if t.Head == "" || t.Judged >= 1 {
@@ -1197,12 +1272,13 @@ func (m *machine) headMoved(e HeadMoved) error {
 			l.Late = e.Head
 			return nil
 		}
-		l.Changes[i].Head, l.NoVerdicts = e.Head, 0
+		l.Changes[i].Head, l.NoVerdicts, l.Stuck = e.Head, 0, ""
 		l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert, l.Claim = nil, "", "", "", false, nil
+		m.bumpRiders(t, l.ID)
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("change %s moved while it rode (I4)", e.Change), nil)
 		return nil
 	}
-	l.Changes[i].Head, l.NoVerdicts = e.Head, 0
+	l.Changes[i].Head, l.NoVerdicts, l.Stuck = e.Head, 0, ""
 	// A push may bring anything: the line is full until the gate has read
 	// its files again.
 	l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert, l.Claim = nil, "", "", "", false, nil

@@ -76,6 +76,15 @@ type Config struct {
 	// an adapter.Drafter; with any other, it does nothing.
 	Drafts bool
 
+	// StarveCycles and StarveAfter are the starvation thresholds
+	// (docs/queue-as-bag.md §4): a waiting line whose count reaches
+	// StarveCycles, or whose queue time reaches StarveAfter, is starving and
+	// rides alone and first. StarveAlert starving lines at once are raised
+	// to the judge (J4). Zero turns each off.
+	StarveCycles int
+	StarveAfter  time.Duration
+	StarveAlert  int
+
 	// MaxLines caps the lines of one train (J4's bounds). Default 8.
 	MaxLines int
 	// MaxChanges caps the changes of one train, every change of every

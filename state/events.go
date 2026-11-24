@@ -310,6 +310,13 @@ type DraftOpened struct {
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).
 type ExpireBudget struct{ Line LineID }
 
+// Starving says the runner found a waiting line past a starvation threshold
+// (docs/queue-as-bag.md §4): its count, or its queue time. Why says which.
+type Starving struct {
+	Line LineID
+	Why  string
+}
+
 func (Offer) event() string           { return "offer" }
 func (GateAccept) event() string      { return "gate-accept" }
 func (GateRefuse) event() string      { return "gate-refuse" }
@@ -347,6 +354,7 @@ func (ClaimExpired) event() string    { return "claim-expired" }
 func (Prioritise) event() string      { return "prioritise" }
 func (PriorityEnded) event() string   { return "priority-ended" }
 func (DraftOpened) event() string     { return "draft-opened" }
+func (Starving) event() string        { return "starving" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }
