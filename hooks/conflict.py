@@ -45,26 +45,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shunterhooks as sh  # noqa: E402
 
 
-def marked(d, attr, value, paths):
-    """The paths whose attribute has the value."""
-    if not paths:
-        return set()
-    out = sh.git(d, "check-attr", "-z", attr, "--", *paths)
-    f = out.split("\0")
-    got = set()
-    for i in range(0, len(f) - 2, 3):
-        if f[i + 2] == value:
-            got.add(f[i])
-    return got
-
-
-def dirty(d):
-    """Paths whose work tree differs from the index, and untracked paths."""
-    mod = sh.git(d, "diff", "--name-only", "-z").split("\0")
-    new = sh.git(d, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
-    return set(x for x in mod if x), set(x for x in new if x)
-
-
 def has_stage(d, path, n):
     return subprocess.run(["git", "cat-file", "-e", ":%d:%s" % (n, path)], cwd=d,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
@@ -78,7 +58,7 @@ def main():
     files = list(doc.get("files") or [])
     if not files:
         sh.answer({"resolved": False, "reason": "no conflicted files were named"})
-    gen = marked(d, attr, value, files)
+    gen = sh.marked(d, attr, value, files)
     other = [f for f in files if f not in gen]
     if other:
         sh.answer({"resolved": False, "reason": "conflict in %s, not marked %s=%s: only generated files are resolved" %
@@ -91,7 +71,7 @@ def main():
             # The train's side has no such file: resolved as deleted, and
             # the command makes it again if the sources still generate it.
             sh.git(d, "rm", "--quiet", "--force", "--", f)
-    _, untracked_before = dirty(d)
+    _, untracked_before = sh.dirty(d)
     cmd = cfg.get("command")
     if not cmd:
         sh.answer({"resolved": False, "reason": "no regenerate command is configured"})
@@ -104,20 +84,10 @@ def main():
     if p.returncode != 0:
         tail = p.stdout.decode("utf-8", "replace").strip()[-600:]
         sh.answer({"resolved": False, "reason": "regenerating failed (exit %d): %s" % (p.returncode, tail)})
-    mod, new = dirty(d)
+    mod, new = sh.dirty(d)
     new -= untracked_before
-    paths = sorted(mod | new)
-    gen_now = marked(d, attr, value, paths) | set(files)
-    undone = []
-    for path in paths:
-        if path in gen_now:
-            sh.git(d, "add", "-A", "--", path)
-            continue
-        undone.append(path)
-        if path in new:
-            sh.git(d, "clean", "-fq", "--", path)
-        else:
-            sh.git(d, "checkout", "--", path)
+    gen_now = sh.marked(d, attr, value, sorted(mod | new)) | set(files)
+    _, undone = sh.keep_only(d, mod, new, gen_now.__contains__)
     if undone:
         sh.log("conflict: the regenerate command changed files that are not generated; undone: %s" % " ".join(undone))
     left = sh.git(d, "diff", "--name-only", "--diff-filter=U")

@@ -114,6 +114,38 @@ def git(cwd, *args, check=True, env=None):
     return p.stdout.strip()
 
 
+def marked(d, attr, value, paths):
+    """The paths whose git attribute attr has the value."""
+    if not paths:
+        return set()
+    f = git(d, "check-attr", "-z", attr, "--", *paths).split("\0")
+    return set(f[i] for i in range(0, len(f) - 2, 3) if f[i + 2] == value)
+
+
+def dirty(d):
+    """Paths whose work tree differs from the index, and untracked paths."""
+    mod = git(d, "diff", "--name-only", "-z").split("\0")
+    new = git(d, "ls-files", "--others", "--exclude-standard", "-z").split("\0")
+    return set(x for x in mod if x), set(x for x in new if x)
+
+
+def keep_only(d, mod, new, keep):
+    """Stages the changed paths (mod, new) for which keep(path) is true and
+    undoes the rest. Returns (staged, undone)."""
+    staged, undone = [], []
+    for path in sorted(mod | new):
+        if keep(path):
+            git(d, "add", "-A", "--", path)
+            staged.append(path)
+        elif path in new:
+            git(d, "clean", "-fq", "--", path)
+            undone.append(path)
+        else:
+            git(d, "checkout", "--", path)
+            undone.append(path)
+    return staged, undone
+
+
 def line_id(line):
     """A line's id, in either spelling Shunter writes (Go's field name for
     the pre-flight's lines, "id" for blame's)."""
