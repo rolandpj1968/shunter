@@ -1,6 +1,6 @@
 # The queue as a bag
 
-*A design note, proposed and not adopted. It answers five pieces of feedback from the queue this protocol grew from: waiting lines are a bag and assembly picks by policy; stacks drain from the bottom; a starving line rides alone; a verdict belongs to the version of the checker that gave it; and a train decided red is cut short and never built on. The model in [`tla/`](../tla/) carries the proposal so that CI checks it. [`PROTOCOL.md`](../PROTOCOL.md) and the daemon are unchanged until the owner rules on §9.*
+*A design note, adopted by the owner's ruling of 24 November (§9). It answers five pieces of feedback from the queue this protocol grew from: waiting lines are a bag and assembly picks by policy; stacks drain from the bottom; a starving line rides alone; a verdict belongs to the version of the checker that gave it; and a train decided red is cut short and never built on. The model in [`tla/`](../tla/) carries the proposal so that CI checks it. [`PROTOCOL.md`](../PROTOCOL.md) and the daemon take it item by item, as §10 lists.*
 
 ## 1. The problem
 
@@ -124,24 +124,24 @@ It doesn't go up for a no-verdict or an infrastructure failure of its own train 
 
 `GreenOnlyByACheck` and `ChargedOnlyAtPresentHead` are restated for versions and void charges. The model leaves out the clock (so the age backstop and a priority's expiry time), caps and shared files (a train is any front of the order), and the depth of a stack beyond its configurations. One checker version stands for every rule that judges.
 
-## 9. For the owner to rule on
+## 9. Ruled
 
-Each has a recommendation; none is built until ruled.
+The owner ruled on 24 November: yes to the five that shape the design (1, 2, 4, 6 and 9), and the other seven take their recommendations. Each question keeps its recommendation and its reasons; the ruling follows it.
 
-1. **What is a line's age?** *Recommended: its first offer, for good.* The alternative restarts age when a charged line is offered again. That punishes the owner for the queue's catch and brings back an edited position. With born fixed, a fixed line returns exactly as old as it is, ahead of nobody older.
-2. **Does a stack sort by its bottom's age (§3, step 3)?** *Recommended: yes.* It is what drains stacks from the bottom. Its cost is that a stack's upper lines pass unrelated lines offered between; ancestry keeps that honest and the count catches any line it delays.
-3. **Halve or clear the count on the line's own failure?** *Recommended: halve.*
-4. **The thresholds.** *Recommended: `starve_after_cycles = 3`, `starve_after_hours = 12`, `starve_alert = 3`.* The case that prompted this had twenty-one cycles in eleven hours; three would have forced it within the first hour or two.
-5. **Should the age backstop count hours, or landings that passed the line?** *Recommended: hours of queue time, as asked, with the clock stopped as in §4.* Landings passed is immune to outages by construction and could be modelled; hours are what an operator reads on the status. Revisit if an outage ever forces lines in numbers.
-6. **Does a forced line stop every other train, or only lines that touch its files?** *Recommended: every train, to begin with.* It is certain, simple and rare. Narrowing it to shared files is a later economy, from data.
-7. **May forced lines ride in a chain, each alone, one behind the other?** *Recommended: not yet.* The strict rule (the chain empty) is the one the model checks. Chaining them costs a discarded train when the first fails.
-8. **Which outranks: a manual priority or the forced line?** *Recommended: the priority.* It is a person's recorded act with an expiry, and a park (§6.4) remains the way to land a fix for trunk ahead of everything.
-9. **Does a change of the blame rules void charges made in trains, as well as the line check's?** *Recommended: yes, as the owner put it: every verdict inferred by an earlier version.* Its cost is that a line charged in a train and not yet fixed rides once more and, if the charge was right, fails once more.
-10. **How fine is a checker's version?** *Recommended: one version per checker, reported by its hook.* One version for the whole scripts directory is simpler and voids everything on any change to any script; it is offered as a setting.
-11. **Is a train at J1 decided red?** *Recommended: yes, until the judge orders a rerun.* Its failure is deterministic and unattributed; the common outcomes all end it.
-12. **Should a train decided red, but not first, be replaced at once?** *Recommended: no.* Its failure may be inherited, so it can't be judged, and replacing it needs a second chain (§10's "speculating on failure"). Keeping its place costs a chain position, not a CI slot.
+1. **What is a line's age?** *Recommended: its first offer, for good.* The alternative restarts age when a charged line is offered again. That punishes the owner for the queue's catch and brings back an edited position. With born fixed, a fixed line returns exactly as old as it is, ahead of nobody older. **Ruled: its first offer, for good.**
+2. **Does a stack sort by its bottom's age (§3, step 3)?** *Recommended: yes.* It is what drains stacks from the bottom. Its cost is that a stack's upper lines pass unrelated lines offered between; ancestry keeps that honest and the count catches any line it delays. **Ruled: yes.**
+3. **Halve or clear the count on the line's own failure?** *Recommended: halve.* **Ruled: halve, as recommended.**
+4. **The thresholds.** *Recommended: `starve_after_cycles = 3`, `starve_after_hours = 12`, `starve_alert = 3`.* The case that prompted this had twenty-one cycles in eleven hours; three would have forced it within the first hour or two. **Ruled: three cycles and twelve hours of queue time; `starve_alert = 3`, as recommended.**
+5. **Should the age backstop count hours, or landings that passed the line?** *Recommended: hours of queue time, as asked, with the clock stopped as in §4.* Landings passed is immune to outages by construction and could be modelled; hours are what an operator reads on the status. Revisit if an outage ever forces lines in numbers. **Ruled: hours of queue time, as recommended.**
+6. **Does a forced line stop every other train, or only lines that touch its files?** *Recommended: every train, to begin with.* It is certain, simple and rare. Narrowing it to shared files is a later economy, from data. **Ruled: every other train.**
+7. **May forced lines ride in a chain, each alone, one behind the other?** *Recommended: not yet.* The strict rule (the chain empty) is the one the model checks. Chaining them costs a discarded train when the first fails. **Ruled: not yet, as recommended.**
+8. **Which outranks: a manual priority or the forced line?** *Recommended: the priority.* It is a person's recorded act with an expiry, and a park (§6.4) remains the way to land a fix for trunk ahead of everything. **Ruled: the priority, as recommended.**
+9. **Does a change of the blame rules void charges made in trains, as well as the line check's?** *Recommended: yes, as the owner put it: every verdict inferred by an earlier version.* Its cost is that a line charged in a train and not yet fixed rides once more and, if the charge was right, fails once more. **Ruled: yes; a change of the blame rules voids charges made in trains too.**
+10. **How fine is a checker's version?** *Recommended: one version per checker, reported by its hook.* One version for the whole scripts directory is simpler and voids everything on any change to any script; it is offered as a setting. **Ruled: one version per checker, as recommended.**
+11. **Is a train at J1 decided red?** *Recommended: yes, until the judge orders a rerun.* Its failure is deterministic and unattributed; the common outcomes all end it. **Ruled: yes, as recommended.**
+12. **Should a train decided red, but not first, be replaced at once?** *Recommended: no.* Its failure may be inherited, so it can't be judged, and replacing it needs a second chain (§10's "speculating on failure"). Keeping its place costs a chain position, not a CI slot. **Ruled: no, as recommended.**
 
-## 10. Changes to the protocol, if adopted
+## 10. Changes to the protocol
 
 - **§5.1:** *waiting* loses "in the order they were offered … takes the place it had"; a spent line offered again keeps its born and its count. L15's guard gains "by the policy of §5.3". A new row: returned → waiting, "charge void", by the rule of I14. *held* and §6.4 lose "to the place it had".
 - **§5.3:** the joining rule becomes §3 above; "nothing is built on a train decided red"; a new part for starving lines.
