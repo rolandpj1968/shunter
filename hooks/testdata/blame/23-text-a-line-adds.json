@@ -1,0 +1,19 @@
+{
+  "config": {
+    "patterns": [
+      {"regex": "ERR\\.[A-Z_.]+: (.{32,})", "kind": "added"}
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "--- FAIL: TestFixtures\n    got ERR.ORDERS.GATE: this account takes no payments in its first week",
+    "lines": [
+      {"id": "A", "changes": [{"ID": "A", "Head": "hA"}], "files": ["orders/gate.go"],
+       "added": "+\treturn refuse(\"this account takes no payments in its first week\")\n"},
+      {"id": "B", "changes": [{"ID": "B", "Head": "hB"}], "files": ["fixtures/shop.go"],
+       "added": "+\tshop := newShop()\n"}
+    ]
+  },
+  "want": {"class": "deterministic", "blamed": ["A"], "evidence_contains": "adds"}
+}

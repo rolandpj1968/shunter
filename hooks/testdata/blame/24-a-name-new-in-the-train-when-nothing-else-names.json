@@ -1,0 +1,19 @@
+{
+  "config": {
+    "patterns": [
+      {"regex": "missing cases in switch of type \\S+: (.*)", "kind": "added", "tokens": "[A-Za-z_][A-Za-z0-9_]{5,}", "fallback": true}
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "lint: kinds.go:12:2: missing cases in switch of type till.LateKind: till.LateTaking",
+    "lines": [
+      {"id": "A", "changes": [{"ID": "A", "Head": "hA"}], "files": ["till/late.go"],
+       "added": "+\tLateTaking LateKind = iota + 4\n"},
+      {"id": "B", "changes": [{"ID": "B", "Head": "hB"}], "files": ["till/other.go"],
+       "added": "+\tfunc other() {}\n"}
+    ]
+  },
+  "want": {"class": "deterministic", "blamed": ["A"], "evidence_contains": "LateTaking"}
+}

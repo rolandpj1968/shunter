@@ -117,9 +117,12 @@ Shared by `blame.py` and `preflight.py` ([`shunterhooks.py`](shunterhooks.py), `
    ```
 
    Shunter gives each line its changes' titles and descriptions, as `text`. If this names some lines, but not every line of several, they are the blame and the rules below aren't asked.
-1. A line is named when it touches a file the failure names, or a file under a prefix it names.
-2. For each directory the failure names: the lines touching one of the failing test files there; else, the lines touching the directory's other files (the code under test); else, the lines touching any of its files. If the failure names no test file, the lines touching any file in the directory.
+1. A line is named when it touches a file the failure names, or a file under a prefix it names; or when its added lines carry text an `added` pattern finds in the failure (a refusal's wording, an attribute a browser test looked for). Its group, or with `"tokens"` each match of that regex in the group, is the text.
+2. For each directory the failure names: the lines touching one of the failing test files there; else, the lines touching the directory's other files (the code under test); else, the lines touching any of its files. If the failure names no test file, the lines touching any file in the directory. With `"subdirs": "below"`, a last tier: if no line touches the directory itself, the lines touching a directory below it (data, wording, golden inputs the code reads).
 3. If that names every line of a train of several: **a file the failure names that only one line touched** names that line alone.
+4. If nothing above names a line, the `added` patterns with `"fallback": true`: a name the failure gives that a line adds (a constant a linter says a switch lacks, a table a registry test lists). With `"new"` (pathspecs, such as `["*.go", ":!gen"]`), only names no such file at the base holds count, so a line that merely uses an old name is not named.
+
+Each line's added lines are its own `added` in the input when given, else read with git as its files are (the blame hook), or from the tips (the pre-flight).
 
 A result naming no line, or every line, is no blame, and J1 splits the train by line. A stack is one line, so it is never split.
 

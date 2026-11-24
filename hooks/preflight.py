@@ -338,8 +338,12 @@ def main():
                 blamed = [lid]
         else:
             try:
-                files = sh.files_of_tips(doc["dir"], doc["base"], order, doc.get("tips") or {})
-                blamed, why = sh.BlameRules(cfg.get("blame")).blame(out, order, files)
+                tips = doc.get("tips") or {}
+                files = sh.files_of_tips(doc["dir"], doc["base"], order, tips)
+                rules = sh.BlameRules(cfg.get("blame"))
+                added = sh.added_of_tips(doc["dir"], doc["base"], order, tips) if rules.wants_added() else None
+                blamed, why = rules.blame(out, order, files, None, added,
+                                          lambda name, specs: sh.absent_at(doc["dir"], doc["base"], name, specs))
                 for w in why:
                     sh.log("pre-flight blame:", w)
                 if blamed:

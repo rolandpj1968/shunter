@@ -1,0 +1,17 @@
+{
+  "config": {
+    "patterns": [
+      {"regex": "^FAIL\\s+example\\.com/mod/(\\S+)\\s", "kind": "dir", "subdirs": "below"}
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "--- FAIL: TestGoldenPage\n    page_test.go:40: rendered wording differs\nFAIL\texample.com/mod/surface/pages\t1.2s",
+    "lines": [
+      {"id": "A", "changes": [{"ID": "A", "Head": "hA"}], "files": ["surface/pages/wording/en.txt"]},
+      {"id": "B", "changes": [{"ID": "B", "Head": "hB"}], "files": ["surface/pages/page.go"]}
+    ]
+  },
+  "want": {"class": "deterministic", "blamed": ["B"]}
+}
