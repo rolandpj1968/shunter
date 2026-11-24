@@ -120,6 +120,7 @@ func TestReplayFixtures(t *testing.T) {
 	wantUnsettled := map[string]state.TrainState{
 		"05-unblamed-one": state.TrainJudging, "07-no-verdict": state.TrainTesting,
 		"08-wrong-head": state.TrainTesting, "11-green-not-landed": state.TrainGreen,
+		"17-draft": state.TrainTesting,
 	}
 	if len(rep.Unsettled) != len(wantUnsettled) {
 		t.Errorf("unsettled: %+v", rep.Unsettled)
@@ -135,13 +136,52 @@ func TestReplayFixtures(t *testing.T) {
 	if src.Ignored["BATCH-NEWWORD"] != 1 {
 		t.Errorf("ignored: %v", src.Ignored)
 	}
-	if rep.Segments != 15 {
+	if len(src.Ignored) != 1 {
+		t.Errorf("ignored: %v", src.Ignored)
+	}
+	if tr := s.Trains["17-draft"]; tr == nil || tr.PR != "917" || tr.Draft {
+		t.Errorf("the draft train: %+v", tr)
+	}
+	if rep.Segments != 16 {
 		t.Errorf("segments: %d", rep.Segments)
 	}
 	var b strings.Builder
 	rep.Write(&b, true)
 	if !strings.Contains(b.String(), "charged with no evidence") {
 		t.Errorf("report:\n%s", b.String())
+	}
+}
+
+// TestDraftFromAssembly replays a real train log cut off after its draft
+// marker: the train is a draft at assembly, before pre-flight has built it.
+func TestDraftFromAssembly(t *testing.T) {
+	b, err := os.ReadFile("testdata/17-draft.out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, _, ok := strings.Cut(string(b), "batch: pre-flight of")
+	if !ok {
+		t.Fatal("the fixture lost its pre-flight line")
+	}
+	lg, err := Parse("draft", strings.NewReader(text+"BATCH-IN 119\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := &Source{Logs: []Log{lg}}
+	opened := 0
+	s, rep := replay.RunObserved(state.New("trunk0", state.Config{}), src, func(_ string, ev state.Event, _ []state.Effect) {
+		if _, is := ev.(state.DraftOpened); is {
+			opened++
+		}
+	})
+	if len(rep.Refused) != 0 || len(src.Ignored) != 0 || opened != 1 {
+		t.Fatalf("refused %+v, ignored %v, drafts %d", rep.Refused, src.Ignored, opened)
+	}
+	if len(rep.Unsettled) != 1 || rep.Unsettled[0].State != state.TrainAssembling {
+		t.Errorf("unsettled: %+v", rep.Unsettled)
+	}
+	if tr := s.Trains["draft"]; tr == nil || tr.PR != "917" || !tr.Draft {
+		t.Errorf("the draft: %+v", tr)
 	}
 }
 

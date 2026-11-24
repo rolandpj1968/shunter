@@ -9,6 +9,7 @@
 //	BATCH-READY <head> <change>...   assembled; pre-flight passed; the train's head
 //	BATCH-BRANCH <name>              the train's branch
 //	BATCH-IN <change>...             the changes in the train
+//	BATCH-DRAFT <pr> <head>          the train's draft, open from assembly
 //	BATCH-OPENED <pr> <head>         the train's pull request is open
 //	BATCH-RERUN                      failed jobs run again, once
 //	BATCH-FLAKY ...                  a test passed only on its retry
@@ -342,6 +343,16 @@ func (src *Source) open(lg Log) bool {
 					}
 				}
 				return append(evs, state.Built{Train: train, Head: state.Head(m.Args[0])})
+			}
+		case "BATCH-DRAFT":
+			if len(m.Args) == 0 {
+				continue
+			}
+			step = func(s state.State) []state.Event {
+				if t := live(s); t == nil || t.State != state.TrainAssembling {
+					return nil // a draft opened after the build is the train's PR, which BATCH-OPENED says
+				}
+				return []state.Event{state.DraftOpened{Train: train, PR: m.Args[0]}}
 			}
 		case "BATCH-OPENED":
 			if len(m.Args) < 2 {
