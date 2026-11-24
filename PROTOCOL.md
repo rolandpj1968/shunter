@@ -490,6 +490,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 
 **0.3, unreleased.**
 
+- **The re-offer's merge test counts what the conflict hook resolves:** `[git] resolvable` names the files (by attribute) whose conflict with trunk the build regenerates, so a returned line whose only conflict is there is offered again.
+
 - **§5.4: a pre-flight may commit to the batch,** only on top of the merged batch and with no merge; the head CI judges and trunk takes is its last commit.
 
 - **Conflicts by kind** (owner's ruling of 24 Nov). A conflict with trunk that the rebase can't resolve sends the line back to its owner, uncharged, and an offer once it merges keeps its age, count and starving (new row L36); the runner offers such a line again itself once it merges (the re-offerer, an optional `adapter.Merger`). A line left out of a batch for a conflict with other lines, or any other leave-out, stays in the bag (L16 now ends in waiting), and the starving rule bounds it.

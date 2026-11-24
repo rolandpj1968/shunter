@@ -64,6 +64,10 @@ type Config struct {
 	Policy bound.Policy
 	// Env is added to git's environment: the committer, say.
 	Env []string
+	// Resolvable marks the files the conflict hook resolves, as
+	// "attribute=value" (e.g. "merge=regenerate"): a conflict only in such
+	// files is no conflict to Merges. The build is still the test.
+	Resolvable []string
 	// StateDir keeps the results of builds by key. Default: in the clone's
 	// git directory.
 	StateDir string
@@ -588,10 +592,43 @@ func (r *Repo) Merges(ctx context.Context, line adapter.BuildLine, trunk state.H
 		if len(files) < 2 {
 			return "a conflict", nil
 		}
-		return strings.Join(files[1:], " "), nil
+		left, err := r.unresolvable(ctx, trunk, files[1:])
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(left, " "), nil
 	default:
 		return "", err
 	}
+}
+
+// unresolvable is the files the conflict hook won't resolve: those that no
+// Resolvable attribute marks, as trunk's .gitattributes says.
+func (r *Repo) unresolvable(ctx context.Context, trunk state.Head, files []string) ([]string, error) {
+	if len(r.cfg.Resolvable) == 0 {
+		return files, nil
+	}
+	ok := map[string]bool{}
+	for _, spec := range r.cfg.Resolvable {
+		attr, value, _ := strings.Cut(spec, "=")
+		out, err := r.git(ctx, append([]string{"check-attr", "-z", "--source", string(trunk), attr, "--"}, files...)...)
+		if err != nil {
+			return nil, err
+		}
+		f := strings.Split(out, "\x00")
+		for i := 0; i+2 < len(f); i += 3 {
+			if f[i+2] == value {
+				ok[f[i]] = true
+			}
+		}
+	}
+	var left []string
+	for _, f := range files {
+		if !ok[f] {
+			left = append(left, f)
+		}
+	}
+	return left, nil
 }
 
 // reset leaves the clone with nothing in progress.
