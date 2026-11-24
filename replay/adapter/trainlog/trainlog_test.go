@@ -80,7 +80,7 @@ func TestReplayFixtures(t *testing.T) {
 	}
 	wantLines := map[state.LineID]state.LineState{
 		"101": state.LineLanded, "102": state.LineLanded,
-		"103": state.LineReturned, "104": state.LineLanded,
+		"103": state.LineWaiting, "104": state.LineLanded, // 103: left out for a conflict, it stays in the bag
 		"105": state.LineLanded, "106": state.LineLanded, "107": state.LineLanded, // 106: charged, fixed, offered again
 		"108":     state.LineWaiting, // charged with no evidence: refused, so not returned
 		"109":     state.LineWaiting,

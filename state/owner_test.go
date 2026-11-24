@@ -82,17 +82,18 @@ func TestAHandOverChangesTheOwner(t *testing.T) {
 	apply(t, next, offerBy("bob", "a", "a2"), GateAccept{Line: "a"})
 }
 
-// A line returned uncharged (left out, its base lost) is anyone's to offer
-// again, as it stands: nothing was found wrong with it.
+// A line returned uncharged (in a conflict with trunk the rebase couldn't
+// resolve, its base lost) is anyone's to offer again, as it stands: nothing
+// was found wrong with it.
 func TestAnUnchargedReturnIsOfferedAgainAsItIs(t *testing.T) {
-	s := apply(t, New("trunk0", Config{Depth: 2}), cat(offerBy("ann", "a", "a1"), GateAccept{Line: "a"}, assemble("t1", "a"),
-		LeaveOut{Train: "t1", Line: "a", Reason: "conflict"})...)
+	s := apply(t, New("trunk0", Config{Depth: 2}), cat(offerBy("ann", "a", "a1"), GateAccept{Line: "a"},
+		LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Conflict: "x.go"}, RebaseFailed{Line: "a", Reason: "a real conflict"})...)
 	apply(t, s, offerBy("bob", "a", "a1"), GateAccept{Line: "a"})
 }
 
 // A line whose check finds it in conflict with trunk is charged nothing,
 // joins no train, and the runner is asked, once, to rebase it (§5.2). A push
-// ends the conflict; a rebase that fails tells the owner.
+// ends the conflict; a rebase that fails sends the line back to its owner.
 func TestALineInConflictWaitsForARebase(t *testing.T) {
 	s := apply(t, New("trunk0", Config{Depth: 2}), cat(ready("a", "b"))...)
 	conflict := LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Conflict: "x.go"}
@@ -116,7 +117,7 @@ func TestALineInConflictWaitsForARebase(t *testing.T) {
 		t.Errorf("the same conflict asked for a second rebase: %v", fx)
 	}
 	_, fx, err = Next(next, RebaseFailed{Line: "a", Reason: "both sides changed x.go"})
-	if err != nil || len(fx) != 1 || fx[0].Kind != EffNotify {
+	if err != nil || len(fx) != 2 || fx[1].Kind != EffNotify || fx[0].To != "returned" {
 		t.Fatalf("a failed rebase: %v %v", fx, err)
 	}
 	if _, _, err := Next(s, RebaseFailed{Line: "b", Reason: "r"}); !errors.Is(err, ErrState) {
