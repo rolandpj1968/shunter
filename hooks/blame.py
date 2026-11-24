@@ -116,6 +116,27 @@ def line_files(cfg, base, doc, order):
     return out
 
 
+def line_added(cfg, base, doc):
+    """Each line's added lines (its "added", or read with git as its files
+    are), and the test of a name new in the train (against trunk_ref; with
+    no git_dir, every name is new)."""
+    gd = sh.config_path(base, cfg.get("git_dir", ""))
+    trunk = cfg.get("trunk_ref", "refs/remotes/origin/main")
+    out = {}
+    for l in doc.get("lines") or []:
+        lid = sh.line_id(l)
+        if "added" in l:
+            out[lid] = l["added"] or ""
+            continue
+        if not gd:
+            raise sh.GitError("line %s carries no added lines and no git_dir is configured" % lid)
+        head = sh.line_changes(l)[-1]["head"]
+        out[lid] = sh.added_between(gd, sh.git(gd, "merge-base", trunk, head), head)
+    if not gd:
+        return out, None
+    return out, lambda name, specs: sh.absent_at(gd, trunk, name, specs)
+
+
 def has_commit(gd, sha):
     return subprocess.run(["git", "cat-file", "-e", sha + "^{commit}"], cwd=gd,
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
@@ -140,7 +161,13 @@ def main():
     if not force and rules.kind(text) == "flaky":
         sh.answer({"class": "flaky", "why": "the failure shows only timing or connection errors"})
     texts = {sh.line_id(l): l.get("text") or "" for l in doc.get("lines") or []}
-    blamed, why = rules.blame(text, order, files, texts)
+    added, is_new = None, None
+    if rules.wants_added():
+        try:
+            added, is_new = line_added(cfg, base, doc)
+        except (sh.GitError, OSError, subprocess.SubprocessError) as e:
+            sh.answer({"class": "no-verdict", "why": "blame could not read the lines' added lines: %s" % e})
+    blamed, why = rules.blame(text, order, files, texts, added, is_new)
     for w in why:
         sh.log("blame:", w)
     ev = (doc.get("evidence") or "a check failed").strip()

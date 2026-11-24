@@ -194,29 +194,43 @@ class BlameRules:
        the directory; else the lines touching the directory's other files
        (the code the test exercises); else the lines touching any file in it.
        If the failure names no test file there, the lines touching any file
-       in it.
+       in it. With "subdirs": "below", if no line touches the directory
+       itself, the lines touching a directory below it.
+       Also, a line whose added lines carry what an "added" pattern finds.
     3. If that names every line of a train of several, the narrower rule:
        a file the failure names that exactly one line touched names that
        line alone.
+    4. If nothing above names a line, the "added" patterns marked
+       "fallback" (with "new", only names the base doesn't hold).
 
     A result that names no line, or every line of several, is no blame:
     the failure goes to J1, whose default splits the train in halves by
     line (bisection by line). A stack is one line, so it is never split.
     """
 
-    KINDS = ("file", "dir", "test", "prefix", "description")
+    KINDS = ("file", "dir", "test", "prefix", "description", "added")
 
     def __init__(self, cfg):
         cfg = cfg or {}
         self.patterns = []
-        self.subdirs = set()
+        self.subdirs = {}
         self.path_of = {}
         self.describes = []
+        self.adds = []
         for p in cfg.get("patterns") or []:
             kind = p.get("kind", "file")
             if kind not in self.KINDS:
                 raise ValueError("blame pattern %r: kind %r: one of %s" % (p.get("regex"), kind, ", ".join(self.KINDS)))
             rx = re.compile(p["regex"], re.M)
+            if kind == "added":
+                # The failure names text (the group, or each "tokens" match
+                # in it); a line whose added lines carry it is named.
+                # "fallback": only when no other rule names a line. "new":
+                # pathspecs at the base; only text absent there counts.
+                tokens = re.compile(p["tokens"]) if p.get("tokens") else None
+                self.adds.append((rx, int(p.get("group", 1 if rx.groups else 0)), tokens,
+                                  bool(p.get("fallback")), p.get("new")))
+                continue
             if kind == "description":
                 # The failure names something ({} in "describes", from the
                 # regex's group); a line whose description matches is named.
@@ -230,7 +244,10 @@ class BlameRules:
             if p.get("path"):
                 self.path_of[rx.pattern] = p["path"]
             if kind == "dir" and p.get("subdirs"):
-                self.subdirs.add(rx.pattern)
+                sub = p["subdirs"]
+                if sub not in (True, "below"):
+                    raise ValueError("blame pattern %r: subdirs %r: true or \"below\"" % (p["regex"], sub))
+                self.subdirs[rx.pattern] = sub
         if cfg.get("default_patterns", True):
             self.patterns.append((re.compile(DEFAULT_FILE, re.M), "file", 1, "", ""))
             self.patterns.append((re.compile(DEFAULT_TEST_REF, re.M), "test", 1, "", ""))
@@ -259,7 +276,7 @@ class BlameRules:
                 if kind == "prefix":
                     prefixes.add(v)
                 elif kind == "dir":
-                    dirs.add((v, rx.pattern in self.subdirs))
+                    dirs.add((v, self.subdirs.get(rx.pattern, False)))
                 elif kind == "test":
                     if self.is_test(v):
                         tests.add(os.path.basename(v))
@@ -312,10 +329,44 @@ class BlameRules:
             return "flaky"
         return "deterministic"
 
-    def blame(self, text, order, files_of, texts_of=None):
+    def wants_added(self):
+        """Whether any rule reads the lines' added lines."""
+        return bool(self.adds)
+
+    def adding(self, text, order, added_of, is_new, fallback):
+        """(line, why) for each line whose added lines carry text an
+        "added" pattern finds in the failure, of the given fallback-ness.
+        is_new(name, pathspecs) says that the base doesn't hold it."""
+        out = []
+        for rx, group, tokens, fb, new in self.adds:
+            if fb != fallback or not added_of:
+                continue
+            names = []
+            for m in rx.finditer(text):
+                v = (m.group(group) or "").strip()
+                for n in (tokens.findall(v) if tokens else [v]):
+                    if n and n not in names:
+                        names.append(n)
+            if new is not None and is_new is not None:
+                names = [n for n in names if is_new(n, new)]
+            for lid in order:
+                body = added_of.get(lid) or ""
+                hit = [n for n in names if n in body]
+                if hit:
+                    out.append((lid, "adds %s, which the failure names%s" %
+                                (", ".join(repr(h) for h in hit[:4]), " (new in the train)" if new is not None else "")))
+        return out
+
+    def blame(self, text, order, files_of, texts_of=None, added_of=None, is_new=None):
         """order is the train's line ids in queue order; files_of maps each
         to the set of files it touches, and texts_of, optionally, to its
-        changes' descriptions. Returns (blamed, why)."""
+        changes' descriptions. added_of, optionally, maps each line to its
+        added lines, and is_new(name, pathspecs) says that the base doesn't
+        hold a name. Returns (blamed, why).
+
+        "added" patterns: a line whose added lines carry what the failure
+        names is named with rule 1; a "fallback" one is asked only when no
+        other rule names a line."""
         if texts_of:
             hit, why = self.described(text, order, texts_of)
             if hit and not (len(order) > 1 and len(hit) == len(order)):
@@ -338,9 +389,9 @@ class BlameRules:
                 hit = sorted(f for f in files_of.get(lid, ()) if f == p or f.startswith(p + "/"))
                 if hit:
                     add(lid, "touches %s, under %s, which the failure names" % (hit[0], p))
-        for d, sub in sorted(dirs):
+        for d, sub in sorted(dirs, key=lambda x: (x[0], str(x[1]))):
             def within(f):
-                return os.path.dirname(f) == d or (sub and f.startswith(d + "/"))
+                return os.path.dirname(f) == d or (sub is True and f.startswith(d + "/"))
 
             def touching(pred):
                 return [lid for lid in order if any(within(f) and pred(f) for f in files_of.get(lid, ()))]
@@ -353,8 +404,18 @@ class BlameRules:
                     (t3, "touches a file of %s" % d)
             else:
                 hit, rule = touching(lambda f: True), "touches a file of %s" % d
+            if not hit and sub == "below":
+                # The last tier: what the directory's code reads from below
+                # it (data, wording, golden inputs).
+                hit = [lid for lid in order if any(f.startswith(d + "/") for f in files_of.get(lid, ()))]
+                rule = "touches a directory below %s, and no line touches %s itself" % (d, d)
             for lid in hit:
                 add(lid, rule)
+        for lid, reason in self.adding(text, order, added_of, is_new, fallback=False):
+            add(lid, reason)
+        if not named:
+            for lid, reason in self.adding(text, order, added_of, is_new, fallback=True):
+                add(lid, reason)
         if len(order) > 1 and len(named) == len(order):
             only = []
             for f in sorted(files):
@@ -375,6 +436,30 @@ def files_between(cwd, a, b):
     """The files that differ between two commits."""
     out = git(cwd, "diff", "--name-only", "--no-renames", a, b)
     return set(x for x in out.splitlines() if x)
+
+
+def added_between(cwd, a, b):
+    """The lines added from one commit to another, each with its "+"."""
+    out = git(cwd, "diff", "-U0", "--no-color", "--no-renames", a, b)
+    return "\n".join(x for x in out.splitlines() if x.startswith("+") and not x.startswith("+++"))
+
+
+def absent_at(cwd, rev, name, pathspecs):
+    """Whether no file at rev that the pathspecs take holds name as a word."""
+    p = subprocess.run(["git", "grep", "-q", "-w", "-F", "-e", name, rev, "--"] + list(pathspecs or []),
+                       cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if p.returncode > 1:
+        raise GitError("git grep %s at %s: exit %d" % (name, rev, p.returncode))
+    return p.returncode == 1
+
+
+def added_of_tips(cwd, base, order, tips):
+    """Each line's added lines in the train: the difference from the tip before."""
+    out, prev = {}, base
+    for lid in order:
+        out[lid] = added_between(cwd, prev, tips[lid])
+        prev = tips[lid]
+    return out
 
 
 def files_of_tips(cwd, base, order, tips):
