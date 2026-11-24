@@ -358,6 +358,10 @@ func (d *Daemon) queue(ctx context.Context, actor string, req Request) Response 
 	defer cancel()
 	info, err := d.ad.Forge.Describe(cctx, ids)
 	if err != nil {
+		if adapter.IsPermanent(err) {
+			// Not found, say: an answer for the producer, not a fault.
+			return errResp(fmt.Errorf("refused: %w", err))
+		}
 		return errResp(fmt.Errorf("reading the changes: %w", err))
 	}
 	if len(info) != len(ids) {
@@ -369,7 +373,25 @@ func (d *Daemon) queue(ctx context.Context, actor string, req Request) Response 
 	if o.Base != "" {
 		msg += ", stacked on line " + string(o.Base)
 	}
-	return d.act(actor, o, msg)
+	// The gate answers the offer before the producer is answered (§5.2):
+	// an intake passes its refusal on, with its reason.
+	_, owed, err := d.st.Apply(actor, o)
+	if err != nil {
+		if !errors.Is(err, store.ErrRefused) {
+			d.fatal = err
+		}
+		return errResp(err)
+	}
+	defer d.drive()
+	if err := d.gateNow(ctx, o.Line, owed); err != nil {
+		return Response{Output: msg + "; the gate could not be read now, and runs again: " + err.Error()}
+	}
+	if l := d.st.State().Lines[o.Line]; l.State == state.LineReturned {
+		return errResp(fmt.Errorf("line %s refused at the gate: %s", o.Line, l.Reason))
+	} else if l.State != state.LineOffered {
+		msg += ", " + l.State.String()
+	}
+	return Response{Output: msg}
 }
 
 // OfferFor is the offer of a line made of the changes described, in stack
@@ -533,19 +555,21 @@ func (d *Daemon) gateNow(ctx context.Context, line state.LineID, owed []store.Ke
 		if k.Kind != state.EffGate || k.Line != line {
 			continue
 		}
-		cctx, cancel := context.WithTimeout(ctx, d.cfg.Call)
+		// The gate effect itself, as the loop would start it: staleness,
+		// tiers and the gate hook included.
+		work, timeout := d.call(d.st.State(), k)
+		cctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		s := d.st.State()
-		events, err := gate(cctx, d.ad.Forge, *s.Lines[line], liveChanges(s, line))
-		if err != nil {
-			return err
+		r := work(cctx)
+		if r.err != nil {
+			return r.err
 		}
-		for i, ev := range events {
+		for i, ev := range r.events {
 			var done []string
 			if i == 0 {
 				done = []string{k.Key}
 			}
-			d.apply("gate", ev, done...)
+			d.apply(r.actor, ev, done...)
 		}
 	}
 	return nil

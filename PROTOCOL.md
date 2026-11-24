@@ -208,7 +208,10 @@ Reading the tables:
 A line is accepted when:
 - its changes are open and from approved producers;
 - each change's base has landed, or is earlier in the same line, or is in another live line (the line's **base**: the line it needs);
-- it isn't already waiting or riding.
+- it isn't already waiting or riding;
+- the repository's own rules don't refuse it: an optional gate hook, asked after the rules above, may refuse it with a reason.
+
+The producer is answered after the gate: `shunt queue` waits for it and passes a refusal on with its reason, so an intake can answer each offer as it is made.
 
 A line whose base is live **waits in the queue** and rides only behind its base (I3, §5.3). Nobody polls. If its base is returned or withdrawn instead, the line returns too, uncharged, with that reason (L24); if it is held or parked then, it returns when it is released or restored.
 
@@ -491,6 +494,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 **0.3, unreleased.**
 
 - **An owner's notice says what it is about:** the state the line went to (none for advice) and the cause, so that delivery acts by kind (the optional `adapter.Teller`; `state` and `cause` in the events file and the notify hook's input).
+
+- **§5.2: the gate answers the offer, and a repository's own rules join it.** `shunt queue` waits for the gate and fails with its reason; a change the forge can't find is a refusal. New optional `[hooks.gate]` (`adapter.Admitter`): `{"refuse": "<reason>"}` or `{}`; no answer refuses nothing. The example intake (`hooks/intake.py`) offers a producers' lines file and writes each answer.
 
 - **The re-offer's merge test counts what the conflict hook resolves:** `[git] resolvable` names the files (by attribute) whose conflict with trunk the build regenerates, so a returned line whose only conflict is there is offered again.
 

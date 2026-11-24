@@ -185,6 +185,9 @@ type Hooks struct {
 	Conflict  Hook `toml:"conflict"`
 	Rebase    Hook `toml:"rebase"`
 	Blame     Hook `toml:"blame"`
+	// Gate is the repository's own rules at the gate (§5.2): it may refuse
+	// an offer, with the reason.
+	Gate Hook `toml:"gate"`
 }
 
 // Hook is one external command.
@@ -442,5 +445,9 @@ func (f *File) Adapters() (adapter.Set, *gitrepo.Repo, error) {
 	if err != nil {
 		return adapter.Set{}, nil, err
 	}
-	return adapter.Set{Forge: gh, CI: gh, Git: g, Notify: github.Landed{Client: gh, Next: n}}, g, nil
+	set := adapter.Set{Forge: gh, CI: gh, Git: g, Notify: github.Landed{Client: gh, Next: n}}
+	if gh := f.hook(f.Hooks.Gate, ""); gh.Configured() {
+		set.Admit = hook.Gate{Hook: gh}
+	}
+	return set, g, nil
 }
