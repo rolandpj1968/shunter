@@ -24,6 +24,7 @@ package shadow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -117,6 +118,51 @@ type Train struct {
 	Verdict bool   // Shunter's lander would find the verdict on the head
 	Kind    string // "agree", or the kind of divergence
 	Note    string
+	// Rule names the Shunter rule a divergence follows from, when it is
+	// one the protocol means (intended); empty when it is unexplained.
+	Rule string
+}
+
+// intended names the rule behind each kind of divergence that Shunter means
+// to make: it applies policy the live queue lacks (docs/cutover-readiness.md,
+// class (a)). Any other kind is unexplained.
+var intended = map[string]string{
+	"unblamed-without-judge": "I6, J1: blame named nobody, so the judge decides, not a rule",
+	"charged-on-no-verdict":  "§5.5: a run with no verdict charges nobody",
+	"timing-charged":         "§5.5, §5.8: a timeout alone is rerun once before it is judged",
+}
+
+// Refusal is an event of the history the machine refused.
+type Refusal struct {
+	Segment, Event, Kind, Message string
+	// Rule names the Shunter rule that refuses it, when the live queue's
+	// act is one Shunter means not to take; empty when unexplained.
+	Rule string
+}
+
+// refusalRule is the rule behind a refusal Shunter means: the live queue
+// acted where Shunter's protocol would not. Empty for any other.
+func refusalRule(err error) string {
+	msg := err.Error()
+	switch {
+	case errors.Is(err, state.ErrEvidence):
+		return "I6: a charge needs evidence; blame named nobody"
+	case !errors.Is(err, state.ErrJoin):
+		return ""
+	case strings.Contains(msg, "another half of a split"):
+		return "J1: the halves of a split ride apart until they land"
+	case strings.Contains(msg, "rides alone"):
+		return "§5.2: a line marked alone rides alone"
+	case strings.Contains(msg, "is starving"):
+		return "§5.2: a starving line rides alone and first"
+	case strings.Contains(msg, "(I3)"):
+		return "I3: a line rides only behind its base"
+	case strings.Contains(msg, "conflicts with trunk"):
+		return "§5.2: a line in conflict with trunk does not ride"
+	case strings.Contains(msg, "no current green line check"):
+		return "I10: checked before assembled"
+	}
+	return ""
 }
 
 // Line is one line of the live queue's, through Shunter's gate now.
@@ -142,18 +188,21 @@ type Report struct {
 	Logs       int
 	Unrecorded int // logs with no protocol line naming a change
 	Trains     []Train
-	// Agree and Diverge count the trains, Diverge by kind.
-	Agree   int
-	Diverge map[string]int
+	// Agree, Intended and Diverge count the trains: Intended the
+	// divergences a rule of Shunter's explains, Diverge the rest, by kind.
+	Agree    int
+	Intended map[string]int
+	Diverge  map[string]int
 	// Effects counts what the machine asked for, replaying the history: what
 	// Shunter would have performed, by kind.
 	Effects map[string]int
 	// Effect is each of them, in order, for the effects log.
 	Effect []Effect
-	// Refused counts the history's events the machine refused, by event
-	// and kind of refusal.
-	Refused map[string]int
-	Ignored map[string]int
+	// Refused counts the history's events the machine refused and no rule
+	// explains, by event and kind of refusal; Refusals is every refusal.
+	Refused  map[string]int
+	Refusals []Refusal
+	Ignored  map[string]int
 	// Now: the waiting lines through the gate, and the trains Shunter would
 	// assemble from them.
 	Waiting  []Line
@@ -280,7 +329,7 @@ func compare(old, sh string, verdict, landed bool, blamedByHook bool) (kind, not
 
 // Run is a shadow run.
 func Run(ctx context.Context, in Input) Report {
-	rep := Report{Diverge: map[string]int{}, Effects: map[string]int{}, Refused: map[string]int{}}
+	rep := Report{Diverge: map[string]int{}, Intended: map[string]int{}, Effects: map[string]int{}, Refused: map[string]int{}}
 	rep.Logs = len(in.Logs)
 	read := &cached{r: in.Read, describe: map[state.ChangeID]adapter.ChangeInfo{}}
 
@@ -317,7 +366,11 @@ func Run(ctx context.Context, in Input) Report {
 		}
 	})
 	for _, f := range rr.Refused {
-		rep.Refused[f.Event+": "+replay.Kind(f.Err)]++
+		r := Refusal{Segment: f.Segment, Event: f.Event, Kind: replay.Kind(f.Err), Message: f.Err.Error(), Rule: refusalRule(f.Err)}
+		rep.Refusals = append(rep.Refusals, r)
+		if r.Rule == "" {
+			rep.Refused[r.Event+": "+r.Kind]++
+		}
 	}
 	rep.Unrecorded, rep.Ignored = len(src.Unrecorded), src.Ignored
 
@@ -346,9 +399,13 @@ func Run(ctx context.Context, in Input) Report {
 				tr.Note = strings.TrimSpace(tr.Note + " passed on its rerun")
 			}
 		}
-		if tr.Kind == "agree" {
+		tr.Rule = intended[tr.Kind]
+		switch {
+		case tr.Kind == "agree":
 			rep.Agree++
-		} else {
+		case tr.Rule != "":
+			rep.Intended[tr.Kind]++
+		default:
 			rep.Diverge[tr.Kind]++
 		}
 		rep.Trains = append(rep.Trains, tr)
@@ -731,9 +788,16 @@ func short(h state.Head) string {
 // Write prints the report for a human.
 func (rep Report) Write(w io.Writer, verbose bool) {
 	fmt.Fprintf(w, "History: %d train logs (%d name no change); %d trains opened a pull request.\n", rep.Logs, rep.Unrecorded, len(rep.Trains))
-	fmt.Fprintf(w, "  CI read by Shunter on each train's head: %d agree, %d diverge.\n", rep.Agree, len(rep.Trains)-rep.Agree)
+	nIntended := 0
+	for _, n := range rep.Intended {
+		nIntended += n
+	}
+	fmt.Fprintf(w, "  CI read by Shunter on each train's head: %d agree, %d diverge, %d intended (a rule of Shunter's).\n", rep.Agree, len(rep.Trains)-rep.Agree-nIntended, nIntended)
 	for _, k := range sortedKeys(rep.Diverge) {
 		fmt.Fprintf(w, "    %-26s %d\n", k, rep.Diverge[k])
+	}
+	for _, k := range sortedKeys(rep.Intended) {
+		fmt.Fprintf(w, "    intended: %-16s %d  %s\n", k, rep.Intended[k], intended[k])
 	}
 	landed, verified := 0, 0
 	for _, t := range rep.Trains {
@@ -746,8 +810,12 @@ func (rep Report) Write(w io.Writer, verbose bool) {
 	}
 	fmt.Fprintf(w, "  Landings: %d; Shunter's lander finds the verdict on the head for %d of them.\n", landed, verified)
 	for _, t := range rep.Trains {
-		if t.Kind != "agree" || verbose {
-			fmt.Fprintf(w, "    %-28s pr %-6s head %s  live queue: %-17s Shunter: %-10s %s  %s\n", t.Log, t.PR, short(t.Head), t.Old, t.Shunter, t.Kind, t.Note)
+		if (t.Kind != "agree" && t.Rule == "") || verbose {
+			note := t.Note
+			if t.Rule != "" {
+				note = "intended, " + t.Rule + ": " + note
+			}
+			fmt.Fprintf(w, "    %-28s pr %-6s head %s  live queue: %-17s Shunter: %-10s %s  %s\n", t.Log, t.PR, short(t.Head), t.Old, t.Shunter, t.Kind, note)
 		}
 	}
 	fmt.Fprintf(w, "  Effects Shunter would have performed, replaying the history:\n")
@@ -758,6 +826,27 @@ func (rep Report) Write(w io.Writer, verbose bool) {
 		fmt.Fprintf(w, "  Events of the history the machine refuses:\n")
 		for _, k := range sortedKeys(rep.Refused) {
 			fmt.Fprintf(w, "    %-60s %d\n", k, rep.Refused[k])
+		}
+	}
+	byRule := map[string]int{}
+	for _, r := range rep.Refusals {
+		if r.Rule == "" {
+			fmt.Fprintf(w, "    refused in %s: %s\n", r.Segment, r.Message)
+		} else {
+			byRule[r.Event+": "+r.Rule]++
+		}
+	}
+	if len(byRule) > 0 {
+		fmt.Fprintf(w, "  Events the machine refuses by a rule of Shunter's (intended):\n")
+		for _, k := range sortedKeys(byRule) {
+			fmt.Fprintf(w, "    %-60s %d\n", k, byRule[k])
+		}
+		if verbose {
+			for _, r := range rep.Refusals {
+				if r.Rule != "" {
+					fmt.Fprintf(w, "    refused in %s: %s\n", r.Segment, r.Message)
+				}
+			}
 		}
 	}
 	if len(rep.Ignored) > 0 {
