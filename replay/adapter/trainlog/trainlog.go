@@ -117,6 +117,7 @@ type Source struct {
 	name  string
 	stack map[string][]string // a change to the stack some log puts it in
 	here  map[string]bool     // the changes the current log names
+	fixes int                 // charged lines offered again, for their new heads
 	steps []func(state.State) []state.Event
 	queue []state.Event
 }
@@ -273,8 +274,19 @@ func (src *Source) open(lg Log) bool {
 					evs = append(evs, state.Withdraw{Line: other.ID})
 				}
 			}
+			// The log has no heads. A charged line rides again only once its
+			// owner has pushed a fix (I11), so a charged line the log puts
+			// in a train is taken to have new heads.
+			fixed := l != nil && l.State == state.LineReturned && l.Cause == state.CauseCharged
+			if fixed {
+				src.fixes++
+			}
 			for _, c := range strings.Split(string(id), "+") {
-				o.Changes = append(o.Changes, state.Change{ID: state.ChangeID(c), Head: state.Head("head-of-" + c)})
+				h := state.Head("head-of-" + c)
+				if fixed {
+					h = state.Head(fmt.Sprintf("head-of-%s-fixed-%d", c, src.fixes))
+				}
+				o.Changes = append(o.Changes, state.Change{ID: state.ChangeID(c), Head: h})
 			}
 			switch {
 			case l == nil || l.State == state.LineReturned || l.State == state.LineDropped:

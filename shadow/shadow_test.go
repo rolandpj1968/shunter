@@ -83,7 +83,7 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 	r := &reader{
 		reports: map[state.Head]adapter.Outcome{
 			h('1'): adapter.Passed, h('2'): adapter.Passed, h('4'): adapter.Passed, h('a'): adapter.Passed,
-			h('b'): adapter.Passed, h('f'): adapter.Passed, h('8'): adapter.Passed,
+			h('b'): adapter.Passed, h('f'): adapter.Passed, h('8'): adapter.Passed, h('9'): adapter.Passed,
 			h('c'): adapter.Failed, // landed by the live queue, and the checks on its head failed
 			h('3'): adapter.Failed, h('6'): adapter.Failed,
 			h('5'): adapter.NoVerdict, // the live queue charged a cancelled run
@@ -119,6 +119,7 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 		"908": "green-on-another-head",
 		"914": "agree",
 		"915": "agree",
+		"918": "agree",
 		"917": "agree", // opened as a draft at assembly; its checks are pending
 	}
 	for pr, k := range want {
