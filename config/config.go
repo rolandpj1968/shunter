@@ -110,6 +110,9 @@ type Queue struct {
 	// RequireCheck: no line joins a train without a current green line
 	// check (PROTOCOL.md §5.4, I10).
 	RequireCheck bool `toml:"require_check"`
+	// Drafts: each train is shown from assembly as a draft pull request,
+	// promoted when its pre-flight passes (PROTOCOL.md §5.4).
+	Drafts bool `toml:"drafts"`
 }
 
 // Deadlines are every wait's bound; zero takes the daemon's default.
@@ -326,7 +329,7 @@ func (f *File) Daemon(version string) daemon.Config {
 		Tick:    d.Tick.Duration, Poll: d.Poll.Duration, Call: d.Call.Duration,
 		Build: d.Build.Duration, Open: d.Open.Duration, CI: d.CI.Duration, Push: d.Push.Duration,
 		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration, Claim: d.Claim.Duration,
-		MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
+		MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, Drafts: f.Queue.Drafts, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
 		Heartbeats: f.path(f.Owners.Heartbeats), Alive: f.Owners.Alive.Duration, Ownerless: f.Owners.Ownerless.Duration,
 	}
 }

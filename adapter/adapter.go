@@ -163,6 +163,24 @@ type BuildRequest struct {
 	Train state.TrainID
 	Base  state.Head
 	Lines []BuildLine
+	// Merged, when set, is called once the lines are merged and the
+	// train's branch is at head, before pre-flight runs: from then on the
+	// train can be shown (Drafter). A builder may call it again for a
+	// round that left lines out.
+	Merged func(head state.Head) `json:"-"`
+}
+
+// Drafter is a forge that shows a train from assembly (§5.4): a draft pull
+// request is opened once its lines are merged, while its cheap tier runs,
+// and is promoted, which starts CI, only when pre-flight passes. A draft
+// starts no CI. Optional: without it, the pull request opens at promotion.
+type Drafter interface {
+	// OpenDraft opens the train's pull request on head, against base, as
+	// a draft. The same key returns the same pull request.
+	OpenDraft(ctx context.Context, key string, train state.TrainID, head, base state.Head) (pr string, err error)
+	// Promote marks the draft ready and starts its CI on head, the built
+	// head, to which the train's branch has moved.
+	Promote(ctx context.Context, key string, train state.TrainID, pr string, head state.Head) error
 }
 
 // BuildResult is the builder's answer. Lines left out (a conflict, a cap)

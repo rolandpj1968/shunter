@@ -72,10 +72,13 @@ type result struct {
 	prune bool // a prune's result
 	// restack is a re-read of stacked and stale lines' needs (§5.2).
 	restack bool
-	events  []state.Event
-	actor   string
-	note    string
-	err     error
+	// side is events an effect brings while it still runs (a train's
+	// draft, opened mid-build); they complete nothing.
+	side   bool
+	events []state.Event
+	actor  string
+	note   string
+	err    error
 }
 
 // New returns a daemon over an open store. It owns the store from here.

@@ -428,6 +428,17 @@ func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[stat
 	if !r.cfg.Preflight.Configured() {
 		return res, head, false, nil
 	}
+	if req.Merged != nil {
+		// The train is shown from here, while pre-flight runs: its branch
+		// must be at the merged head first.
+		r.net.Lock()
+		_, err = r.netgit(ctx, "push", "--quiet", "--no-verify", "--force", r.cfg.Remote, head+":refs/heads/"+r.Branch(req.Train))
+		r.net.Unlock()
+		if err != nil {
+			return res, "", false, err
+		}
+		req.Merged(state.Head(head))
+	}
 	in := PreflightInput{Dir: r.cfg.Dir, Train: req.Train, Base: req.Base, Head: state.Head(head), Lines: kept, Tips: tips}
 	var a PreflightAnswer
 	hr, err := r.cfg.Preflight.Run(ctx, in, &a)

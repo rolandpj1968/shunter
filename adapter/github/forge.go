@@ -22,6 +22,8 @@ type ghRef struct {
 
 type ghPull struct {
 	Number int    `json:"number"`
+	NodeID string `json:"node_id"`
+	Draft  bool   `json:"draft"`
 	State  string `json:"state"`
 	Merged bool   `json:"merged"`
 	// MergedAt is set on a merged pull request in a list, where "merged"
@@ -267,14 +269,70 @@ func keyMark(key string) string { return "<!-- shunter-key: " + key + " -->" }
 // train this one is built on. An open pull request from the train's branch
 // on the same head is the same pull request; so is one carrying the key.
 func (c *Client) OpenPR(ctx context.Context, key string, t state.TrainID, head, base state.Head) (string, error) {
+	return c.open(ctx, key, t, head, base, false)
+}
+
+// OpenDraft implements adapter.Drafter: the pull request opens as a draft,
+// and no CI is dispatched. A workflow run by pull request events should
+// skip drafts and run when one is marked ready.
+func (c *Client) OpenDraft(ctx context.Context, key string, t state.TrainID, head, base state.Head) (string, error) {
+	return c.open(ctx, key, t, head, base, true)
+}
+
+// Promote implements adapter.Drafter: the draft is marked ready for review,
+// and CI is dispatched on head.
+func (c *Client) Promote(ctx context.Context, key string, t state.TrainID, pr string, head state.Head) error {
+	n, err := strconv.Atoi(pr)
+	if err != nil {
+		return adapter.Permanent(fmt.Errorf("train %s: pull request %q", t, pr))
+	}
+	p, err := c.pull(ctx, n)
+	if err != nil {
+		return err
+	}
+	if p.State != "open" {
+		return adapter.Permanent(fmt.Errorf("train %s: pull request %d is %s", t, n, p.State))
+	}
+	if state.Head(p.Head.SHA) != head {
+		return fmt.Errorf("train %s: pull request %d is at %s, not yet at the built head %s", t, n, p.Head.SHA, head)
+	}
+	if p.Draft {
+		in := map[string]any{
+			"query":     "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { isDraft } } }",
+			"variables": map[string]string{"id": p.NodeID},
+		}
+		var out struct {
+			Errors []struct {
+				Message string `json:"message"`
+			} `json:"errors"`
+		}
+		if err := c.do(ctx, http.MethodPost, "/graphql", in, &out); err != nil {
+			return err
+		}
+		if len(out.Errors) > 0 {
+			return fmt.Errorf("train %s: marking pull request %d ready: %s", t, n, out.Errors[0].Message)
+		}
+	}
+	return c.dispatch(ctx, c.Branch(t), head)
+}
+
+// open opens the train's pull request, a draft or not. A draft is the
+// same pull request whatever head its branch has moved to.
+func (c *Client) open(ctx context.Context, key string, t state.TrainID, head, base state.Head, draft bool) (string, error) {
 	branch := c.Branch(t)
+	start := func() error {
+		if draft {
+			return nil
+		}
+		return c.dispatch(ctx, branch, head)
+	}
 	open, err := c.pullsFrom(ctx, branch, "open")
 	if err != nil {
 		return "", err
 	}
 	for _, p := range open {
-		if state.Head(p.Head.SHA) == head || strings.Contains(p.Body, keyMark(key)) {
-			return strconv.Itoa(p.Number), c.dispatch(ctx, branch, head)
+		if state.Head(p.Head.SHA) == head || strings.Contains(p.Body, keyMark(key)) || (draft && p.Draft) {
+			return strconv.Itoa(p.Number), start()
 		}
 		return "", adapter.Permanent(fmt.Errorf("train %s: pull request %d is open on %s, not on %s", t, p.Number, p.Head.SHA, head))
 	}
@@ -293,7 +351,7 @@ func (c *Client) OpenPR(ctx context.Context, key string, t state.TrainID, head, 
 		return "", err
 	}
 	body := fmt.Sprintf("A merge train, assembled by Shunter. It lands when CI passes on exactly this head.\n\nTrain `%s`, head `%s`, built on `%s`.\n\n%s\n", t, head, base, keyMark(key))
-	in := map[string]any{"title": fmt.Sprintf("Merge train %s", t), "head": branch, "base": baseBranch, "body": body}
+	in := map[string]any{"title": fmt.Sprintf("Merge train %s", t), "head": branch, "base": baseBranch, "body": body, "draft": draft}
 	var p ghPull
 	if err := c.do(ctx, http.MethodPost, c.repo("/pulls"), in, &p); err != nil {
 		if isStatus(err, http.StatusUnprocessableEntity) {
@@ -301,7 +359,7 @@ func (c *Client) OpenPR(ctx context.Context, key string, t state.TrainID, head, 
 			if again, lerr := c.pullsFrom(ctx, branch, "open"); lerr == nil {
 				for _, q := range again {
 					if state.Head(q.Head.SHA) == head {
-						return strconv.Itoa(q.Number), c.dispatch(ctx, branch, head)
+						return strconv.Itoa(q.Number), start()
 					}
 				}
 			}
@@ -311,7 +369,7 @@ func (c *Client) OpenPR(ctx context.Context, key string, t state.TrainID, head, 
 	if p.Number == 0 {
 		return "", fmt.Errorf("train %s: the forge opened no pull request number", t)
 	}
-	return strconv.Itoa(p.Number), c.dispatch(ctx, branch, head)
+	return strconv.Itoa(p.Number), start()
 }
 
 // baseBranch names the branch whose tip is base: trunk, or a train's.

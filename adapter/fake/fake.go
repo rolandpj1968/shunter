@@ -58,6 +58,7 @@ type World struct {
 	verdict map[state.TrainID]state.Head   // what the forge shows passed (the truth)
 	report  map[state.TrainID]adapter.Report
 	reruns  map[state.TrainID]int
+	drafts  map[state.TrainID]string // train -> its draft, not yet promoted
 	cancels map[state.TrainID]int
 	nextPR  int
 
@@ -103,7 +104,7 @@ func New(trunk state.Head) *World {
 		trunk: trunk, changes: map[state.ChangeID]*Change{},
 		builds: map[string]adapter.BuildResult{}, prs: map[string]string{}, open: map[state.TrainID]string{},
 		heads: map[state.TrainID]state.Head{}, verdict: map[state.TrainID]state.Head{}, report: map[state.TrainID]adapter.Report{},
-		reruns: map[state.TrainID]int{}, cancels: map[state.TrainID]int{}, nextPR: 100,
+		reruns: map[state.TrainID]int{}, drafts: map[state.TrainID]string{}, cancels: map[state.TrainID]int{}, nextPR: 100,
 		Rebases: map[state.LineID]adapter.RebaseResult{},
 		Calls:   map[string]int{}, Acts: map[string]int{}, blocks: map[string]chan struct{}{}, waiters: map[chan struct{}]int{},
 	}
@@ -299,6 +300,7 @@ func (w *World) ClosePR(ctx context.Context, key string, t state.TrainID, reason
 	defer w.mu.Unlock()
 	if _, ok := w.open[t]; ok {
 		delete(w.open, t)
+		delete(w.drafts, t)
 		w.Acts["close-pr"]++
 	}
 	return nil
@@ -411,6 +413,13 @@ func (w *World) Build(ctx context.Context, key string, req adapter.BuildRequest)
 	}
 	hook := w.BuildHook
 	w.mu.Unlock()
+	if req.Merged != nil {
+		req.Merged(mergeHead(req, nil))
+	}
+	// Pre-flight runs from here; Block("preflight") holds it.
+	if err := w.enter(ctx, "preflight"); err != nil {
+		return adapter.BuildResult{}, err
+	}
 	var r adapter.BuildResult
 	if hook != nil {
 		var err error
@@ -419,23 +428,76 @@ func (w *World) Build(ctx context.Context, key string, req adapter.BuildRequest)
 		}
 	}
 	if r.Head == "" && !r.PreflightFailed {
-		var parts []string
-		for _, l := range req.Lines {
-			if _, out := r.LeftOut[l.ID]; out {
-				continue
-			}
-			for _, c := range l.Changes {
-				parts = append(parts, string(c.ID)+"@"+string(c.Head))
-			}
-		}
-		sort.Strings(parts)
-		r.Head = state.Head(fmt.Sprintf("%s+%s", req.Base, strings.Join(parts, ",")))
+		r.Head = mergeHead(req, r.LeftOut)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.builds[key] = r
 	w.Acts["build"]++
 	return r, nil
+}
+
+// mergeHead is the head of the train's lines merged on its base, without
+// the lines left out.
+func mergeHead(req adapter.BuildRequest, out map[state.LineID]string) state.Head {
+	var parts []string
+	for _, l := range req.Lines {
+		if _, left := out[l.ID]; left {
+			continue
+		}
+		for _, c := range l.Changes {
+			parts = append(parts, string(c.ID)+"@"+string(c.Head))
+		}
+	}
+	sort.Strings(parts)
+	return state.Head(fmt.Sprintf("%s+%s", req.Base, strings.Join(parts, ",")))
+}
+
+// OpenDraft implements adapter.Drafter: a draft starts no CI.
+func (w *World) OpenDraft(ctx context.Context, key string, t state.TrainID, head, base state.Head) (string, error) {
+	if err := w.enter(ctx, "open-draft"); err != nil {
+		return "", err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if pr, ok := w.prs[key]; ok {
+		return pr, nil
+	}
+	w.nextPR++
+	pr := fmt.Sprint(w.nextPR)
+	w.prs[key], w.open[t], w.drafts[t] = pr, pr, pr
+	w.Acts["open-draft"]++
+	return pr, nil
+}
+
+// Promote implements adapter.Drafter: the draft is marked ready and its CI
+// starts on head.
+func (w *World) Promote(ctx context.Context, key string, t state.TrainID, pr string, head state.Head) error {
+	if err := w.enter(ctx, "promote"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.open[t] != pr {
+		return adapter.Permanent(fmt.Errorf("train %s: pull request %s is not open", t, pr))
+	}
+	if _, ok := w.drafts[t]; !ok {
+		return nil // promoted already
+	}
+	delete(w.drafts, t)
+	w.heads[t] = head
+	w.report[t] = adapter.Report{Outcome: adapter.Pending, Head: head}
+	w.Acts["promote"]++
+	return nil
+}
+
+// Draft returns the train's open pull request and whether it is still a
+// draft.
+func (w *World) Draft(t state.TrainID) (pr string, draft bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_, draft = w.drafts[t]
+	return w.open[t], draft
 }
 
 // Push implements adapter.Git: fast-forward only, and idempotent.

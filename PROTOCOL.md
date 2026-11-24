@@ -237,6 +237,8 @@ There are three tiers of checking, and a fourth the runner may put between the f
 | **2. Batch pre-flight** | the assembled batch, on the runner, before CI is dispatched | Did *combining* these changes break something cheap to detect? |
 | **3. CI** | the batch, in full | Is this exact state safe to land? |
 
+**A batch is visible from assembly, and promoted after its cheap tier.** Where the forge can show a draft, the batch's pull request opens as a draft as soon as its lines are merged, while pre-flight runs; a draft starts no CI. When pre-flight passes, the runner **promotes** it: marks it ready, which starts the one CI run. A failed pre-flight comments its evidence on the draft and closes it. So a batch has a visible "assembled, cheap tier running" state before "expensive tier running", and promotion, the step between them, is the runner's act. Without drafts (`[queue] drafts`), the pull request opens at promotion.
+
 **A stack top's tier-1 check counts for the changes below it.** Tier 1 keeps the pass rate up; it isn't what makes trunk safe, since every train is tested in full (tier 3, I1). A change that can't pass without the change above it should be in one line with it (P1).
 
 **Tier 1 tests the change merged with trunk, not the change on its own base.** A change that passes on a stale base and fails once merged is the commonest cheap failure there is: an import trunk dropped, a registry entry trunk now demands, a quality ratchet trunk has moved. Draft 0.2 said "on its own base", and the queue this protocol grew from paid for it: in one five-day sample, two thirds of all batch failures were deterministic checks of one change, each of which failed on that change merged with trunk and on nothing else.
@@ -478,6 +480,7 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 
 **0.3, unreleased.**
 
+- **§5.4: a batch is visible from assembly, and promoted after its cheap tier.** New event `draft-opened`, the optional `adapter.Drafter` of a forge (`OpenDraft`, `Promote`), `BuildRequest.Merged`, and `[queue] drafts`.
 - **§5.1, §5.3 and I15: the queue is a bag.** Waiting lines have no place; assembly takes them by policy: a manual priority first, then by the age of each stack's bottom. A line keeps its age when it comes back or is offered again. New events `prioritise` and `priority-ended`, command `priority`. Adopted in [the queue as a bag](docs/queue-as-bag.md).
 - **§7: an owner entry names a live owner.** A line that waits on an owner with no fresh heartbeat has no owner, and is raised after `ownerless` (1h). New `[owners]` in the configuration: `heartbeats`, `alive`, `ownerless`.
 - **§5.4: a line check is claimed, in the store,** with a lease, keyed by the heads and the trunk. New events `check-claimed` and `claim-expired`, command `claim`, deadline `claim` (30m). The model's fault `ClaimExpired` gives up a check in flight.
