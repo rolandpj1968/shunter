@@ -646,3 +646,34 @@ func TestRebaseAsksTheHook(t *testing.T) {
 		t.Fatalf("a hook that answered nothing: %+v %v", res, err)
 	}
 }
+
+// TestMergesTestsWithoutTouchingTheClone: the re-offerer's test of a merge
+// onto trunk names the files in conflict, or none, and leaves the work tree
+// as it was.
+func TestMergesTestsWithoutTouchingTheClone(t *testing.T) {
+	w := newWorld(t, Config{})
+	h1 := w.change("1", "main", map[string]string{"a.txt": "a1\nONE\na3\n"})
+	h3 := w.change("3", "main", map[string]string{"three.txt": "3\n"})
+	w.change("t", "main", map[string]string{"a.txt": "a1\nTRUNK\na3\n"})
+	run(t, w.dev, "push", "--quiet", "origin", "HEAD:main")
+	trunk := w.trunk()
+	before := run(t, w.repo.cfg.Dir, "rev-parse", "HEAD")
+
+	conflict, err := w.repo.Merges(ctx, line("1", ch("1", h1)), trunk)
+	if err != nil || conflict != "a.txt" {
+		t.Fatalf("a real conflict: %q %v", conflict, err)
+	}
+	if conflict, err := w.repo.Merges(ctx, line("3", ch("3", h3)), trunk); err != nil || conflict != "" {
+		t.Fatalf("a clean merge: %q %v", conflict, err)
+	}
+	h1b := w.change("1", "main", map[string]string{"a.txt": "a1\nTRUNK\na3\n", "one.txt": "1\n"})
+	if conflict, err := w.repo.Merges(ctx, line("1", ch("1", h1b)), trunk); err != nil || conflict != "" {
+		t.Fatalf("resolved by its owner: %q %v", conflict, err)
+	}
+	if after := run(t, w.repo.cfg.Dir, "rev-parse", "HEAD"); after != before {
+		t.Fatalf("the clone moved: %s to %s", before, after)
+	}
+	if st := run(t, w.repo.cfg.Dir, "status", "--porcelain"); st != "" {
+		t.Fatalf("the work tree changed: %s", st)
+	}
+}

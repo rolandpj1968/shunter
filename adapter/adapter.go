@@ -258,6 +258,16 @@ type RebaseResult struct {
 	Conflict string
 }
 
+// Merger tests whether a line merges onto trunk with no person: the
+// re-offerer asks it before it offers again a line sent back uncharged, for a
+// conflict with trunk or with its base lost (docs/queue-as-bag.md §4).
+// Optional: without it, such a line comes back only by an offer.
+type Merger interface {
+	// Merges answers the files in conflict when the line's heads are
+	// merged onto trunk, or "" when they merge cleanly. It changes nothing.
+	Merges(ctx context.Context, line BuildLine, trunk state.Head) (conflict string, err error)
+}
+
 // Notifier tells people.
 type Notifier interface {
 	// Owner tells a line's owner what became of it.

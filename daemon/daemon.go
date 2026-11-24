@@ -37,15 +37,20 @@ type Daemon struct {
 	quit    chan struct{}
 	wg      sync.WaitGroup
 
-	jobs        map[string]*job // effect key -> the call in flight
-	retry       map[string]retry
-	polls       map[state.TrainID]bool
-	polled      map[state.TrainID]time.Time
-	pollErrs    map[state.TrainID]int
-	alerted     map[string]bool
+	jobs     map[string]*job // effect key -> the call in flight
+	retry    map[string]retry
+	polls    map[state.TrainID]bool
+	polled   map[state.TrainID]time.Time
+	pollErrs map[state.TrainID]int
+	alerted  map[string]bool
+	// mergeTried is the heads and trunk each line sent back uncharged was
+	// last found in conflict at: the merge isn't tested again until one moves.
+	mergeTried  map[state.LineID]string
 	pruning     bool      // a prune of ended trains' branches is in flight
 	restacking  bool      // a re-read of stacked lines' needs is in flight
 	restackedAt time.Time // when one was started last
+	reoffering  bool      // a look at the lines sent back uncharged is in flight
+	reofferedAt time.Time // when one was started last
 	pruneFailed bool      // the last prune failed: the next waits a minute
 	pruned      string    // the live trains at the last prune that succeeded
 	prunedAt    time.Time // when it was tried last
@@ -70,6 +75,8 @@ type result struct {
 	key   string // the effect, or "" for a CI poll
 	poll  state.TrainID
 	prune bool // a prune's result
+	// reoffer is a look at the lines sent back uncharged.
+	reoffer *reoffered
 	// restack is a re-read of stacked and stale lines' needs (§5.2).
 	restack bool
 	// side is events an effect brings while it still runs (a train's
@@ -91,6 +98,7 @@ func New(st *store.Store, ad adapter.Set, cfg Config, logger *log.Logger) *Daemo
 		in: make(chan func()), results: make(chan result), quit: make(chan struct{}),
 		jobs: map[string]*job{}, retry: map[string]retry{}, polls: map[state.TrainID]bool{},
 		polled: map[state.TrainID]time.Time{}, pollErrs: map[state.TrainID]int{}, alerted: map[string]bool{},
+		mergeTried: map[state.LineID]string{},
 	}
 }
 
@@ -178,7 +186,7 @@ func (d *Daemon) Busy(ctx context.Context) (inflight int, due bool, err error) {
 	err = d.do(ctx, func() {
 		d.drive()
 		inflight, due = len(d.jobs)+len(d.polls), d.due()
-		if d.pruning {
+		if d.pruning || d.reoffering {
 			inflight++
 		}
 	})

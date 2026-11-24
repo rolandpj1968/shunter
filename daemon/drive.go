@@ -189,6 +189,7 @@ func (d *Daemon) tick() {
 	d.starving(now)
 	d.reviews(now, s)
 	d.restack(now, d.st.State())
+	d.reoffer(now, d.st.State())
 	d.versions()
 	rerunning := map[state.TrainID]bool{}
 	for _, k := range d.st.Pending() {
