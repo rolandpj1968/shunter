@@ -184,6 +184,15 @@ timeout = "5m"
 command = ["./hooks/blame"]
 timeout = "2m"
 
+[hooks.gate]
+# Optional: the repository's own rules at the gate (§5.2), asked after
+# Shunter's own (open, approved, not queued twice, its base).
+# In: {"line","changes":[{"id","head","base"}],"alone","trunk"}
+# Out: {"refuse":"<reason the producer is told>"}, or {} to let it in.
+# No answer refuses nothing.
+command = ["./hooks/gate"]
+timeout = "1m"
+
 [notify]
 # Every notice to an owner or the judge, one JSON line each. Default:
 # <store>/events.jsonl.

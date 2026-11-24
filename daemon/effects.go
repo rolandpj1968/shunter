@@ -80,8 +80,21 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 		live := liveChanges(s, l.ID)
 		n := needsOf(s, &l)
 		anc, _ := a.Git.(adapter.Ancestry)
+		trunk, lg := s.Trunk, d.log
 		return func(ctx context.Context) result {
 			events, info, err := gateInfo(ctx, a.Forge, l, live)
+			if err == nil && a.Admit != nil && accepted(events) {
+				o := adapter.Offered{Line: l.ID, Alone: l.Alone, Trunk: trunk}
+				for _, c := range info {
+					o.Changes = append(o.Changes, adapter.OfferedChange{ID: c.ID, Head: c.Head, Base: c.Base})
+				}
+				switch why, aerr := a.Admit.Admit(ctx, o); {
+				case aerr != nil:
+					lg.Printf("gate hook: no answer for line %s, so it refuses nothing: %v", l.ID, aerr)
+				case why != "":
+					events[len(events)-1] = state.GateRefuse{Line: l.ID, Reason: why}
+				}
+			}
 			if err == nil && anc != nil && accepted(events) {
 				// The gate reads the need twice (§5.2): a line whose
 				// declared base and ancestry disagree is taken, stale.

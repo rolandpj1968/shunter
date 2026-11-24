@@ -301,10 +301,36 @@ type Versioner interface {
 	Versions() map[string]string
 }
 
+// Admitter is a repository's own rules at the gate (§5.2), asked after the
+// gate's own checks pass: it may refuse an offer, with the reason its
+// producer is told. An error is no answer, and refuses nothing.
+type Admitter interface {
+	Admit(ctx context.Context, o Offered) (refuse string, err error)
+}
+
+// Offered is a line at the gate: its changes as the forge describes them,
+// in stack order, and trunk.
+type Offered struct {
+	Line    state.LineID    `json:"line"`
+	Changes []OfferedChange `json:"changes"`
+	Alone   bool            `json:"alone"`
+	Trunk   state.Head      `json:"trunk"`
+}
+
+// OfferedChange is one change of a line at the gate.
+type OfferedChange struct {
+	ID   state.ChangeID `json:"id"`
+	Head state.Head     `json:"head"`
+	// Base is the change it is stacked on, or empty on trunk.
+	Base state.ChangeID `json:"base,omitempty"`
+}
+
 // Set is every adapter the daemon needs.
 type Set struct {
 	Forge  Forge
 	CI     CI
 	Git    Git
 	Notify Notifier
+	// Admit is optional.
+	Admit Admitter
 }

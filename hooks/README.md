@@ -1,6 +1,6 @@
 # Example hooks
 
-A repository's own rules stay the repository's: how its pre-flight runs, which conflicts it can resolve, and how a failure is blamed. Shunter calls them as **hooks**, commands in any language that read one JSON document on stdin and answer one on stdout ([`adapter/hook`](../adapter/hook)). This directory holds four generic ones, in Python with the standard library only, each configured by a JSON file and tested with synthetic fixtures ([`hooks_test.go`](hooks_test.go), [`testdata/`](testdata)).
+A repository's own rules stay the repository's: how its pre-flight runs, which conflicts it can resolve, and how a failure is blamed. Shunter calls them as **hooks**, commands in any language that read one JSON document on stdin and answer one on stdout ([`adapter/hook`](../adapter/hook)). This directory holds four generic ones, and a line-check worker and an intake that call Shunter, in Python with the standard library only, each configured by a JSON file and tested with synthetic fixtures ([`hooks_test.go`](hooks_test.go), [`testdata/`](testdata)).
 
 | Hook | Shunter calls it | It does |
 |---|---|---|
@@ -156,6 +156,12 @@ Every notice an owner or the judge is sent reaches the events file first; this h
 - **Infra is no verdict.** The claim ends at once instead of at its lease's end, nothing is recorded of the line, the judge is told, and the line is not given to a worker asking for any line for `[deadlines] unanswered` (10m). A trunk that fails by itself is infra too.
 - **The version** is `version`, or a hash of `command` and `version_files`. A worker whose version isn't the queue's declares its own (`shunt checker line-check V`), which stops every older green counting; `"declare": false` makes it stop instead.
 - **`timeout` under `lease`**, or a slow check's claim is given to another worker. A verdict that comes after its lease on the same heads still counts.
+
+## The intake, and the gate hook
+
+[`intake.py`](intake.py), like the worker, calls Shunter. It reads a producers' lines file, one row `<name> <change>... [alone]` each, and offers each name once (`shunt queue ... [--alone]`) as the producer the name's `owner` pattern gives, so that producer owns the line. `shunt queue` answers after the gate, and the intake writes `<answers>/<name>.done`: `QUEUED <changes>`, or `REFUSED` and the gate's reason. A daemon that is down, or a forge that can't be read, is no answer: the row is offered on the next run. The script's docstring lists its configuration.
+
+The gate's own rules are §5.2's. A repository's other intake rules (a label that says the change is still being fixed, a naming rule for a kind of file, a freeze) go in **`[hooks.gate]`**, asked after Shunter's own: it reads `{"line", "changes": [{"id", "head", "base"}], "alone", "trunk"}` and answers `{"refuse": "<reason>"}` or `{}`. Move the old gate's refusals into it with their reasons unchanged, so producers read the same answers. A gate hook that gives no answer refuses nothing; write it to refuse explicitly when what it must read can't be read.
 
 ## Writing your own
 

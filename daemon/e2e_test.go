@@ -52,6 +52,8 @@ type rig struct {
 	drafts bool
 	// config sets the rest of the daemon's configuration.
 	config func(*daemon.Config)
+	// admit is the gate hook, if any.
+	admit adapter.Admitter
 }
 
 func newRig(t *testing.T) *rig { return newRigWith(t, 0, tier.Rules{}) }
@@ -91,7 +93,9 @@ func (r *rig) start() {
 	if r.config != nil {
 		r.config(&cfg)
 	}
-	r.d = daemon.New(st, r.w.Set(), cfg, nil)
+	set := r.w.Set()
+	set.Admit = r.admit
+	r.d = daemon.New(st, set, cfg, nil)
 	ctx, cancel := context.WithCancel(r.ctx)
 	r.cancel, r.done = cancel, make(chan error, 1)
 	go func() { r.done <- r.d.Run(ctx) }()
@@ -652,7 +656,10 @@ func TestGateRefusesAndStacksWait(t *testing.T) {
 	r.open("a", "x")
 	r.w.Open("b", "b-1", "a") // b is stacked on a
 	r.w.Change("x", func(c *fake.Change) { c.Approved = false })
-	r.queue("x")
+	// The producer is answered with the gate's refusal and its reason.
+	if e := r.execErr(daemon.Request{Cmd: "queue", Args: []string{"x"}}); e != "line x refused at the gate: change x is not from an approved producer" {
+		t.Fatalf("queue x: %q", e)
+	}
 	r.wantLine("x", state.LineReturned)
 	r.queue("a")
 	r.queue("b")
