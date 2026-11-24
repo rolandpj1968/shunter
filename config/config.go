@@ -89,6 +89,8 @@ type Git struct {
 	ChangeRef    string   `toml:"change_ref"`
 	Strategy     string   `toml:"strategy"`
 	Env          []string `toml:"env"`
+	// Resolvable: files the conflict hook resolves, as "attribute=value".
+	Resolvable []string `toml:"resolvable"`
 	// TrunkLock is the trunk push lock every pusher holds (docs/cutover.md).
 	TrunkLock        string   `toml:"trunk_lock"`
 	TrunkLockWait    Duration `toml:"trunk_lock_wait"`
@@ -427,7 +429,7 @@ func (f *File) Adapters() (adapter.Set, *gitrepo.Repo, error) {
 	}
 	g, err := gitrepo.New(gitrepo.Config{
 		Dir: f.Git.Dir, Remote: f.Git.Remote, Trunk: f.Repo.Trunk, BranchPrefix: f.Git.BranchPrefix,
-		ChangeRef: f.Git.ChangeRef, Strategy: f.Git.Strategy, Env: f.Git.Env, Policy: f.policy(),
+		ChangeRef: f.Git.ChangeRef, Strategy: f.Git.Strategy, Env: f.Git.Env, Resolvable: f.Git.Resolvable, Policy: f.policy(),
 		Preflight: f.hook(f.Hooks.Preflight, f.Git.Dir), Conflict: f.hook(f.Hooks.Conflict, f.Git.Dir), Rebase: f.hook(f.Hooks.Rebase, f.Git.Dir),
 		TrunkLock: f.Git.TrunkLock, TrunkLockWait: f.Git.TrunkLockWait.Duration, TrunkLockMaxHold: f.Git.TrunkLockMaxHold.Duration,
 	})

@@ -48,6 +48,18 @@ change_ref = "refs/pull/{id}/head"
 strategy = "rebase"
 # Added to git's environment: the committer of rebased commits.
 env = ["GIT_COMMITTER_NAME=Shunter", "GIT_COMMITTER_EMAIL=shunter@example.com"]
+# The repository's merge drivers (.gitattributes merge=<name>) are git
+# configuration, given here too: they apply to a build by either strategy and
+# to the re-offer's merge test. Without one, git merges that file as text.
+# A generated file's driver is false, so that it always surfaces as a
+# conflict for [hooks.conflict] to regenerate:
+#   env = [..., "GIT_CONFIG_COUNT=2",
+#          "GIT_CONFIG_KEY_0=merge.regenerate.driver", "GIT_CONFIG_VALUE_0=false",
+#          "GIT_CONFIG_KEY_1=merge.keys.driver", "GIT_CONFIG_VALUE_1=/path/to/driver %O %A %B"]
+# Files the conflict hook resolves, as attribute=value: a conflict with trunk
+# only in such files doesn't keep a returned line from being offered again.
+# Needs git 2.40 or later.
+resolvable = ["merge=regenerate"]
 # The trunk push lock: a file every pusher of trunk holds with flock(2) to
 # push, Shunter and any other (a legacy queue during a cut-over, a person's
 # hotfix). A holder that dies frees it. One held past trunk_lock_max_hold,

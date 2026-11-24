@@ -80,7 +80,9 @@ Every conflicted file must be marked, or the line is left out with the files nam
 env = ["GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=merge.regenerate.driver", "GIT_CONFIG_VALUE_0=false"]
 ```
 
-Generated files can also be stale only in combination, with nothing conflicting. That is a pre-flight step: regenerate, then fail if the tree changed.
+Other merge drivers (a message catalogue merged key by key, a file of unique lines merged as a set) are set the same way, each `GIT_CONFIG_KEY_n=merge.<name>.driver` with its command: they apply to a build by either strategy, and to the re-offer's merge test. Set `[git] resolvable = ["merge=regenerate"]` too, so that a line sent back for a conflict with trunk only in generated files is offered again: the conflict hook resolves those at the build.
+
+Generated files can also be stale only in combination, with nothing conflicting. That is a pre-flight step that regenerates and commits (`"commit"`, above).
 
 ### blame
 
