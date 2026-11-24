@@ -17,7 +17,10 @@ import (
 type daemonRig struct {
 	bin, store, sock string
 	srv              *exec.Cmd
-	log              *bytes.Buffer
+	// exited closes when the daemon has exited and been reaped: a stop
+	// command that waits for its pid must not wait on a zombie.
+	exited chan struct{}
+	log    *bytes.Buffer
 }
 
 func serveFake(t *testing.T, dir string, open ...string) *daemonRig {
@@ -31,6 +34,8 @@ func serveFake(t *testing.T, dir string, open ...string) *daemonRig {
 	if err := r.srv.Start(); err != nil {
 		t.Fatal(err)
 	}
+	r.exited = make(chan struct{})
+	go func() { _ = r.srv.Wait(); close(r.exited) }()
 	t.Cleanup(r.stop)
 	for i := 0; ; i++ {
 		if c, err := net.Dial("unix", r.sock); err == nil {
@@ -45,10 +50,8 @@ func serveFake(t *testing.T, dir string, open ...string) *daemonRig {
 }
 
 func (r *daemonRig) stop() {
-	if r.srv.ProcessState == nil {
-		_ = r.srv.Process.Signal(os.Interrupt)
-		_ = r.srv.Wait()
-	}
+	_ = r.srv.Process.Signal(os.Interrupt)
+	<-r.exited
 }
 
 func (r *daemonRig) shunt(t *testing.T, args ...string) string {
