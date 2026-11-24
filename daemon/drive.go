@@ -556,8 +556,14 @@ func (d *Daemon) starving(now time.Time) {
 			continue
 		}
 		starving = append(starving, string(id))
-		if l.Stuck != "" {
-			d.alert(fmt.Sprintf("stuck:%s:%s", id, l.Conflict), fmt.Sprintf("line %s is starving and stuck: it conflicts with trunk (%s) and the runner could not rebase it (%s); it needs a person, or a hand-over", id, l.Conflict, l.Stuck))
+	}
+	// A starving line the rebase couldn't resolve went back to its owner
+	// (L36): the judge hears of it at once, in case the owner is gone.
+	for _, id := range slices.Sorted(maps.Keys(s.Lines)) {
+		l := s.Lines[id]
+		starving := l.Starving || (d.cfg.StarveCycles > 0 && l.Count >= d.cfg.StarveCycles)
+		if starving && l.State == state.LineReturned && l.Cause == state.CauseConflict {
+			d.alert(fmt.Sprintf("stuck:%s:%s", id, l.Conflict), fmt.Sprintf("line %s is starving and stuck: it conflicts with trunk (%s) and the runner could not rebase it (%s); it is back with its owner, or needs a hand-over", id, l.Conflict, l.Stuck))
 		}
 	}
 	if d.cfg.StarveAlert > 0 && len(starving) >= d.cfg.StarveAlert {

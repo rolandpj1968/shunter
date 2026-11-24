@@ -94,6 +94,7 @@ const (
 	CauseLanded     Cause = "landed"
 	CauseBaseLanded Cause = "base-landed"
 	CauseBaseLost   Cause = "base-lost"
+	CauseConflict   Cause = "conflict"
 
 	CauseAssemble Cause = "assemble"
 	CauseBuilt    Cause = "built"

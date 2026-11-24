@@ -69,7 +69,7 @@ func buildTable() []Row {
 		lr(LineParked, LineWaiting, CauseRestore, "restore", "the park exists; no other park covers the line", "the runner, when the condition holds; or the judge's restore", "a condition the runner can test: stays parked, and the judge is alerted at the deadline; any other: restored at the deadline, with an alert"),
 
 		lr(LineWaiting, LineRiding, CauseJoin, "assemble", "not held, not parked, not stale; a current green line check, where the queue requires one (I10); alone if it must be; one split group per train; its base has landed, rides in an earlier train, or is earlier in this train (I3)", "the runner's joining rule (§5.3)", "stays waiting"),
-		lr(LineRiding, LineReturned, CauseLeftOut, "leave-out", "the train is assembling; a reason is given", "the assembly rules (conflict, caps, its base left out), or a pre-flight hook's leave-out (§5.4)", "refused without a reason"),
+		lr(LineRiding, LineWaiting, CauseLeftOut, "leave-out", "the train is assembling; a reason is given", "the assembly rules (a conflict with another line, caps, its base left out), or a pre-flight hook's leave-out (§5.4): it stays in the bag at its age and counts the cycle", "refused without a reason"),
 		lr(LineRiding, LineReturned, CauseCharged, "preflight-failed, ci-failed, judge (charge)", "evidence names the line (I6)", "a blame rule (§5.6), or J1", "never charged without evidence"),
 		lr(LineRiding, LineReturned, CauseAbort, "abort (return)", gLive, "the judge (§5.9)", "requeue"),
 		lr(LineRiding, LineWaiting, CauseRequeue, "any end of its train that is not a landing", "the gate passes it", oGate, dRequeue),
@@ -94,6 +94,7 @@ func buildTable() []Row {
 		lr(LineWaiting, LineReturned, CauseCharged, "line-checked (fail)", "the verdict is on the line's present heads; the failing check passes on trunk alone (I6)", "the line check (§5.4)", "never charged without evidence"),
 		lr(LineReturned, LineWaiting, CauseChargeVoid, "checker-changed", "charged by a checker since replaced (I14)", oRunner, "the charge stands"),
 		lr(LineReturned, LineParked, CauseChargeVoid, "checker-changed", "charged by a checker since replaced (I14); a park covers it", oRunner, "the charge stands"),
+		lr(LineWaiting, LineReturned, CauseConflict, "rebase-failed", "it is in conflict with trunk, and the runner could not rebase it (§5.2)", "rule: only a person resolves it", "returned uncharged; offered again once it merges, at its first offer's age"),
 
 		// A train.
 		tr(TrainNone, TrainAssembling, CauseAssemble, "assemble", "not paused; the chain is shorter than D; the train ahead has a head", "the runner (§5.3)", "no train"),

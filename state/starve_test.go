@@ -89,8 +89,9 @@ func TestAStarvingLineRidesAloneAndFirst(t *testing.T) {
 	}
 }
 
-// A line the runner can't rebase is not forced: it needs a person, and the
-// queue moves meanwhile. A push ends that.
+// A line the runner can't rebase is not forced: it needs a person, so it
+// goes back to its owner, and the queue moves meanwhile. Offered again, it
+// is forced again.
 func TestAStuckLineIsNotForced(t *testing.T) {
 	s := apply(t, New("trunk0", Config{Depth: 2}), cat(ready("a", "b"),
 		LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Conflict: "x.go"},
@@ -102,8 +103,8 @@ func TestAStuckLineIsNotForced(t *testing.T) {
 		t.Fatalf("a stuck line lost its count or its starving: %+v", s.Lines["a"])
 	}
 	apply(t, s, assemble("t1", "b"))
-	s = apply(t, s, HeadMoved{Line: "a", Change: "a", Head: "a2"})
+	s = apply(t, s, Offer{Line: "a", Changes: []Change{{ID: "a", Head: "a2"}}}, GateAccept{Line: "a"})
 	if f := s.Forced(); f != "a" {
-		t.Fatalf("after the push, forced %q", f)
+		t.Fatalf("offered again, forced %q", f)
 	}
 }

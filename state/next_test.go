@@ -232,9 +232,13 @@ var transitions = []tcase{
 	// Riding.
 	{name: "join", setup: ready("a", "b"), ev: assemble("t1", "a", "b"), lines: lineWant{"a": LineRiding, "b": LineRiding}, trains: trainWant{"t1": TrainAssembling}},
 	{name: "left out", setup: cat(ready("a", "b"), assemble("t1", "a", "b")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x"},
-		lines: lineWant{"a": LineReturned, "b": LineRiding}, trains: trainWant{"t1": TrainAssembling}, fx: []EffectKind{EffNotify}},
+		lines: lineWant{"a": LineWaiting, "b": LineRiding}, trains: trainWant{"t1": TrainAssembling}, check: func(t *testing.T, s State) {
+			if l := s.Lines["a"]; l.Count != 1 || l.Cause != CauseLeftOut {
+				t.Errorf("left out: count %d, cause %s", l.Count, l.Cause)
+			}
+		}},
 	{name: "every line left out", setup: cat(ready("a"), assemble("t1", "a")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x"},
-		lines: lineWant{"a": LineReturned}, trains: trainWant{"t1": TrainEmpty}},
+		lines: lineWant{"a": LineWaiting}, trains: trainWant{"t1": TrainEmpty}},
 	{name: "pre-flight blames one", setup: cat(ready("a", "b"), assemble("t1", "a", "b")), ev: PreflightFailed{Train: "t1", Blamed: ids("a"), Evidence: "lint at a line a added"},
 		lines: lineWant{"a": LineReturned, "b": LineWaiting}, trains: trainWant{"t1": TrainFailed}},
 	{name: "pre-flight blames none", setup: cat(ready("a", "b"), assemble("t1", "a", "b")), ev: PreflightFailed{Train: "t1"},
@@ -398,7 +402,7 @@ var transitions = []tcase{
 	{name: "the line behind a blamed one is blamed alone", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, testing_("t1", "a", "b")),
 		ev: CIFailed{Train: "t1", Blamed: ids("b"), Evidence: "e"}, lines: lineWant{"a": LineWaiting, "b": LineReturned}, trains: trainWant{"t1": TrainFailed}},
 	{name: "base left out: the line behind it is left out too", setup: cat(ready("a", "c"), stacked("b", "a"), GateAccept{Line: "b"}, stacked("d", "b"), GateAccept{Line: "d"}, assemble("t1", "a", "b", "c", "d")),
-		ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x"}, lines: lineWant{"a": LineReturned, "b": LineReturned, "c": LineRiding, "d": LineReturned}, trains: trainWant{"t1": TrainAssembling}},
+		ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x"}, lines: lineWant{"a": LineWaiting, "b": LineWaiting, "c": LineRiding, "d": LineWaiting}, trains: trainWant{"t1": TrainAssembling}},
 	{name: "base held while riding: the line behind it waits", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}, testing_("t1", "a", "b")),
 		ev: Hold{Line: "a", Reason: "r"}, lines: lineWant{"a": LineHeld, "b": LineWaiting}, trains: trainWant{"t1": TrainVoid}},
 	{name: "a co-requires group is charged whole", setup: cat(Offer{Line: "g", Changes: []Change{{ID: "g1", Head: "h1"}, {ID: "g2", Head: "h2"}}}, GateAccept{Line: "g"}, ready("c"), testing_("t1", "g", "c")),
@@ -409,6 +413,8 @@ var transitions = []tcase{
 				t.Errorf("still stale: %q", s.Lines["b"].Stale)
 			}
 		}},
+	{name: "a trunk conflict the rebase can't resolve goes back", setup: cat(ready("a"), LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk1", Conflict: "x.go"}),
+		ev: RebaseFailed{Line: "a", Reason: "both sides changed x.go"}, lines: lineWant{"a": LineReturned}, fx: []EffectKind{EffNotify}},
 	{name: "stale: the owner is told", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: Stale{Line: "b", Reason: "rebase onto a"}, lines: lineWant{"b": LineWaiting}, fx: []EffectKind{EffNotify}},
 	{name: "base lands: a retired line behind it queues", setup: cat(ready("a"), legacy("b", "a"), landing("t1", "a")), ev: PushOK{Train: "t1"}, lines: lineWant{"a": LineLanded, "b": LineWaiting}},
 	{name: "base lands under a park: a retired line behind it parks", setup: cat(allPark, fix("f"), GateAccept{Line: "f"}, legacy("b", "f"), landing("t1", "f")), ev: PushOK{Train: "t1"}, lines: lineWant{"f": LineLanded, "b": LineParked}},

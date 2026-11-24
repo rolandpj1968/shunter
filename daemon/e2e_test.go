@@ -1272,8 +1272,8 @@ func TestARecordedFlakeThatFailsTwiceChargesNobody(t *testing.T) {
 // TestALineInConflictIsRebasedByTheRunner: a line whose check finds that it
 // does not merge onto trunk is rebased by the runner where that needs no
 // person (§5.2): the new head is recorded, and the line rides once it is
-// checked again. A conflict that needs a person goes to the line's owner,
-// uncharged, and the line stays out of trains until a push.
+// checked again. A conflict that needs a person sends the line back to its owner,
+// uncharged (L36), until it is offered again.
 func TestALineInConflictIsRebasedByTheRunner(t *testing.T) {
 	r := newRig(t)
 	r.open("a", "b")
@@ -1288,7 +1288,7 @@ func TestALineInConflictIsRebasedByTheRunner(t *testing.T) {
 	if a.Changes[0].Head != "a-2" || a.Conflict != "" {
 		t.Fatalf("line a was not rebased: head %s, conflict %q", a.Changes[0].Head, a.Conflict)
 	}
-	if b.Conflict == "" || b.State != state.LineWaiting || b.Cause == state.CauseCharged {
+	if b.Conflict == "" || b.State != state.LineReturned || b.Cause != state.CauseConflict {
 		t.Fatalf("line b: conflict %q, %s (%s)", b.Conflict, b.State, b.Cause)
 	}
 	if n := r.w.Count("rebase", true); n != 2 {
@@ -1433,10 +1433,10 @@ func TestTheRunnerRebasesOnlyALineInConflict(t *testing.T) {
 			t.Fatalf("line %s's head moved to %s with no push and no conflict", id, h)
 		}
 	}
-	// A conflict the hook cannot resolve: asked once, the head stays.
+	// A conflict the hook cannot resolve: asked once, the head stays, and
+	// the line goes back to its owner (L36).
 	r.exec(daemon.Request{Cmd: "checked", Args: []string{"conf", "T0", "conf-1"}, Action: "conflict", Reason: "x.go"})
 	r.tick(time.Second)
-	r.exec(daemon.Request{Cmd: "checked", Args: []string{"conf", "T0", "conf-1"}, Action: "conflict", Reason: "x.go"})
 	r.tick(time.Hour)
 	if n := r.w.Count("rebase", false); n != 1 {
 		t.Fatalf("%d rebases for one conflict of one head with one trunk, want 1", n)
@@ -1451,8 +1451,12 @@ func TestTheRunnerRebasesOnlyALineInConflict(t *testing.T) {
 	if !told {
 		t.Fatal("the owner was not told of a conflict the runner could not rebase")
 	}
-	// The same heads against a trunk that has moved: asked again, and this
-	// time the hook can do it.
+	if l := r.state().Lines["conf"]; l.State != state.LineReturned || l.Cause != state.CauseConflict {
+		t.Fatalf("line conf after a failed rebase: %s (%s)", l.State, l.Cause)
+	}
+	// Offered again as it stands, the same heads against a trunk that has
+	// moved: asked again, and this time the hook can do it.
+	r.queue("conf")
 	r.w.Rebases["conf"] = adapter.RebaseResult{Heads: map[state.ChangeID]state.Head{"conf": "conf-2"}}
 	r.exec(daemon.Request{Cmd: "checked", Args: []string{"conf", "T1", "conf-1"}, Action: "conflict", Reason: "x.go"})
 	r.tick(time.Second)

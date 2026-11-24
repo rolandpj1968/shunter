@@ -359,7 +359,16 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrReason, "a rebase that failed")
 		}
 		l.Stuck = e.Reason
-		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "conflicts with trunk (" + l.Conflict + ") and was not rebased by the runner: " + e.Reason})
+		if l.State != LineWaiting {
+			m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "conflicts with trunk (" + l.Conflict + ") and was not rebased by the runner: " + e.Reason})
+			break
+		}
+		// Only a person can resolve it, and riding alone can't make it
+		// merge: it goes back to its owner, uncharged, and loses no
+		// seniority (owner's ruling of 24 Nov, docs/queue-as-bag.md §4).
+		starving := l.Starving
+		m.setLine(l, LineReturned, CauseConflict, "conflicts with trunk ("+l.Conflict+") and was not rebased by the runner: "+e.Reason)
+		l.Starving = starving
 	case Assemble:
 		return m.assemble(e)
 	case LeaveOut:
@@ -684,6 +693,11 @@ func (m *machine) offer(e Offer) error {
 		// anyone's push, a rebase, a half-made fix all move the head.
 		if old.Owner != "" {
 			l.Owner = old.Owner
+		}
+		if old.State == LineReturned && old.Cause == CauseConflict {
+			// Sent back for a person to resolve, not for a fault: it
+			// loses no seniority.
+			l.Starving = old.Starving
 		}
 		if old.State == LineReturned && old.Cause == CauseCharged {
 			if old.Owner != "" && e.By != old.Owner {
@@ -1104,18 +1118,20 @@ func (m *machine) leaveOut(e LeaveOut) error {
 	}
 	t.drop(e.Line)
 	// It did not fit with the lines taken: a cycle it did not cause (§4).
+	// It stays in the bag, and the starving rule bounds how often (owner's
+	// ruling of 24 Nov).
 	bump(m.s.Lines[e.Line])
-	m.setLine(m.s.Lines[e.Line], LineReturned, CauseLeftOut, e.Reason)
+	m.setLine(m.s.Lines[e.Line], LineWaiting, CauseLeftOut, e.Reason)
 	// A line of the train that needs a line left out is left out too (I3):
 	// the train would hold it without its base.
 	for again := true; again; {
 		again = false
 		for _, id := range t.Lines {
 			d := m.s.Lines[id]
-			if b := m.s.Lines[d.Base]; d.Base != "" && b != nil && (b.State == LineReturned || b.State == LineDropped) {
+			if b := m.s.Lines[d.Base]; d.Base != "" && b != nil && b.State != LineRiding && b.State != LineLanded {
 				t.drop(id)
 				bump(d)
-				m.setLine(d, LineReturned, CauseLeftOut, fmt.Sprintf("its base %s was left out of train %s", b.ID, t.ID))
+				m.setLine(d, LineWaiting, CauseLeftOut, fmt.Sprintf("its base %s was left out of train %s", b.ID, t.ID))
 				again = true
 				break
 			}
