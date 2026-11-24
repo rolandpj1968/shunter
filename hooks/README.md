@@ -123,6 +123,20 @@ Shared by `blame.py` and `preflight.py` ([`shunterhooks.py`](shunterhooks.py), `
 
 A result naming no line, or every line, is no blame, and J1 splits the train by line. A stack is one line, so it is never split.
 
+## The line-check worker
+
+[`linecheck.py`](linecheck.py) is not a hook: Shunter doesn't call it, it calls Shunter (PROTOCOL.md §5.4). Each run claims one waiting line's check (`shunt claim --lease --version`), runs the site's check on the claim's key, and answers `shunt checked ... --action pass|fail|conflict|infra --version`. Run it from a timer, or with `--every 30s`, one process per slot, each with its own `actor`.
+
+```json
+{"shunt": ["shunt"], "socket": "/var/lib/shunter/shunter.sock", "actor": "line-check-1",
+ "command": ["./scripts/check-line"], "version_files": ["scripts/check-line"], "lease": "3h", "timeout": "2h50m"}
+```
+
+- **The check** reads `{"line", "trunk", "heads", "version"}` and answers `{"verdict": "pass|fail|conflict|infra", "reason": "..."}`: a fail's evidence, a conflict's files, or why there is no verdict. A crash, a timeout, no JSON, or a fail or conflict with no reason is **infra**.
+- **Infra is no verdict.** The claim ends at once instead of at its lease's end, nothing is recorded of the line, the judge is told, and the line is not given to a worker asking for any line for `[deadlines] unanswered` (10m). A trunk that fails by itself is infra too.
+- **The version** is `version`, or a hash of `command` and `version_files`. A worker whose version isn't the queue's declares its own (`shunt checker line-check V`), which stops every older green counting; `"declare": false` makes it stop instead.
+- **`timeout` under `lease`**, or a slow check's claim is given to another worker. A verdict that comes after its lease on the same heads still counts.
+
 ## Writing your own
 
 Copy a script, or write one in any language, to the contract in [`examples/shunter.toml`](../examples/shunter.toml): read the input from stdin, print one JSON answer, exit. Print anything else to stderr; Shunter keeps its tail in the log. Move the old queue's rules into hooks unchanged first, so that only one thing changes at the cut-over ([`docs/cutover.md`](../docs/cutover.md)), and test them against fixtures of real failures, made synthetic.
