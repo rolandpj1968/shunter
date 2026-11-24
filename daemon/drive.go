@@ -3,8 +3,10 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,7 +16,8 @@ import (
 
 // assemble extends the chain with one train when it can (§5.3): not paused,
 // shorter than D, and the train at its tail has a head to build on. The
-// joining rule takes waiting lines in order and skips a line it cannot take:
+// joining rule takes waiting lines in the policy's order (state.SortByPolicy)
+// and skips a line it cannot take:
 // one that must ride alone, one of another half of a split, one past a cap,
 // a stale one, and one whose base has not landed, rides in no earlier train
 // and was not taken into this one (I3): so a line whose base was skipped is
@@ -153,6 +156,7 @@ func (d *Daemon) tick() {
 	}
 	d.restores(now)
 	d.claims(now, s)
+	d.priorities(now, s)
 	d.reviews(now, s)
 	d.restack(now, d.st.State())
 	rerunning := map[state.TrainID]bool{}
@@ -452,6 +456,18 @@ func (d *Daemon) claims(now time.Time, s state.State) {
 		}
 		if d.apply("timer", state.ClaimExpired{Line: id}) == nil {
 			d.alert(fmt.Sprintf("claim:%s:%s", id, c.Until.UTC().Format(time.RFC3339)), fmt.Sprintf("the line check of %s claimed by %s ran past its lease and was given up: is the checker alive?", id, c.By))
+		}
+	}
+}
+
+// priorities ends each manual priority whose expiry has passed
+// (docs/queue-as-bag.md §2): an expired priority is no longer read.
+func (d *Daemon) priorities(now time.Time, s state.State) {
+	for _, id := range sortedLines(s, slices.Collect(maps.Keys(s.Lines))) {
+		if p := s.Lines[id].Priority; p != nil && now.After(p.Until) {
+			if err := d.apply("timer", state.PriorityEnded{Line: id, Why: "expired"}); err != nil {
+				return
+			}
 		}
 	}
 }

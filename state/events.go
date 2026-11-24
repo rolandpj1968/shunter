@@ -281,6 +281,24 @@ type CheckClaimed struct {
 // same key is still a verdict on those heads.
 type ClaimExpired struct{ Line LineID }
 
+// Prioritise gives a line a manual priority, the one act that lets a line
+// pass an older one (docs/queue-as-bag.md §2). It needs a reason and an
+// expiry, and covers the lines the line is stacked on, which must ride
+// first. Giving it again replaces it.
+type Prioritise struct {
+	Line   LineID
+	By     string
+	Reason string
+	Until  time.Time
+}
+
+// PriorityEnded ends a line's manual priority: it expired, or was taken
+// back.
+type PriorityEnded struct {
+	Line LineID
+	Why  string
+}
+
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).
 type ExpireBudget struct{ Line LineID }
 
@@ -318,6 +336,8 @@ func (HandOver) event() string        { return "hand-over" }
 func (RebaseFailed) event() string    { return "rebase-failed" }
 func (CheckClaimed) event() string    { return "check-claimed" }
 func (ClaimExpired) event() string    { return "claim-expired" }
+func (Prioritise) event() string      { return "prioritise" }
+func (PriorityEnded) event() string   { return "priority-ended" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }

@@ -2,7 +2,6 @@ package state
 
 import (
 	"fmt"
-	"sort"
 	"time"
 )
 
@@ -85,6 +84,7 @@ func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 	if !to.Spent() {
 		return
 	}
+	l.Priority = nil
 	if to == LineLanded {
 		l.NoVerdicts, l.Group = 0, 0
 	}
@@ -294,6 +294,27 @@ func (m *machine) apply(ev Event) error {
 			return err
 		}
 		l.Claim = nil
+	case Prioritise:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		if e.Reason == "" || e.Until.IsZero() {
+			return bad(ErrReason, "a priority names its reason and its expiry")
+		}
+		if l.State.Spent() {
+			return bad(ErrState, "line %s is %s", l.ID, l.State)
+		}
+		l.Priority = &Priority{By: e.By, Reason: e.Reason, Until: e.Until}
+	case PriorityEnded:
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		if l.Priority == nil {
+			return bad(ErrState, "line %s has no priority", l.ID)
+		}
+		l.Priority = nil
 	case HandOver:
 		l, err := m.line(e.Line)
 		if err != nil {
@@ -592,6 +613,9 @@ func (m *machine) offer(e Offer) error {
 	}
 	l := &Line{ID: e.Line, State: from, Seq: m.s.NextSeq, Changes: append([]Change(nil), e.Changes...), Base: e.Base, Alone: e.Alone, Fix: e.Fix, Owner: e.By}
 	if old != nil {
+		// A line's age is its first offer, for good (docs/queue-as-bag.md
+		// §2): coming back costs nothing and gains nothing.
+		l.Seq = old.Seq
 		// The owner-state (§7): a returned line is with its owner until its
 		// owner says it is done, by offering it again. A push is not that:
 		// anyone's push, a rebase, a half-made fix all move the head.
@@ -874,7 +898,7 @@ func (m *machine) assemble(e Assemble) error {
 		group = l.Group
 	}
 	lines := append([]LineID(nil), e.Lines...)
-	sort.Slice(lines, func(i, j int) bool { return m.s.Lines[lines[i]].Seq < m.s.Lines[lines[j]].Seq })
+	m.s.SortByPolicy(lines)
 	t := &Train{ID: e.Train, Lines: lines, BaseHead: base, Light: true}
 	for _, id := range lines {
 		// The train's tier is its heaviest line's: light only when every
