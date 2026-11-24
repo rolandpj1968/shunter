@@ -81,7 +81,7 @@ func TestReplayFixtures(t *testing.T) {
 	wantLines := map[state.LineID]state.LineState{
 		"101": state.LineLanded, "102": state.LineLanded,
 		"103": state.LineReturned, "104": state.LineLanded,
-		"105": state.LineLanded, "106": state.LineReturned, "107": state.LineLanded,
+		"105": state.LineLanded, "106": state.LineLanded, "107": state.LineLanded, // 106: charged, fixed, offered again
 		"108":     state.LineWaiting, // charged with no evidence: refused, so not returned
 		"109":     state.LineWaiting,
 		"110+111": state.LineDropped, "111": state.LineLanded, // a stack, then taken back and offered as one change
@@ -99,7 +99,7 @@ func TestReplayFixtures(t *testing.T) {
 	if s.Lines["109"].Group == 0 {
 		t.Errorf("the split left no groups")
 	}
-	if len(s.Landings) != 5 || s.Trunk != "ffffffffffffffffffffffffffffffffffffffff" {
+	if len(s.Landings) != 6 || s.Trunk != "9999999999999999999999999999999999999999" {
 		t.Errorf("landings %d, trunk %s", len(s.Landings), s.Trunk)
 	}
 
@@ -142,7 +142,7 @@ func TestReplayFixtures(t *testing.T) {
 	if tr := s.Trains["17-draft"]; tr == nil || tr.PR != "917" || tr.Draft {
 		t.Errorf("the draft train: %+v", tr)
 	}
-	if rep.Segments != 16 {
+	if rep.Segments != 17 {
 		t.Errorf("segments: %d", rep.Segments)
 	}
 	var b strings.Builder
