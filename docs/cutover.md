@@ -1,6 +1,6 @@
 # Cutting over from a script queue
 
-*How a team moves from an ad-hoc merge queue, usually a set of scripts and state files, to Shunter. Generic: adapt the names to your own queue.*
+*How a team moves from an ad-hoc merge queue, usually a set of scripts and state files, to Shunter. Generic: adapt the names to your own queue. [`cutover-readiness.md`](cutover-readiness.md) is this method applied once: a review of Shunter against the script queue it grew from, duty by duty.*
 
 ## Why a hard cut-over
 
