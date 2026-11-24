@@ -603,6 +603,8 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrState, "line %s is %s", l.ID, l.State)
 		}
 		l.NoVerdicts = 0
+	case CheckerChanged:
+		return m.checkerChanged(e)
 	case Starving:
 		l, err := m.line(e.Line)
 		if err != nil {
@@ -688,6 +690,7 @@ func (m *machine) offer(e Offer) error {
 				return bad(ErrOwner, "line %s was charged and is with %s, who alone offers it again (or hands it over)", e.Line, old.Owner)
 			}
 			l.ChargedAt = append([]Head(nil), old.ChargedAt...)
+			l.ChargedBy = old.ChargedBy
 			if l.AtChargedHeads() {
 				return bad(ErrUnfixed, "line %s is at the heads it was charged on: a fix is a push", e.Line)
 			}
@@ -827,6 +830,8 @@ func (m *machine) claim(e CheckClaimed) error {
 		return bad(ErrState, "line %s is in conflict with trunk and waits for a rebase", l.ID)
 	case l.Stale != "":
 		return bad(ErrState, "line %s is stale and waits for a rebase", l.ID)
+	case e.Key.Checker != m.s.Checkers[CheckerLineCheck]:
+		return bad(ErrState, "the line check is at version %q, not %q", m.s.Checkers[CheckerLineCheck], e.Key.Checker)
 	case !l.OnHeads(e.Key):
 		return bad(ErrState, "line %s is not at the heads claimed", l.ID)
 	}
@@ -853,12 +858,13 @@ func (m *machine) lineChecked(e LineChecked) error {
 	}
 	if c := l.Claim; c != nil {
 		// A claimed check answers on its own key or not at all.
-		if !c.Key.Equal(CheckKey{Heads: e.Heads, Trunk: e.Trunk}) {
+		if !c.Key.Equal(CheckKey{Heads: e.Heads, Trunk: e.Trunk, Checker: e.Version}) {
 			return bad(ErrClaimed, "line %s is claimed by %s on trunk %s at %v, not this verdict's key", l.ID, c.By, c.Key.Trunk, c.Key.Heads)
 		}
 		l.Claim = nil
 	}
-	if len(e.Heads) != len(l.Changes) {
+	if len(e.Heads) != len(l.Changes) || e.Version != m.s.Checkers[CheckerLineCheck] {
+		// On other heads, or by a line check since replaced: no verdict.
 		return nil
 	}
 	for i, c := range l.Changes {
@@ -867,7 +873,7 @@ func (m *machine) lineChecked(e LineChecked) error {
 		}
 	}
 	if e.Pass {
-		l.Checked, l.CheckedOn = append([]Head(nil), e.Heads...), e.Trunk
+		l.Checked, l.CheckedOn, l.CheckedBy = append([]Head(nil), e.Heads...), e.Trunk, e.Version
 		l.Conflict, l.ConflictOn, l.Stuck = "", "", ""
 		return nil
 	}
@@ -903,6 +909,7 @@ func (m *machine) lineChecked(e LineChecked) error {
 	l.Checked, l.CheckedOn = nil, ""
 	if l.State == LineWaiting {
 		m.setLine(l, LineReturned, CauseCharged, "line check: "+e.Evidence)
+		l.ChargedBy = Verdict{Checker: CheckerLineCheck, Version: e.Version}
 	}
 	return nil
 }
@@ -985,6 +992,53 @@ func (m *machine) assemble(e Assemble) error {
 		l.Train = t.ID
 	}
 	m.emit(Effect{Kind: EffBuild, Train: t.ID, Expect: base})
+	return nil
+}
+
+// checkerChanged records a checker's present version (I14). Nothing is
+// voided by hand: what the old version gave stops counting here, because it
+// is read by its version.
+func (m *machine) checkerChanged(e CheckerChanged) error {
+	if !slices.Contains(Checkers, e.Checker) {
+		return bad(ErrInput, "no checker %q", e.Checker)
+	}
+	if m.s.Checkers[e.Checker] == e.Version {
+		return nil
+	}
+	if m.s.Checkers == nil {
+		m.s.Checkers = map[string]string{}
+	}
+	m.s.Checkers[e.Checker] = e.Version
+	for _, id := range m.s.lineIDs() {
+		l := m.s.Lines[id]
+		if e.Checker == CheckerLineCheck && l.State != LineRiding && !l.State.Spent() {
+			// Not current: checked again before it can ride. One that
+			// rides was assembled on its green, and its train judges it.
+			if l.CheckedBy != e.Version {
+				l.Checked, l.CheckedOn, l.CheckedBy = nil, "", ""
+			}
+			if c := l.Claim; c != nil && c.Key.Checker != e.Version {
+				l.Claim = nil
+			}
+		}
+		if l.State != LineReturned || l.Cause != CauseCharged || l.ChargedBy.Checker != e.Checker || l.ChargedBy.Version == e.Version {
+			continue
+		}
+		// A void charge: back through the gate. A returned line is at the
+		// heads it was charged on (a push to it is a new offer, §7), so it
+		// is checked again as it stands.
+		l.ChargedAt, l.ChargedBy = nil, Verdict{}
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "the charge is void: the " + e.Checker + " that made it has changed; it is checked again as it stands"})
+		m.place(l, CauseChargeVoid)
+	}
+	if e.Checker == CheckerPreflight {
+		for _, id := range m.s.Chain {
+			if t := m.s.Trains[id]; t.State == TrainAssembling {
+				m.end(t, TrainVoid, CauseVoid, "the pre-flight changed: it runs again", nil)
+				break
+			}
+		}
+	}
 	return nil
 }
 
@@ -1161,12 +1215,23 @@ func (m *machine) charge(t *Train, c Cause, blamed []LineID, evidence string) {
 	for _, id := range blamed {
 		named[id] = true
 	}
+	// A charge by a rule names its checker, which a change voids; one by
+	// the judge at J1 is a recorded judgement (docs/queue-as-bag.md §5).
+	var by Verdict
+	switch {
+	case c != CauseCharged:
+	case t.State == TrainAssembling:
+		by = Verdict{Checker: CheckerPreflight, Version: m.s.Checkers[CheckerPreflight]}
+	default:
+		by = Verdict{Checker: CheckerBlame, Version: m.s.Checkers[CheckerBlame]}
+	}
 	m.end(t, TrainFailed, c, evidence, func(l *Line) bool {
 		if !named[l.ID] {
 			bump(l) // another line's failure ended its train (§4)
 			return false
 		}
 		m.setLine(l, LineReturned, CauseCharged, evidence)
+		l.ChargedBy = by
 		return true
 	})
 }

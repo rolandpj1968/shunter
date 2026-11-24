@@ -412,6 +412,8 @@ var transitions = []tcase{
 	{name: "stale: the owner is told", setup: cat(ready("a"), stacked("b", "a"), GateAccept{Line: "b"}), ev: Stale{Line: "b", Reason: "rebase onto a"}, lines: lineWant{"b": LineWaiting}, fx: []EffectKind{EffNotify}},
 	{name: "base lands: a retired line behind it queues", setup: cat(ready("a"), legacy("b", "a"), landing("t1", "a")), ev: PushOK{Train: "t1"}, lines: lineWant{"a": LineLanded, "b": LineWaiting}},
 	{name: "base lands under a park: a retired line behind it parks", setup: cat(allPark, fix("f"), GateAccept{Line: "f"}, legacy("b", "f"), landing("t1", "f")), ev: PushOK{Train: "t1"}, lines: lineWant{"f": LineLanded, "b": LineParked}},
+	{name: "charge void: the line check changed", setup: cat(ready("a"), LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Evidence: "e"}), ev: CheckerChanged{Checker: CheckerLineCheck, Version: "v2"}, lines: lineWant{"a": LineWaiting}},
+	{name: "charge void under a park", setup: cat(ready("a"), LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Evidence: "e"}, allPark), ev: CheckerChanged{Checker: CheckerLineCheck, Version: "v2"}, lines: lineWant{"a": LineParked}},
 	{name: "base lost: a retired line behind it returns", setup: cat(ready("a"), legacy("b", "a")), ev: Withdraw{Line: "a"}, lines: lineWant{"a": LineDropped, "b": LineReturned}},
 
 	// Withdraw.

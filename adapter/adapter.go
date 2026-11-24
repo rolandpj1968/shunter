@@ -266,6 +266,13 @@ type Notifier interface {
 	Judge(ctx context.Context, key string, point string, train state.TrainID, msg string) error
 }
 
+// Versioner is an adapter that runs checkers whose verdicts are stored: it
+// says each one's present version, by its name (state.Checkers), so that a
+// verdict of another version stops counting (docs/queue-as-bag.md §5).
+type Versioner interface {
+	Versions() map[string]string
+}
+
 // Set is every adapter the daemon needs.
 type Set struct {
 	Forge  Forge

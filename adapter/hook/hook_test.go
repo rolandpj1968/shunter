@@ -76,3 +76,20 @@ func TestMissingProgram(t *testing.T) {
 		t.Fatal("a hook that cannot start is an error")
 	}
 }
+
+// A hook that reports no version has one by its command file and its
+// command line (docs/queue-as-bag.md §5): a change to either changes it.
+func TestAHooksVersionIsItsFileAndCommand(t *testing.T) {
+	cmd := script(t, "echo one")
+	h := Hook{Command: cmd}
+	v := h.Version()
+	if v == "" || (Hook{}).Version() != "" {
+		t.Fatalf("versions %q and %q", v, (Hook{}).Version())
+	}
+	if err := os.WriteFile(cmd[0], []byte("#!/bin/sh\necho two\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if h.Version() == v || (Hook{Command: append(cmd, "--x")}).Version() == h.Version() {
+		t.Fatal("a changed hook kept its version")
+	}
+}

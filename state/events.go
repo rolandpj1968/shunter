@@ -262,6 +262,18 @@ type LineChecked struct {
 	// what. It is neither a pass nor a failure: nobody is charged, the line
 	// joins no train, and the runner is asked to rebase it (§5.2).
 	Conflict string
+	// Version is the line check's version (docs/queue-as-bag.md §5). A
+	// verdict of another version than the present one is dropped.
+	Version string
+}
+
+// CheckerChanged reports a checker's present version (docs/queue-as-bag.md
+// §5). Every verdict of another version stops counting: a waiting line's
+// green, a claim, and a charge, which is void. A train still assembling
+// when the pre-flight changes is void, to run the new one.
+type CheckerChanged struct {
+	Checker string
+	Version string
 }
 
 // CheckClaimed is a checker's claim on the line check of one waiting line
@@ -355,6 +367,7 @@ func (Prioritise) event() string      { return "prioritise" }
 func (PriorityEnded) event() string   { return "priority-ended" }
 func (DraftOpened) event() string     { return "draft-opened" }
 func (Starving) event() string        { return "starving" }
+func (CheckerChanged) event() string  { return "checker-changed" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }

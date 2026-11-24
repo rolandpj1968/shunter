@@ -189,6 +189,7 @@ func (d *Daemon) tick() {
 	d.starving(now)
 	d.reviews(now, s)
 	d.restack(now, d.st.State())
+	d.versions()
 	rerunning := map[state.TrainID]bool{}
 	for _, k := range d.st.Pending() {
 		if k.Kind == state.EffRerun || k.Kind == state.EffOpenPR {
@@ -497,6 +498,27 @@ func (d *Daemon) priorities(now time.Time, s state.State) {
 		if p := s.Lines[id].Priority; p != nil && now.After(p.Until) {
 			if err := d.apply("timer", state.PriorityEnded{Line: id, Why: "expired"}); err != nil {
 				return
+			}
+		}
+	}
+}
+
+// versions records each adapter's checkers' present versions
+// (docs/queue-as-bag.md §5): a change makes every verdict of the old one
+// stop counting. The line check, run outside, declares its own (command
+// checker).
+func (d *Daemon) versions() {
+	for _, a := range []any{d.ad.Forge, d.ad.CI, d.ad.Git} {
+		v, ok := a.(adapter.Versioner)
+		if !ok {
+			continue
+		}
+		vs := v.Versions()
+		for _, name := range state.Checkers {
+			if ver, ok := vs[name]; ok && ver != d.st.State().Checkers[name] {
+				if d.apply("runner", state.CheckerChanged{Checker: name, Version: ver}) != nil {
+					return
+				}
 			}
 		}
 	}

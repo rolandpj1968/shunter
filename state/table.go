@@ -92,6 +92,8 @@ func buildTable() []Row {
 		// Added after the rows above were numbered: a new row goes last, so that
 		// no row cited by number in PROTOCOL.md changes its number.
 		lr(LineWaiting, LineReturned, CauseCharged, "line-checked (fail)", "the verdict is on the line's present heads; the failing check passes on trunk alone (I6)", "the line check (§5.4)", "never charged without evidence"),
+		lr(LineReturned, LineWaiting, CauseChargeVoid, "checker-changed", "charged by a checker since replaced (I14)", oRunner, "the charge stands"),
+		lr(LineReturned, LineParked, CauseChargeVoid, "checker-changed", "charged by a checker since replaced (I14); a park covers it", oRunner, "the charge stands"),
 
 		// A train.
 		tr(TrainNone, TrainAssembling, CauseAssemble, "assemble", "not paused; the chain is shorter than D; the train ahead has a head", "the runner (§5.3)", "no train"),
