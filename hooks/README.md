@@ -37,7 +37,10 @@ command = ["python3", "-B", "hooks/blame.py", "--config", "hooks/blame.json"]
   "steps": [
     {"name": "generate", "command": ["make", "generate-check"], "timeout": "5m"},
     {"name": "lint", "command": ["make", "lint"]},
-    {"name": "ratchet", "command": ["./scripts/ratchet.sh"], "blame": "bisect"},
+    {"name": "regenerate", "command": ["make", "generate"],
+     "commit": {"message": "regenerate the combined train", "attribute": "merge", "value": "regenerate"}},
+    {"name": "ratchet", "command": ["./scripts/ratchet.sh"], "blame": "bisect",
+     "commit": {"message": "record what the train improves", "paths": ["counters.json"]}},
     {"name": "gate", "command": ["./scripts/gate.sh"], "blame": "none"}
   ],
   "always": ["generate"],
@@ -48,7 +51,8 @@ command = ["python3", "-B", "hooks/blame.py", "--config", "hooks/blame.json"]
 }
 ```
 
-- **Steps** run in order in Shunter's clone, at the train's head, and stop at the first failure. Each has `SHUNTER_TRAIN`, `SHUNTER_BASE` and `SHUNTER_HEAD` in its environment. A step must leave the tree as it found it, or commit what it changes.
+- **Steps** run in order in Shunter's clone, at the train's head, and stop at the first failure. Each has `SHUNTER_TRAIN`, `SHUNTER_BASE` and `SHUNTER_HEAD` in its environment. A step must leave the tree as it found it, or say what it may commit.
+- **Commit to the train.** A step's `"commit"` commits what it changes when it passes, on top of the train, and Shunter takes the last commit as the train's head: CI judges it and trunk takes it ([PROTOCOL.md](../PROTOCOL.md) §5.4). Give a `"message"` (`{train}` is the train) and what it may change: `"paths"` (files or directories) or an `"attribute"` with its `"value"` (as `.gitattributes` marks generated files). Any other change the step makes is undone, and said on stderr; a step that changes nothing allowed commits nothing. Later steps see the new head as `SHUNTER_HEAD`. Use it for a regeneration that nothing conflicted on (generated files stale only in combination), and for counters the combination improves. The commit is git's own, so give the hook a committer identity in its `env`. A hook may only add commits: Shunter refuses a head that dropped or rewrote the train's commits, or merged anything in.
 - **Per-step timing.** Every step run appends a row to `record`: time, train, step, seconds, exit code. That file is how a team finds the steps that never fail, to drop them, and the slow ones.
 - **The usefulness rule.** A step with no catch in the last `days`, at least `min_runs` runs in them, and a median over `min_seconds`, is skipped; CI still runs the check. A skipped step writes no row, so once it has been skipped for `days` it has no rows in the window and runs again, which samples it. `always` steps always run, `never` steps never run here, and a step named in the `recalled` file in the window runs whatever its record (write a row, `time<TAB>step<TAB>why`, when CI fails in what a skipped step covers).
 - **Blame, per step.** A step's `"blame"` says how its failure is blamed: `"files"` (the default), `"bisect"` or `"none"`. With `"none"` nobody is named, and J1 decides; its default splits the train in halves by line. Use it for a step whose failure says nothing about which line caused it, where the old queue split the batch, so that the rules move unchanged. Any other value is a configuration error: the hook answers nothing, which Shunter reads as no verdict.

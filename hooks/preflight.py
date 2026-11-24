@@ -14,7 +14,17 @@ examples/shunter.toml):
 Steps run in order and stop at the first failure, each with
 SHUNTER_TRAIN, SHUNTER_BASE and SHUNTER_HEAD in its environment. Each run
 appends one row to `record`: time, train, step, seconds, exit code. A step
-must leave the tree as it found it, or commit what it changes.
+must leave the tree as it found it, or say what it may commit.
+
+A step's "commit" commits what it changes when it passes, on top of the
+train (Shunter takes the last commit as the train's head; PROTOCOL.md
+§5.4): {"message": "...", "paths": [...]} or {"message": "...",
+"attribute": "merge", "value": "regenerate"}. Only changed files under the
+paths, or marked with the attribute's value, are committed; any other
+change the step makes is undone, and said. "{train}" in the message is the
+train. Later steps see the new head as SHUNTER_HEAD. For a regeneration
+with nothing in conflict, and for counters the combination improves. The
+committer is git's, from the hook's environment.
 
 The usefulness rule. A step that has caught nothing (no exit but 0) in the
 last `usefulness.days` days, ran at least `usefulness.min_runs` times in
@@ -55,7 +65,12 @@ Configuration (JSON, --config FILE):
   {
     "steps": [
       {"name": "lint", "command": ["make", "lint"], "timeout": "10m"},
-      {"name": "ratchet", "command": ["./ratchet.sh"], "blame": "bisect"},
+      {"name": "regenerate", "command": ["make", "generate"],
+       "commit": {"message": "regenerate the combined train",
+                  "attribute": "merge", "value": "regenerate"}},
+      {"name": "ratchet", "command": ["./ratchet.sh"], "blame": "bisect",
+       "commit": {"message": "record what the train improves",
+                  "paths": ["counters.json"]}},
       {"name": "gate", "command": ["./gate.sh"], "blame": "none"}
     ],
     "always": ["lint"],
@@ -235,6 +250,43 @@ def bisect(step, doc, order, timeout):
         sh.git(d, "clean", "-fdq", check=False)
 
 
+def commit_spec(step):
+    """A step's "commit", checked: a message, and what it may change."""
+    c = step.get("commit")
+    if c is None:
+        return None
+    if not isinstance(c, dict) or not c.get("message") or not (c.get("paths") or c.get("attribute")):
+        raise SystemExit("pre-flight: step %s: commit needs a message, and paths or an attribute" % step.get("name"))
+    return c
+
+
+def commit_step(step, doc, untracked_before):
+    """Commits what a passing step changed in the files its "commit" allows,
+    on top of the train, and undoes any other change. Returns the new head,
+    or None when it changed nothing allowed."""
+    c, d = step["commit"], doc["dir"]
+    mod, new = sh.dirty(d)
+    new -= untracked_before
+    changed = sorted(mod | new)
+    allowed = set()
+    if c.get("attribute"):
+        allowed = sh.marked(d, c["attribute"], c.get("value", "set"), changed)
+    prefixes = [p.rstrip("/") for p in c.get("paths") or []]
+
+    def keep(path):
+        return path in allowed or any(path == p or path.startswith(p + "/") for p in prefixes)
+
+    staged, undone = sh.keep_only(d, mod, new, keep)
+    if undone:
+        sh.log("pre-flight: %s changed files it may not commit; undone: %s" % (step["name"], " ".join(undone)))
+    if not staged:
+        return None
+    msg = c["message"].replace("{train}", str(doc.get("train", "")))
+    sh.git(d, "-c", "core.hooksPath=/dev/null", "commit", "--quiet", "--no-verify", "-m", msg)
+    sh.log("pre-flight: %s committed %s" % (step["name"], " ".join(staged)))
+    return sh.git(d, "rev-parse", "HEAD")
+
+
 def main():
     cfg, base = sh.load_config(sys.argv)
     doc = sh.read_input()
@@ -243,6 +295,7 @@ def main():
     for step in cfg.get("steps") or []:
         blame_mode(step)  # a bad configuration says nothing, before any step runs
         answer_mode(step)
+        commit_spec(step)
     skipped = skips(cfg, base, sh.now())
     for n, why in sorted(skipped.items()):
         sh.log("pre-flight: %s skipped (%s; CI runs it)" % (n, why))
@@ -251,10 +304,21 @@ def main():
         if name in skipped:
             continue
         timeout = sh.parse_duration(step.get("timeout"), 600)
+        untracked = sh.dirty(doc["dir"])[1] if step.get("commit") else set()
         rc, secs, out = run_step(step, doc, timeout)
         record_row(cfg, base, train, name, secs, rc)
         sh.log("pre-flight: %s exit %d in %.1fs" % (name, rc, secs))
         if rc == 0:
+            if step.get("commit"):
+                try:
+                    head = commit_step(step, doc, untracked)
+                except sh.GitError as e:
+                    sh.log("pre-flight: %s: its commit failed: %s" % (name, e))
+                    sys.exit(3)
+                if head:
+                    # Later steps, and a bisection's return, see the train
+                    # with this commit; the lines' tips are unchanged.
+                    doc["head"] = head
             continue
         od = sh.config_path(base, cfg.get("output_dir", ""))
         if od:

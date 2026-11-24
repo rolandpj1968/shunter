@@ -2,6 +2,7 @@ package gitrepo
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -112,5 +113,38 @@ func TestPreflightMayNotMergeIn(t *testing.T) {
 	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: lines})
 	if err == nil || !adapter.IsPermanent(err) {
 		t.Fatalf("a pre-flight that merged another change in: %+v %v", res, err)
+	}
+}
+
+// The example pre-flight hook (hooks/preflight.py) with the two steps that
+// commit, driven by the adapter: the regeneration and the counters reach
+// the built head, which is the one CI judges and trunk takes.
+func TestExamplePreflightCommits(t *testing.T) {
+	py, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is not installed")
+	}
+	cfg := filepath.Join(t.TempDir(), "preflight.json")
+	steps := `{"steps": [
+	 {"name": "regenerate", "command": ["sh", "-c", "cat a.src b.src > gen.txt"], "commit": {"message": "regenerate the combined train", "paths": ["gen.txt"]}},
+	 {"name": "counters", "command": ["sh", "-c", "echo 7 > counters.txt"], "commit": {"message": "record what the train improves", "paths": ["counters.txt"]}}]}`
+	if err := os.WriteFile(cfg, []byte(steps), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w, base, lines := commitWorld(t, "#!/bin/sh\nexit 9\n")
+	script, _ := filepath.Abs("../../hooks/preflight.py")
+	w.repo.cfg.Preflight = hook.Hook{Command: []string{py, "-B", script, "--config", cfg}, Dir: w.repo.cfg.Dir, Timeout: time.Minute, Env: ident}
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: lines})
+	if err != nil || res.PreflightFailed || res.Head == "" {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if got := w.cat(res.Head, "gen.txt"); got != "a1\nb1" {
+		t.Fatalf("gen.txt at the built head is %q", got)
+	}
+	if got := w.cat(res.Head, "counters.txt"); got != "7" {
+		t.Fatalf("counters.txt at the built head is %q", got)
+	}
+	if err := w.repo.Push(ctx, "p1", res.Head, base); err != nil || w.trunk() != res.Head {
+		t.Fatalf("landing the built head: %v", err)
 	}
 }
