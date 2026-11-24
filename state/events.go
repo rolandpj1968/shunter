@@ -431,8 +431,8 @@ type Effect struct {
 	Head   Head   // push: the head to land; open-pr: the train's head
 	Expect Head   // push: where trunk must be; build: the head to build on
 	From   string // record
-	To     string // record
-	Cause  Cause  // record
+	To     string // record; notify: the state the line went to, if it moved
+	Cause  Cause  // record, notify
 	Point  string // ask-judge: J1, J3
 	Reason string
 }

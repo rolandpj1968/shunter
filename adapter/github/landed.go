@@ -20,8 +20,27 @@ type Landed struct {
 	Next adapter.Notifier
 }
 
+// Tell implements adapter.Teller: the landing is recorded, and the whole
+// notice goes on to Next if it takes one.
+func (n Landed) Tell(ctx context.Context, key string, o adapter.OwnerNotice) error {
+	if err := n.landed(ctx, o.Changes, o.Message); err != nil {
+		return err
+	}
+	if t, ok := n.Next.(adapter.Teller); ok {
+		return t.Tell(ctx, key, o)
+	}
+	return n.Next.Owner(ctx, key, o.Line, o.Changes, o.Message)
+}
+
 // Owner implements adapter.Notifier.
 func (n Landed) Owner(ctx context.Context, key string, line state.LineID, changes []state.ChangeID, msg string) error {
+	if err := n.landed(ctx, changes, msg); err != nil {
+		return err
+	}
+	return n.Next.Owner(ctx, key, line, changes, msg)
+}
+
+func (n Landed) landed(ctx context.Context, changes []state.ChangeID, msg string) error {
 	if strings.HasPrefix(msg, state.LineLanded.String()+":") {
 		mine := map[int]bool{}
 		for _, id := range changes {
@@ -35,7 +54,7 @@ func (n Landed) Owner(ctx context.Context, key string, line state.LineID, change
 			}
 		}
 	}
-	return n.Next.Owner(ctx, key, line, changes, msg)
+	return nil
 }
 
 // Judge implements adapter.Notifier.

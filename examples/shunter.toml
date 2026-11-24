@@ -188,7 +188,8 @@ timeout = "2m"
 # Every notice to an owner or the judge, one JSON line each. Default:
 # <store>/events.jsonl.
 events = "/var/lib/shunter/events.jsonl"
-# Optional delivery: the notice as JSON on stdin.
+# Optional delivery: the notice as JSON on stdin. An owner's notice says the
+# state its line went to (empty for advice) and the cause (hooks/notify.py).
 command = ["./hooks/notify"]
 timeout = "30s"
 

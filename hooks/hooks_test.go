@@ -129,7 +129,7 @@ func newRepo(t *testing.T) string {
 func TestHooksWriteNoBytecode(t *testing.T) {
 	py := python(t)
 	dir := t.TempDir()
-	for _, f := range []string{"shunterhooks.py", "blame.py", "preflight.py", "conflict.py"} {
+	for _, f := range []string{"shunterhooks.py", "blame.py", "preflight.py", "conflict.py", "notify.py"} {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
