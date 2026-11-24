@@ -98,6 +98,8 @@ The rule: **drain what is in motion; carry what is at rest; drop what is only me
 3. Start the old services.
 4. Tell producers which offers, made through the new inbox, they must make again.
 
+**Scripted:** [`examples/rollback.sh`](../examples/rollback.sh) does steps 1 to 3, timing each step: pause, cancel each live train with requeue (a landing train is waited for, never interrupted), wait until no train is live and no effect is owed, stop, export, map, check that every exported line is in the old lists exactly once, and start. The site supplies four commands: stop, map, list the old lines, and start. `TestRollbackRehearsal` rehearses it against the daemon on fake adapters, with two trains riding and lines waiting, one alone and one held, and round-trips the export through a fresh daemon. The rehearsal takes seconds, so the ten minutes go to the landing it may wait for and to the site's own stop and start. Rehearse it once more on a copy of the real store (`cp -a`, with no start command) and time it.
+
 **Why it's cheap:** there's nothing to undo on trunk, and the shared lock means the two were never both writing.
 
 **When to roll back.** Decide the triggers before the day, so that nobody has to argue for them during it:
@@ -106,7 +108,7 @@ The rule: **drain what is in motion; carry what is at rest; drop what is only me
 - **a line whose state the status can't account for;**
 - **no landing for an hour** with lines waiting and CI healthy.
 
-A rollback costs about a quarter of an hour, plus the offers made again. A wrong landing costs more than that, so the first trigger has no threshold.
+A rollback costs under ten minutes with the script, plus the offers made again. A wrong landing costs more than that, so the first trigger has no threshold.
 
 ## The trunk lock
 
