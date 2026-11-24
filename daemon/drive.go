@@ -58,13 +58,41 @@ type Caps struct {
 // running uses it to say what the runner would assemble.
 func Join(s state.State, c Caps) []state.LineID { return join(s, c) }
 
-// join is the joining rule.
+// join is the joining rule. While a line is forced (docs/queue-as-bag.md
+// §4), only prioritised lines may ride before it, and then it rides alone,
+// with what beneath it still waits, once the chain is empty and it is ready.
 func join(s state.State, c Caps) []state.LineID {
+	f := s.Forced()
+	if f == "" {
+		return joinFrom(s, c, s.Waiting())
+	}
+	prio := s.Prioritised()
+	var first []state.LineID
+	for _, id := range s.Waiting() {
+		if prio[id] {
+			first = append(first, id)
+		}
+	}
+	if out := joinFrom(s, c, first); len(out) > 0 {
+		return out
+	}
+	if len(s.Chain) > 0 {
+		return nil
+	}
+	want := s.ForcedTrain(f)
+	if got := joinFrom(s, Caps{}, want); len(got) == len(want) {
+		return got
+	}
+	return nil
+}
+
+// joinFrom takes lines from ids, which are in the policy's order.
+func joinFrom(s state.State, c Caps, ids []state.LineID) []state.LineID {
 	var out []state.LineID
 	taken := map[state.LineID]bool{}
 	group, changes := -1, 0
 	counted, full := 0, false // the lines that count against the cap; whether it is reached
-	for _, id := range s.Waiting() {
+	for _, id := range ids {
 		l := s.Lines[id]
 		n := len(l.Changes)
 		if l.Stale != "" || !s.NeedMet(l, taken) {
@@ -157,6 +185,7 @@ func (d *Daemon) tick() {
 	d.restores(now)
 	d.claims(now, s)
 	d.priorities(now, s)
+	d.starving(now)
 	d.reviews(now, s)
 	d.restack(now, d.st.State())
 	rerunning := map[state.TrainID]bool{}
@@ -469,6 +498,47 @@ func (d *Daemon) priorities(now time.Time, s state.State) {
 				return
 			}
 		}
+	}
+}
+
+// starving marks each waiting line past a starvation threshold
+// (docs/queue-as-bag.md §4), and raises to the judge, at once, a starving
+// line the runner could not rebase (it needs a person) and StarveAlert or
+// more starving lines at once (J4: the thresholds may be too low).
+func (d *Daemon) starving(now time.Time) {
+	since := d.st.Since()
+	for _, id := range d.st.State().Waiting() {
+		l := d.st.State().Lines[id]
+		if l.Starving {
+			continue
+		}
+		var why string
+		switch q := since.QueueTime(id, now); {
+		case d.cfg.StarveCycles > 0 && l.Count >= d.cfg.StarveCycles:
+			why = fmt.Sprintf("%d cycles it did not cause", l.Count)
+		case d.cfg.StarveAfter > 0 && q >= d.cfg.StarveAfter:
+			why = fmt.Sprintf("%s of queue time", q.Round(time.Minute))
+		default:
+			continue
+		}
+		if d.apply("timer", state.Starving{Line: id, Why: why}) != nil {
+			return
+		}
+	}
+	s := d.st.State()
+	var starving []string
+	for _, id := range s.Waiting() {
+		l := s.Lines[id]
+		if !l.Starving {
+			continue
+		}
+		starving = append(starving, string(id))
+		if l.Stuck != "" {
+			d.alert(fmt.Sprintf("stuck:%s:%s", id, l.Conflict), fmt.Sprintf("line %s is starving and stuck: it conflicts with trunk (%s) and the runner could not rebase it (%s); it needs a person, or a hand-over", id, l.Conflict, l.Stuck))
+		}
+	}
+	if d.cfg.StarveAlert > 0 && len(starving) >= d.cfg.StarveAlert {
+		d.alert("starving:"+strings.Join(starving, ","), fmt.Sprintf("J4: %d lines are starving at once (%s): one rides at a time; raise the thresholds if the queue is only behind", len(starving), strings.Join(starving, ", ")))
 	}
 }
 
