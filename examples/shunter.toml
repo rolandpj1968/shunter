@@ -83,6 +83,7 @@ ci = "90m"      # a train in testing; past it: void, no verdict (T7)
 push = "5m"     # one push to trunk; an unknown outcome is settled by reading trunk
 j1 = "10m"      # J1's deadline, then its default
 park = "24h"    # a park whose condition cannot be tested is restored then
+claim = "30m"   # a line checker's claim (`shunt claim`), unless it names its own lease
 
 [retry]
 # Inside one adapter call: tries, and the waits between them.
@@ -134,6 +135,17 @@ timeout = "5m"
 # generated files, a counters file, both sides only adding lines.
 # command = ["./hooks/rebase"]
 # timeout = "15m"
+
+# An owner is live while its heartbeat is fresh: one file a producer in
+# this directory, named as the producer offers lines (its actor), touched
+# while it works. A producer that finishes stops touching it. A line that
+# waits on an owner who is not live (charged, or stale or in conflict) has
+# no owner, and is told to the judge after `ownerless`, then each `owner`
+# deadline. An alert only. Without `heartbeats`, every named owner is live.
+# [owners]
+# heartbeats = "/var/lib/shunter/heartbeats"
+# alive = "30m"
+# ownerless = "1h"
 
 # Under [deadlines], two alerts that act on nothing:
 #   review = "24h"   # a hold that has stood this long is told to the judge, each time it passes

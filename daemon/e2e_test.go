@@ -3,7 +3,9 @@ package daemon_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -44,17 +46,22 @@ type rig struct {
 	// maxLines and tiers are the daemon's train cap and tier rules.
 	maxLines int
 	tiers    tier.Rules
+	// heartbeats is the daemon's owners' heartbeat directory, if any.
+	heartbeats string
 }
 
 func newRig(t *testing.T) *rig { return newRigWith(t, 0, tier.Rules{}) }
 
 // newRigWith is a rig whose daemon caps a train's lines and classifies lines
-// by the tier rules given.
-func newRigWith(t *testing.T, maxLines int, tiers tier.Rules) *rig {
+// by the tier rules given; opts set the rest before the daemon starts.
+func newRigWith(t *testing.T, maxLines int, tiers tier.Rules, opts ...func(*rig)) *rig {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	r := &rig{t: t, ctx: ctx, dir: t.TempDir(), w: fake.New("T0"), clk: &clock{t: time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)}, maxLines: maxLines, tiers: tiers}
+	for _, o := range opts {
+		o(r)
+	}
 	r.start()
 	r.settle()
 	t.Cleanup(func() {
@@ -76,7 +83,7 @@ func (r *rig) start() {
 	r.st = st
 	// The real ticker never fires in a test; the test ticks by hand.
 	r.d = daemon.New(st, r.w.Set(), daemon.Config{Version: "test", Now: r.clk.Now, Tick: time.Hour, Poll: time.Nanosecond, Backoff: time.Second,
-		MaxLines: r.maxLines, Tiers: r.tiers}, nil)
+		MaxLines: r.maxLines, Tiers: r.tiers, Heartbeats: r.heartbeats}, nil)
 	ctx, cancel := context.WithCancel(r.ctx)
 	r.cancel, r.done = cancel, make(chan error, 1)
 	go func() { r.done <- r.d.Run(ctx) }()
@@ -748,6 +755,52 @@ func TestReturnedBaseTakesItsStackUncharged(t *testing.T) {
 	r.w.Pass(r.trainOf("c"))
 	r.tick(time.Second)
 	r.wantLine("c", state.LineLanded)
+}
+
+// TestCancelOfOneLineTakesOnlyItAndItsStack: a cancel that names a line
+// acts on that line and the lines stacked on it (§5.9). The train's other
+// lines go again, in the order they had.
+func TestCancelOfOneLineTakesOnlyItAndItsStack(t *testing.T) {
+	for _, action := range []string{"drop", "park"} {
+		t.Run(action, func(t *testing.T) {
+			r := newRig(t)
+			r.open("c", "a", "d", "e")
+			r.stack("b", "a")
+			r.exec(daemon.Request{Cmd: "pause", Reason: "gather a train"})
+			for _, id := range []string{"c", "a", "b", "d", "e"} {
+				r.queue(id)
+			}
+			r.exec(daemon.Request{Cmd: "resume"})
+			t1 := r.trainOf("a")
+			if n := len(r.train(t1).Lines); n != 5 {
+				t.Fatalf("the train took %v; want all five", r.train(t1).Lines)
+			}
+			r.exec(daemon.Request{Cmd: "cancel", Args: []string{"a"}, Action: action, Reason: "a is wrong"})
+			r.wantTrain(t1, state.TrainAborted)
+			s := r.state()
+			switch action {
+			case "drop":
+				if s.Lines["a"].State != state.LineReturned || s.Lines["a"].Cause != state.CauseAbort {
+					t.Fatalf("a is %s (%s), want returned by the abort", s.Lines["a"].State, s.Lines["a"].Cause)
+				}
+				if s.Lines["b"].State != state.LineReturned || s.Lines["b"].Cause != state.CauseBaseLost {
+					t.Fatalf("b is %s (%s), want returned with its base, uncharged", s.Lines["b"].State, s.Lines["b"].Cause)
+				}
+			case "park":
+				r.wantLine("a", state.LineParked)
+				r.wantLine("b", state.LineWaiting) // behind its parked base
+			}
+			t2 := r.trainOf("c")
+			if got := r.train(t2).Lines; !slices.Equal(got, []state.LineID{"c", "d", "e"}) {
+				t.Fatalf("the rest rode again as %v; want [c d e]", got)
+			}
+			r.w.Pass(t2)
+			r.tick(time.Second)
+			for _, id := range []string{"c", "d", "e"} {
+				r.wantLine(id, state.LineLanded)
+			}
+		})
+	}
 }
 
 // TestBlamedStackLeavesItsBase: blame names only the stacked line; its base
@@ -1472,4 +1525,95 @@ func TestAHoldAndASilentOwnerAreRaisedAndNeverActedOn(t *testing.T) {
 	}
 	r.wantLine("h", state.LineHeld)
 	r.wantLine("c", state.LineReturned)
+}
+
+// TestALineWithAGoneOwnerHasNoOwner: an owner entry names a live owner
+// (§7). A charged line whose owner's heartbeat is missing or old is raised
+// within the hour as having no owner, not after the twelve hours a live
+// owner gets; a live owner's line is not. Nothing is handed over by it.
+func TestALineWithAGoneOwnerHasNoOwner(t *testing.T) {
+	beats := t.TempDir()
+	r := newRigWith(t, 0, tier.Rules{}, func(r *rig) { r.heartbeats = beats })
+	beat := func(owner string, at time.Time) {
+		t.Helper()
+		p := filepath.Join(beats, owner)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.open("a", "g", "n")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	for _, o := range []struct{ line, owner string }{{"a", "alive"}, {"g", "finished"}, {"n", "never-beat"}} {
+		r.exec(daemon.Request{Cmd: "queue", Args: []string{o.line}, Actor: o.owner})
+		r.exec(daemon.Request{Cmd: "checked", Args: []string{o.line, "T0", o.line + "-1"}, Action: "fail", Reason: "lint fails; it passes on trunk alone"})
+		r.wantLine(o.line, state.LineReturned)
+	}
+	beat("finished", r.clk.Now().Add(-3*time.Hour))
+	beat("alive", r.clk.Now().Add(2*time.Hour)) // fresh when the clock gets there
+	r.tick(2 * time.Hour)
+	if !r.alerted("line g has waited 2h0m0s on its owner (finished), who is not live") {
+		t.Fatal("no alert for a line whose owner has finished")
+	}
+	if !r.alerted("line n has waited 2h0m0s on its owner (never-beat), who is not live") {
+		t.Fatal("no alert for a line whose owner never beat")
+	}
+	if len(r.w.NoticesTo("judge", "line a has waited")) != 0 {
+		t.Fatal("a line with a live owner was raised as ownerless")
+	}
+	for _, id := range []string{"a", "g", "n"} {
+		r.wantLine(id, state.LineReturned)
+	}
+	if got := r.state().Lines["g"].Owner; got != "finished" {
+		t.Fatalf("g's owner is %q: the clock handed it over", got)
+	}
+}
+
+// TestAClaimedCheckIsGivenToNoOtherCheckerAcrossARestart: a checker claims
+// a line's check, and the claim is in the store (§5.4). No other claim is
+// given the line, after a restart too; a verdict on another key is refused;
+// a claim past its lease is given up, the judge is told, and the line is
+// given to the next checker.
+func TestAClaimedCheckIsGivenToNoOtherCheckerAcrossARestart(t *testing.T) {
+	r := newRig(t)
+	r.open("a", "b")
+	r.exec(daemon.Request{Cmd: "pause", Reason: "gather"})
+	r.queue("a")
+	r.queue("b")
+	claim := func(worker string) string {
+		t.Helper()
+		return r.exec(daemon.Request{Cmd: "claim", Actor: worker})
+	}
+	if got := claim("w1"); got != "a T0 a-1" {
+		t.Fatalf("first claim: %q", got)
+	}
+	if got := claim("w2"); got != "b T0 b-1" {
+		t.Fatalf("second claim: %q", got)
+	}
+	r.restart()
+	if got := claim("w3"); got != "" {
+		t.Fatalf("after a restart a claimed line was given again: %q", got)
+	}
+	if e := r.execErr(daemon.Request{Cmd: "claim", Args: []string{"a"}, Actor: "w3"}); !strings.Contains(e, "claimed by w1") {
+		t.Fatalf("a named claim on a claimed line: %q", e)
+	}
+	if st := r.exec(daemon.Request{Cmd: "status"}); !strings.Contains(st, "checking: w1") {
+		t.Fatalf("the status doesn't show the claim:\n%s", st)
+	}
+	if e := r.execErr(daemon.Request{Cmd: "checked", Args: []string{"a", "T9", "a-1"}, Action: "pass"}); !strings.Contains(e, "claimed") {
+		t.Fatalf("a verdict on another key: %q", e)
+	}
+	r.exec(daemon.Request{Cmd: "checked", Args: []string{"a", "T0", "a-1"}, Action: "pass"})
+	if !r.state().Lines["a"].CheckCurrent() {
+		t.Fatal("the claim's verdict was not kept")
+	}
+	r.tick(31 * time.Minute)
+	if !r.alerted("the line check of b claimed by w2 ran past its lease") {
+		t.Fatal("no alert for a lease run out")
+	}
+	if got := claim("w3"); got != "b T0 b-1" {
+		t.Fatalf("after the lease: %q", got)
+	}
 }

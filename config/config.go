@@ -59,6 +59,7 @@ type File struct {
 	Tiers     Tiers     `toml:"tiers"`
 	Notify    Notify    `toml:"notify"`
 	Watch     Watch     `toml:"watch"`
+	Owners    Owners    `toml:"owners"`
 
 	dir string // the file's directory: relative paths are relative to it
 }
@@ -126,6 +127,8 @@ type Deadlines struct {
 	// this long, a charged line this long with its owner.
 	Review Duration `toml:"review"`
 	Owner  Duration `toml:"owner"`
+	// Claim is a checker's claim on a line check, unless it names its own.
+	Claim Duration `toml:"claim"`
 }
 
 // Retry is the two retry budgets: the adapters' short one, inside a call,
@@ -180,6 +183,17 @@ type Watch struct {
 	Stall    Duration `toml:"stall"`
 	Realert  Duration `toml:"realert"`
 	Restarts int      `toml:"restarts"`
+}
+
+// Owners is how the daemon tells a live owner from one that has gone
+// (PROTOCOL.md §7). With no Heartbeats, every owner counts as live.
+type Owners struct {
+	// Heartbeats is a directory with one file a producer, named as the
+	// producer offers lines; its modification time is the producer's
+	// last sign of life.
+	Heartbeats string   `toml:"heartbeats"`
+	Alive      Duration `toml:"alive"`
+	Ownerless  Duration `toml:"ownerless"`
 }
 
 // Load reads and checks a configuration file. A key it does not know is an
@@ -311,8 +325,9 @@ func (f *File) Daemon(version string) daemon.Config {
 		Tiers:   tier.Rules{Inert: f.Tiers.Inert, Read: f.Tiers.Read},
 		Tick:    d.Tick.Duration, Poll: d.Poll.Duration, Call: d.Call.Duration,
 		Build: d.Build.Duration, Open: d.Open.Duration, CI: d.CI.Duration, Push: d.Push.Duration,
-		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration,
+		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration, Claim: d.Claim.Duration,
 		MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
+		Heartbeats: f.path(f.Owners.Heartbeats), Alive: f.Owners.Alive.Duration, Ownerless: f.Owners.Ownerless.Duration,
 	}
 }
 

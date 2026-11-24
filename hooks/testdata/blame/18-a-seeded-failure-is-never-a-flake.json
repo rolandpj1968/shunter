@@ -1,0 +1,48 @@
+{
+  "config": {
+    "timing": [
+      "panic: test timed out"
+    ],
+    "flaky": [
+      "connection reset"
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "--- FAIL: TestRecordFuzz (0.4s)\n    b/y_test.go:41: lookup: connection reset\n    FUZZ_SEED=8353\npanic: test timed out after 10m",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      },
+      {
+        "id": "B",
+        "changes": [
+          {
+            "ID": "B",
+            "Head": "hB"
+          }
+        ],
+        "files": [
+          "b/y_test.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [
+      "B"
+    ],
+    "evidence_contains": "reproduce with FUZZ_SEED=8353"
+  }
+}

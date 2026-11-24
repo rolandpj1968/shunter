@@ -1,0 +1,31 @@
+{
+  "config": {
+    "flaky": [
+      "connection reset"
+    ]
+  },
+  "input": {
+    "train": "t1",
+    "head": "h",
+    "evidence": "property failed after 212 cases: connection reset\nSEED=77",
+    "lines": [
+      {
+        "id": "A",
+        "changes": [
+          {
+            "ID": "A",
+            "Head": "hA"
+          }
+        ],
+        "files": [
+          "a/x.go"
+        ]
+      }
+    ]
+  },
+  "want": {
+    "class": "deterministic",
+    "blamed": [],
+    "evidence_contains": "reproduce with SEED=77"
+  }
+}

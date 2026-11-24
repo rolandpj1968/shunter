@@ -1,6 +1,9 @@
 package state
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 // Event is something that happened: an act of a producer, the runner or the
 // judge, or a report from the forge or CI. Events are data.
@@ -261,6 +264,23 @@ type LineChecked struct {
 	Conflict string
 }
 
+// CheckClaimed is a checker's claim on the line check of one waiting line
+// (§5.4): it checks the line at Key, and holds the claim until Until. While
+// the claim stands no other checker is given the line, a restarted checker
+// included, and a verdict on another key is refused. The claim is in the
+// store, so it outlives the checker that made it.
+type CheckClaimed struct {
+	Line  LineID
+	Key   CheckKey
+	By    string
+	Until time.Time
+}
+
+// ClaimExpired ends a claim whose time has passed: its checker died or
+// hung. The line may be claimed again. A verdict that arrives later on the
+// same key is still a verdict on those heads.
+type ClaimExpired struct{ Line LineID }
+
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).
 type ExpireBudget struct{ Line LineID }
 
@@ -296,6 +316,8 @@ func (Fresh) event() string           { return "fresh" }
 func (LineChecked) event() string     { return "line-checked" }
 func (HandOver) event() string        { return "hand-over" }
 func (RebaseFailed) event() string    { return "rebase-failed" }
+func (CheckClaimed) event() string    { return "check-claimed" }
+func (ClaimExpired) event() string    { return "claim-expired" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }
@@ -318,6 +340,7 @@ var (
 	ErrTable     = errors.New("transition not in the table (I8)")
 	ErrOwner     = errors.New("only the line's owner may do this")
 	ErrUnfixed   = errors.New("charged, and not changed since")
+	ErrClaimed   = errors.New("the line check is claimed")
 )
 
 // EffectKind is what the runner must do in the world.

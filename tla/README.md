@@ -47,7 +47,7 @@ Liveness assumes, and the module states as `Fairness`:
 - a charge by a checker since replaced is voided;
 - J1's deadline passes and its default applies;
 - every hold is eventually released;
-- the adversary has a finite budget, `MaxFaults`: false greens, lost verdicts, refused pushes, pushes to riding changes, holds, aborts, manual priorities and changes of checker.
+- the adversary has a finite budget, `MaxFaults`: false greens, lost verdicts, refused pushes, pushes to riding changes, holds, aborts, manual priorities, changes of checker, and a line checker that dies with its claim standing (`ClaimExpired`).
 
 `MaxTrains` must be at least `Depth × (lines × (MaxFaults + 1) + MaxFaults)`, so the runner never runs out of trains: a change of checker voids charges, and so can give every line back once. The module asserts it.
 
