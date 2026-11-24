@@ -79,3 +79,42 @@ func TestAClaimIsOnlyForALineDueACheck(t *testing.T) {
 		t.Fatal("no claim on a stacked line over a checked base")
 	}
 }
+
+// A claim made under a declared line check takes that check's verdict: the
+// claim keeps the version it was given, and the verdict names it.
+func TestAClaimUnderAVersionTakesItsVerdict(t *testing.T) {
+	key := CheckKey{Heads: []Head{"a1"}, Trunk: "trunk0", Checker: "v1"}
+	s := checkedQueue(t, cat(version(CheckerLineCheck, "v1"), ready("a"),
+		CheckClaimed{Line: "a", Key: key, By: "w1", Until: at.Add(time.Hour)},
+		LineChecked{Line: "a", Heads: []Head{"a1"}, Trunk: "trunk0", Pass: true, Version: "v1"})...)
+	if l := s.Lines["a"]; l.Claim != nil || !l.CheckCurrent() {
+		t.Fatalf("the claim's own verdict: claim %+v, green %v", l.Claim, l.CheckCurrent())
+	}
+}
+
+// §5.4: a checker that can give no verdict (its infrastructure failed)
+// gives its claim up at once, with a reason, instead of letting the lease
+// run out. Nothing is recorded of the line: it is due a check again. Only
+// the claim's own key gives it up, and a reason is required.
+func TestAClaimIsReleasedWithNoVerdict(t *testing.T) {
+	key := CheckKey{Heads: []Head{"a1"}, Trunk: "trunk0"}
+	s := checkedQueue(t, cat(ready("a"), claim("a", "w1", "a1"))...)
+	if _, _, err := Next(s, ClaimReleased{Line: "a", Key: key, By: "w1"}); !errors.Is(err, ErrReason) {
+		t.Fatalf("a release with no reason: %v", err)
+	}
+	other := CheckKey{Heads: []Head{"a1"}, Trunk: "trunk9"}
+	if _, _, err := Next(s, ClaimReleased{Line: "a", Key: other, By: "w1", Reason: "runner lost"}); !errors.Is(err, ErrClaimed) {
+		t.Fatalf("a release on another key: %v", err)
+	}
+	s = checkedQueue(t, cat(ready("a"), claim("a", "w1", "a1"), ClaimReleased{Line: "a", Key: key, By: "w1", Reason: "runner lost"})...)
+	if l := s.Lines["a"]; l.Claim != nil || l.CheckCurrent() || l.State != LineWaiting || len(l.ChargedAt) != 0 {
+		t.Fatalf("after a release: %+v", l)
+	}
+	if _, _, err := Next(s, ClaimReleased{Line: "a", Key: key, By: "w1", Reason: "again"}); !errors.Is(err, ErrState) {
+		t.Fatalf("a release with no claim standing: %v", err)
+	}
+	s = apply(t, s, claim("a", "w2", "a1"))
+	if c := s.Lines["a"].Claim; c == nil || c.By != "w2" {
+		t.Fatalf("after a release, the claim is %+v", c)
+	}
+}

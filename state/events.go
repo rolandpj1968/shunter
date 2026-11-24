@@ -293,6 +293,17 @@ type CheckClaimed struct {
 // same key is still a verdict on those heads.
 type ClaimExpired struct{ Line LineID }
 
+// ClaimReleased is a checker's giving up its own claim with no verdict
+// (§5.4): its infrastructure failed, so it judged nothing. It ends the claim
+// as ClaimExpired does, at once and with a reason, and records nothing of
+// the line, which is due a check again. Only the claim's own key releases it.
+type ClaimReleased struct {
+	Line   LineID
+	Key    CheckKey
+	By     string
+	Reason string
+}
+
 // Prioritise gives a line a manual priority, the one act that lets a line
 // pass an older one (docs/queue-as-bag.md §2). It needs a reason and an
 // expiry, and covers the lines the line is stacked on, which must ride
@@ -363,6 +374,7 @@ func (HandOver) event() string        { return "hand-over" }
 func (RebaseFailed) event() string    { return "rebase-failed" }
 func (CheckClaimed) event() string    { return "check-claimed" }
 func (ClaimExpired) event() string    { return "claim-expired" }
+func (ClaimReleased) event() string   { return "claim-released" }
 func (Prioritise) event() string      { return "prioritise" }
 func (PriorityEnded) event() string   { return "priority-ended" }
 func (DraftOpened) event() string     { return "draft-opened" }

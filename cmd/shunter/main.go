@@ -2,14 +2,15 @@
 // "shunt", it is the same program; the verbs are the same either way.
 //
 //	shunter serve --config FILE
-//	shunter serve --store DIR [--socket PATH] [--trunk HEAD] [--depth N] --adapters fake
+//	shunter serve --store DIR [--socket PATH] [--trunk HEAD] [--depth N] --adapters fake [--open ID,...]
 //	shunter shadow --config FILE [--lines DIR|FILE] [--stats FILE] [--since 6h] [--effects OUT] [--verbose] TRAIN-LOG...
 //
 //	shunt queue <change>... [--alone]
 //	shunt hold <line|change> --reason WHY
 //	shunt release <line|change>
 //	shunt cancel <train|line> --action park|requeue|drop --reason WHY
-//	shunt claim [<line|change>] [--lease 20m]
+//	shunt claim [<line|change>] [--lease 20m] [--version V]
+//	shunt checked <line|change> <trunk> <head>... --action pass|fail|conflict|infra [--reason WHY] --version V
 //	shunt checker line-check|pre-flight|blame <version>
 //	shunt priority <line|change> --reason WHY --until 2h|TIME | --action end --reason WHY
 //	shunt withdraw <line|change>
@@ -61,7 +62,7 @@ var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true,
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
 	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
 	"stats": true, "since": true, "effects": true, "line-files": true, "state": true,
-	"until": true, "lease": true, "version": true, "checks": true, "owners": true, "live": true}
+	"until": true, "lease": true, "version": true, "checks": true, "owners": true, "live": true, "open": true}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -246,7 +247,14 @@ func serve(fl map[string]string) error {
 		if trunk == "" {
 			trunk = "trunk-0"
 		}
-		ad = fake.New(trunk).Set()
+		w := fake.New(trunk)
+		// A dry run's changes: each open, approved, on trunk, at head ID-1.
+		for _, id := range strings.Split(fl["open"], ",") {
+			if id != "" {
+				w.Open(state.ChangeID(id), state.Head(id+"-1"), "")
+			}
+		}
+		ad = w.Set()
 	default:
 		return errors.New("serve: without --config, --adapters fake is the only set")
 	}

@@ -365,7 +365,9 @@ LineCheckDropped(l) ==
 \* check is in flight a line at most.  A fault: the checker dies, and its
 \* claim's lease runs out.  The line may be claimed again.  (A late verdict
 \* from the dead checker on the same heads is the same verdict as a new
-\* check's, and is not modelled apart.)
+\* check's, and is not modelled apart.)  A checker that gives its claim up
+\* with no verdict, its infrastructure failed (claim-released), takes this
+\* same step before the lease's end, and is the same fault.
 ClaimExpired(l) ==
     /\ checking[l] # 0
     /\ Fault

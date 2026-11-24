@@ -43,6 +43,8 @@ type Daemon struct {
 	polled   map[state.TrainID]time.Time
 	pollErrs map[state.TrainID]int
 	alerted  map[string]bool
+	// paced holds the line checks given up with no verdict (release).
+	paced map[state.LineID]unanswered
 	// mergeTried is the heads and trunk each line sent back uncharged was
 	// last found in conflict at: the merge isn't tested again until one moves.
 	mergeTried  map[state.LineID]string
@@ -68,6 +70,13 @@ type job struct {
 type retry struct {
 	n  int
 	at time.Time
+}
+
+// unanswered is a line check given up with no verdict, on its key, and when
+// the line may be given to any checker again.
+type unanswered struct {
+	key   state.CheckKey
+	until time.Time
 }
 
 // result is what a goroutine brings back to the loop.
@@ -97,7 +106,7 @@ func New(st *store.Store, ad adapter.Set, cfg Config, logger *log.Logger) *Daemo
 		cfg: cfg.withDefaults(), st: st, ad: ad, log: logger,
 		in: make(chan func()), results: make(chan result), quit: make(chan struct{}),
 		jobs: map[string]*job{}, retry: map[string]retry{}, polls: map[state.TrainID]bool{},
-		polled: map[state.TrainID]time.Time{}, pollErrs: map[state.TrainID]int{}, alerted: map[string]bool{},
+		polled: map[state.TrainID]time.Time{}, pollErrs: map[state.TrainID]int{}, alerted: map[string]bool{}, paced: map[state.LineID]unanswered{},
 		mergeTried: map[state.LineID]string{},
 	}
 }

@@ -316,6 +316,8 @@ func (m *machine) apply(ev Event) error {
 			return err
 		}
 		l.Claim = nil
+	case ClaimReleased:
+		return m.release(e)
 	case Prioritise:
 		l, err := m.line(e.Line)
 		if err != nil {
@@ -855,7 +857,28 @@ func (m *machine) claim(e CheckClaimed) error {
 	if c := l.Claim; c != nil && (c.By != e.By || !c.Key.Equal(e.Key)) {
 		return bad(ErrClaimed, "line %s is claimed by %s until %s", l.ID, c.By, c.Until.UTC().Format(time.RFC3339))
 	}
-	l.Claim = &Claim{Key: CheckKey{Heads: append([]Head(nil), e.Key.Heads...), Trunk: e.Key.Trunk}, By: e.By, Until: e.Until}
+	l.Claim = &Claim{Key: CheckKey{Heads: append([]Head(nil), e.Key.Heads...), Trunk: e.Key.Trunk, Checker: e.Key.Checker}, By: e.By, Until: e.Until}
+	return nil
+}
+
+// release ends a claim its checker gives up with no verdict (§5.4). It is
+// the model's ClaimExpired, a fault, taken before the lease's end.
+func (m *machine) release(e ClaimReleased) error {
+	l, err := m.line(e.Line)
+	if err != nil {
+		return err
+	}
+	if e.Reason == "" {
+		return bad(ErrReason, "a release says why no verdict was given")
+	}
+	c := l.Claim
+	if c == nil {
+		return bad(ErrState, "line %s has no claim standing", l.ID)
+	}
+	if !c.Key.Equal(e.Key) {
+		return bad(ErrClaimed, "line %s is claimed by %s on trunk %s at %v, not this release's key", l.ID, c.By, c.Key.Trunk, c.Key.Heads)
+	}
+	l.Claim = nil
 	return nil
 }
 

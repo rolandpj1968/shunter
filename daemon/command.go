@@ -80,9 +80,9 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		}
 		return d.act(actor, state.Hold{Line: l, Reason: req.Reason}, "line "+string(l)+" held")
 	case "checked":
-		// checked <line|change> <trunk> <head>... --action pass|fail|conflict [--reason <evidence, or the files in conflict>]
-		if len(req.Args) < 3 || (req.Action != "pass" && req.Action != "fail" && req.Action != "conflict") || (req.Action != "pass" && req.Reason == "") {
-			return errResp(errors.New("usage: checked <line|change> <trunk> <head>... --action pass|fail|conflict [--reason <evidence for a fail, the files for a conflict>]"))
+		// checked <line|change> <trunk> <head>... --action pass|fail|conflict|infra [--reason <evidence, the files in conflict, or why no verdict>]
+		if len(req.Args) < 3 || !slices.Contains([]string{"pass", "fail", "conflict", "infra"}, req.Action) || (req.Action != "pass" && req.Reason == "") {
+			return errResp(errors.New("usage: checked <line|change> <trunk> <head>... --action pass|fail|conflict|infra [--reason <evidence for a fail, the files for a conflict, why there is no verdict for infra>]"))
 		}
 		l, err := d.findLine(req.Args[0])
 		if err != nil {
@@ -101,6 +101,9 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		}
 		if v := d.st.State().Checkers[state.CheckerLineCheck]; req.Version != v {
 			return errResp(fmt.Errorf("the line check is at version %q, not %q: a verdict of another version is not recorded (declare a new one with checker %s <version>)", v, req.Version, state.CheckerLineCheck))
+		}
+		if req.Action == "infra" {
+			return d.release(actor, l, ev, req.Reason)
 		}
 		return d.act(actor, ev, "line "+string(l)+" check recorded: "+req.Action)
 	case "checker":
@@ -197,7 +200,10 @@ func (d *Daemon) act(actor string, ev state.Event, ok string) Response {
 // checked takes, "<line> <trunk> <head>...", or nothing when no line is due.
 func (d *Daemon) claim(actor string, req Request) Response {
 	if len(req.Args) > 1 {
-		return errResp(errors.New("usage: claim [<line|change>] [--lease 20m]"))
+		return errResp(errors.New("usage: claim [<line|change>] [--lease 20m] [--version <the checker's>]"))
+	}
+	if v := d.st.State().Checkers[state.CheckerLineCheck]; req.Version != "" && req.Version != v {
+		return errResp(fmt.Errorf("the line check is at version %q, not %q: its verdict would not be recorded (declare it with checker %s <version>)", v, req.Version, state.CheckerLineCheck))
 	}
 	lease := d.cfg.Claim
 	if req.Lease != "" {
@@ -217,7 +223,7 @@ func (d *Daemon) claim(actor string, req Request) Response {
 		l = s.Lines[id]
 	} else {
 		for _, id := range s.Waiting() {
-			if c := s.Lines[id]; dueCheck(s, c) {
+			if c := s.Lines[id]; dueCheck(s, c) && !d.unanswered(c) {
 				l = c
 				break
 			}
@@ -239,6 +245,35 @@ func (d *Daemon) claim(actor string, req Request) Response {
 		out = append(out, string(h))
 	}
 	return Response{Output: strings.Join(out, " ")}
+}
+
+// release ends a claim whose checker could give no verdict (§5.4): the
+// same step as a lease's end, taken at once, and the judge is told. The line
+// is not given to a checker that asks for any line for Unanswered, so a
+// failed infrastructure isn't asked again every lap.
+func (d *Daemon) release(actor string, l state.LineID, v state.LineChecked, why string) Response {
+	key := state.CheckKey{Heads: v.Heads, Trunk: v.Trunk, Checker: v.Version}
+	if err := d.apply(actor, state.ClaimReleased{Line: l, Key: key, By: actor, Reason: why}); err != nil {
+		return errResp(err)
+	}
+	d.paced[l] = unanswered{key: key, until: d.now().Add(d.cfg.Unanswered)}
+	d.alert(fmt.Sprintf("infra:%s:%s:%v", l, key.Trunk, key.Heads), fmt.Sprintf("the line check of %s by %s gave no verdict: %s", l, actor, why))
+	d.drive()
+	return Response{Output: "line " + string(l) + " claim released, no verdict"}
+}
+
+// unanswered reports whether a line's check was given up with no verdict,
+// on the key it would be claimed at now, within Unanswered.
+func (d *Daemon) unanswered(l *state.Line) bool {
+	p, ok := d.paced[l.ID]
+	if !ok {
+		return false
+	}
+	if !d.now().Before(p.until) || p.key.Trunk != d.st.State().Trunk || !l.OnHeads(p.key) {
+		delete(d.paced, l.ID)
+		return false
+	}
+	return true
 }
 
 // priority gives a line a manual priority, the one override of the bag's

@@ -103,6 +103,7 @@ push = "5m"     # one push to trunk; an unknown outcome is settled by reading tr
 j1 = "10m"      # J1's deadline, then its default
 park = "24h"    # a park whose condition cannot be tested is restored then
 claim = "30m"   # a line checker's claim (`shunt claim`), unless it names its own lease
+unanswered = "10m" # a line check given up with no verdict (`checked --action infra`) is offered again after this
 
 [retry]
 # Inside one adapter call: tries, and the waits between them.
