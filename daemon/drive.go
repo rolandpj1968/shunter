@@ -15,7 +15,8 @@ import (
 )
 
 // assemble extends the chain with one train when it can (§5.3): not paused,
-// shorter than D, and the train at its tail has a head to build on. The
+// shorter than D, no train in it decided red, and the train at its tail has a
+// head to build on. The
 // joining rule takes waiting lines in the policy's order (state.SortByPolicy)
 // and skips a line it cannot take:
 // one that must ride alone, one of another half of a split, one past a cap,
@@ -25,7 +26,7 @@ import (
 func (d *Daemon) assemble() {
 	for d.fatal == nil {
 		s := d.st.State()
-		if s.Paused || len(s.Chain) >= s.Config.Depth {
+		if s.Paused || len(s.Chain) >= s.Config.Depth || s.DecidedRed() != "" {
 			return
 		}
 		if n := len(s.Chain); n > 0 {

@@ -255,6 +255,16 @@ func TestStatusClassifies(t *testing.T) {
 			s.check("h", "test (1)", "completed", "success", t0.Add(time.Hour))
 			s.check("h", "check", "completed", "success", t0.Add(time.Hour))
 		}, adapter.Passed, ""},
+		// docs/queue-as-bag.md §6: a failed job is reported while the rest
+		// still runs, without blame to say otherwise decisive.
+		{"a job failed, the rest runs", func(s *server) {
+			s.check("h", "test (1)", "completed", "failure", t0)
+			s.check("h", "check", "in_progress", "", t0)
+		}, adapter.Failed, ""},
+		{"a job timed out, the rest runs", func(s *server) {
+			s.check("h", "test (1)", "completed", "timed_out", t0)
+			s.check("h", "check", "in_progress", "", t0)
+		}, adapter.Pending, "check is in_progress"},
 		{"a rerun runs", func(s *server) {
 			s.check("h", "check", "completed", "failure", t0)
 			s.check("h", "check", "queued", "", t0.Add(time.Hour))
@@ -375,6 +385,34 @@ func TestBlameHookAdvisesButCannotPass(t *testing.T) {
 		}
 		if rep.Outcome != tc.want || blamed != tc.blamed {
 			t.Errorf("%s exit %d: outcome %d blamed %v (%s), want %d %s", tc.answer, tc.code, rep.Outcome, rep.Blamed, rep.Evidence, tc.want, tc.blamed)
+		}
+	}
+}
+
+// TestAnEarlyFailureIsDecisiveOnlyIfDeterministic: a job that failed while
+// the run goes on is reported at once only when blame finds it
+// deterministic (docs/queue-as-bag.md §6). One a rerun could clear waits
+// for the run to end.
+func TestAnEarlyFailureIsDecisiveOnlyIfDeterministic(t *testing.T) {
+	lines := []adapter.BuildLine{{ID: "11", Changes: []state.Change{{ID: "11", Head: "aaa"}}}}
+	for _, tc := range []struct {
+		answer string
+		want   adapter.Outcome
+	}{
+		{`{"class":"deterministic","blamed":["11"],"evidence":"TestX in a.go"}`, adapter.Failed},
+		{`{"class":"flaky","why":"TestY is a known flake"}`, adapter.Pending},
+		{`{"class":"infra"}`, adapter.Pending},
+	} {
+		s, c := newServer(t)
+		c.cfg.Blame = blameHook(t, tc.answer, 0)
+		s.check("h", "test (1)", "completed", "failure", t0)
+		s.check("h", "check", "in_progress", "", t0)
+		rep, err := c.Status(ctx, "t1", "h", lines)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.Outcome != tc.want || (tc.want == adapter.Failed && (!rep.Early || len(rep.Blamed) != 1)) {
+			t.Errorf("%s: outcome %d early %v blamed %v (%s)", tc.answer, rep.Outcome, rep.Early, rep.Blamed, rep.Why)
 		}
 	}
 }

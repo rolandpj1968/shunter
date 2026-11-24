@@ -105,6 +105,10 @@ type Report struct {
 	// KnownFlake says a Flaky outcome is a recorded flake (class 2), not a
 	// timing failure (class 3): it never charges a line (§5.5).
 	KnownFlake bool
+	// Early says a Failed outcome was read while other jobs still ran: a
+	// decisive failure, reported at once, and the run is cancelled
+	// (docs/queue-as-bag.md §6).
+	Early bool
 	// Checks are the checks read, each the latest run of its name: the
 	// evidence behind the outcome, for the log and for shadow running.
 	Checks []Check

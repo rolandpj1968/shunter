@@ -382,7 +382,15 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrState, "train %s is %s%s", t.ID, t.State, waits(t))
 		}
 		t.TreeWide = e.TreeWide
-		return m.failed(t, e.Blamed, e.Evidence)
+		if err := m.failed(t, e.Blamed, e.Evidence); err != nil {
+			return err
+		}
+		if t.State == TrainJudging || t.Behind != nil {
+			// Decided red, and live: the rest of its run is cancelled to
+			// free the slot (docs/queue-as-bag.md §6). An ended train's
+			// run was cancelled as it ended.
+			m.emit(Effect{Kind: EffCancelRun, Train: t.ID, Reason: "decided red: " + e.Evidence})
+		}
 	case Built:
 		t, err := m.train(e.Train)
 		if err != nil {
@@ -911,6 +919,9 @@ func (m *machine) assemble(e Assemble) error {
 	}
 	if len(m.s.Chain) >= m.s.Config.Depth {
 		return bad(ErrChain, "%d trains ride already", len(m.s.Chain))
+	}
+	if r := m.s.DecidedRed(); r != "" {
+		return bad(ErrChain, "train %s is decided red: nothing is built behind it (docs/queue-as-bag.md §6)", r)
 	}
 	if err := m.forcedFirst(e.Lines); err != nil {
 		return err
