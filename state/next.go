@@ -185,6 +185,10 @@ func (m *machine) finish(t *Train, to TrainState, c Cause, reason string, dispos
 	if t.State >= TrainBuilt {
 		m.emit(Effect{Kind: EffCancelRun, Train: t.ID, Reason: reason})
 		m.emit(Effect{Kind: EffClosePR, Train: t.ID, Reason: reason})
+	} else if t.PR != "" {
+		// A draft opened at assembly: no CI runs on it, and it is closed
+		// with the reason, a failed pre-flight's evidence included.
+		m.emit(Effect{Kind: EffClosePR, Train: t.ID, Reason: reason})
 	}
 	lines := t.Lines
 	t.Behind = nil // judged now, or void with the train ahead: either way it is no longer waiting
@@ -385,8 +389,22 @@ func (m *machine) apply(ev Event) error {
 		if e.Head != t.Head {
 			return bad(ErrHead, "train %s opened at %s, built at %s", t.ID, e.Head, t.Head)
 		}
-		t.PR = e.PR
+		t.PR, t.Draft = e.PR, false
 		m.setTrain(t, TrainTesting, CauseOpened, "")
+	case DraftOpened:
+		t, err := m.train(e.Train)
+		if err != nil {
+			return err
+		}
+		switch {
+		case e.PR == "":
+			return bad(ErrInput, "a draft names its pull request")
+		case t.State != TrainAssembling:
+			return bad(ErrState, "train %s is %s, not assembling", t.ID, t.State)
+		case t.PR != "" && t.PR != e.PR:
+			return bad(ErrState, "train %s has the draft %s already", t.ID, t.PR)
+		}
+		t.PR, t.Draft = e.PR, true
 	case CIPassed:
 		t, err := m.train(e.Train)
 		if err != nil {

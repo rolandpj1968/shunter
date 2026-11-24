@@ -48,6 +48,8 @@ type rig struct {
 	tiers    tier.Rules
 	// heartbeats is the daemon's owners' heartbeat directory, if any.
 	heartbeats string
+	// drafts shows each train as a draft from assembly.
+	drafts bool
 }
 
 func newRig(t *testing.T) *rig { return newRigWith(t, 0, tier.Rules{}) }
@@ -83,7 +85,7 @@ func (r *rig) start() {
 	r.st = st
 	// The real ticker never fires in a test; the test ticks by hand.
 	r.d = daemon.New(st, r.w.Set(), daemon.Config{Version: "test", Now: r.clk.Now, Tick: time.Hour, Poll: time.Nanosecond, Backoff: time.Second,
-		MaxLines: r.maxLines, Tiers: r.tiers, Heartbeats: r.heartbeats}, nil)
+		MaxLines: r.maxLines, Tiers: r.tiers, Heartbeats: r.heartbeats, Drafts: r.drafts}, nil)
 	ctx, cancel := context.WithCancel(r.ctx)
 	r.cancel, r.done = cancel, make(chan error, 1)
 	go func() { r.done <- r.d.Run(ctx) }()

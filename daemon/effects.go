@@ -145,7 +145,27 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 			}
 			req.Lines = append(req.Lines, bl)
 		}
+		dr, _ := a.Forge.(adapter.Drafter)
+		drafted := t.PR != ""
 		return func(ctx context.Context) result {
+			if d.cfg.Drafts && dr != nil && !drafted {
+				req.Merged = func(head state.Head) {
+					if drafted {
+						return
+					}
+					pr, err := dr.OpenDraft(ctx, k.Key+".draft", req.Train, head, req.Base)
+					if err != nil {
+						// The draft only shows the train; the build goes on.
+						d.log.Printf("train %s: no draft opened: %v", req.Train, err)
+						return
+					}
+					drafted = true
+					select {
+					case d.results <- result{side: true, events: evs(state.DraftOpened{Train: req.Train, PR: pr}), actor: "forge"}:
+					case <-d.quit:
+					}
+				}
+			}
 			r, err := a.Git.Build(ctx, k.Key, req)
 			if err != nil {
 				return result{actor: "builder", err: err}
@@ -153,6 +173,16 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 			return result{events: built(req, r), actor: "builder"}
 		}, d.cfg.Build
 	case state.EffOpenPR:
+		t := s.Trains[k.Train]
+		if dr, ok := a.Forge.(adapter.Drafter); ok && t.Draft && t.PR != "" {
+			// Promotion: the draft shown since assembly is marked ready,
+			// and its CI starts.
+			pr := t.PR
+			return func(ctx context.Context) result {
+				err := dr.Promote(ctx, k.Key, k.Train, pr, k.Head)
+				return result{events: evs(state.Opened{Train: k.Train, PR: pr, Head: k.Head}), actor: "forge", err: err}
+			}, d.cfg.Call
+		}
 		return func(ctx context.Context) result {
 			pr, err := a.Forge.OpenPR(ctx, k.Key, k.Train, k.Head, k.Expect)
 			return result{events: evs(state.Opened{Train: k.Train, PR: pr, Head: k.Head}), actor: "forge", err: err}
@@ -361,6 +391,14 @@ func (d *Daemon) complete(r result) {
 	}
 	if r.restack {
 		d.restackDone(r)
+		return
+	}
+	if r.side {
+		for _, ev := range r.events {
+			if d.apply(r.actor, ev) != nil && d.fatal != nil {
+				return
+			}
+		}
 		return
 	}
 	if r.key == "" {

@@ -244,10 +244,13 @@ type Train struct {
 	Verdict  Head     // the head CI passed, as reported by CI
 	Verified bool     // the lander has read the verdict and the heads itself (I9)
 	PR       string   // the train's own pull request
-	Reruns   int      // reruns after a flake or a timing failure
-	Judged   int      // reruns ordered at J1
-	Pushes   int      // transient push refusals
-	Asked    bool     // the landing check has been asked for
+	// Draft says PR was opened as a draft at assembly, while the cheap tier
+	// runs, and has not been promoted (§5.4). Opened promotes it.
+	Draft  bool
+	Reruns int  // reruns after a flake or a timing failure
+	Judged int  // reruns ordered at J1
+	Pushes int  // transient push refusals
+	Asked  bool // the landing check has been asked for
 	// TreeWide says the failure the train reported was of a test that scans
 	// the whole tree (CIFailed.TreeWide).
 	TreeWide bool

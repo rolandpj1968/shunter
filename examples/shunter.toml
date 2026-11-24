@@ -71,6 +71,9 @@ depth = 2       # the speculation chain: trains in flight at once
 max_lines = 8   # lines in one train (J4)
 # max_changes = 12  # changes in one train, every change of a stack counted;
 #                   # unset or 0 is no cap. A line bigger than the cap rides alone.
+# drafts = true    # show each train from assembly as a draft pull request,
+#                   # promoted (CI starts) when its pre-flight passes. A workflow
+#                   # run by pull request events should skip drafts.
 
 [deadlines]
 # Every wait has one (§2.5). Shown: the defaults.

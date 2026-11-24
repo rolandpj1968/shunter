@@ -167,7 +167,19 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.nextPR++
 		s.pull(s.nextPR, "open", s.refs[head], head, in["base"].(string), "shunter-bot")
 		s.pulls[s.nextPR]["body"] = in["body"]
+		s.pulls[s.nextPR]["draft"] = in["draft"] == true
+		s.pulls[s.nextPR]["node_id"] = fmt.Sprintf("PR_%d", s.nextPR)
 		reply(s.pulls[s.nextPR])
+	case r.Method == "POST" && path == "/graphql":
+		id, _ := in["variables"].(map[string]any)["id"].(string)
+		for _, p := range s.pulls {
+			if p["node_id"] == id {
+				p["draft"] = false
+				reply(map[string]any{"data": map[string]any{}})
+				return
+			}
+		}
+		reply(map[string]any{"errors": []any{map[string]any{"message": "no such pull request"}}})
 	case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "pulls":
 		n, _ := strconv.Atoi(parts[1])
 		if st, ok := in["state"].(string); ok {

@@ -299,6 +299,14 @@ type PriorityEnded struct {
 	Why  string
 }
 
+// DraftOpened records the draft pull request a train is shown by from
+// assembly (§5.4): its lines are merged, and its cheap tier runs. No CI
+// runs on the draft; Opened promotes it once pre-flight passes.
+type DraftOpened struct {
+	Train TrainID
+	PR    string
+}
+
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).
 type ExpireBudget struct{ Line LineID }
 
@@ -338,6 +346,7 @@ func (CheckClaimed) event() string    { return "check-claimed" }
 func (ClaimExpired) event() string    { return "claim-expired" }
 func (Prioritise) event() string      { return "prioritise" }
 func (PriorityEnded) event() string   { return "priority-ended" }
+func (DraftOpened) event() string     { return "draft-opened" }
 
 // Name returns the event's name, for logs and reports.
 func Name(e Event) string { return e.event() }

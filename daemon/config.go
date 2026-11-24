@@ -71,6 +71,11 @@ type Config struct {
 	// claimed again, and the judge is told. Default 30m.
 	Claim time.Duration
 
+	// Drafts shows each train from assembly as a draft pull request,
+	// promoted when its pre-flight passes (§5.4). It needs a forge that is
+	// an adapter.Drafter; with any other, it does nothing.
+	Drafts bool
+
 	// MaxLines caps the lines of one train (J4's bounds). Default 8.
 	MaxLines int
 	// MaxChanges caps the changes of one train, every change of every
