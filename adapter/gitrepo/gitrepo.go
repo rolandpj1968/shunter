@@ -481,8 +481,41 @@ func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[stat
 	if st, err := r.git(ctx, "status", "--porcelain"); err != nil || st != "" {
 		return res, "", false, adapter.Permanent(fmt.Errorf("pre-flight left the tree changed and uncommitted: %s", st))
 	}
-	head, err = r.git(ctx, "rev-parse", "HEAD")
-	return res, head, false, err
+	merged := head
+	if head, err = r.git(ctx, "rev-parse", "HEAD"); err != nil {
+		return res, "", false, err
+	}
+	if err := r.onTop(ctx, merged, head); err != nil {
+		return res, "", false, adapter.Permanent(fmt.Errorf("pre-flight: %w", err))
+	}
+	return res, head, false, nil
+}
+
+// onTop checks that a pre-flight's head is the merged head with only the
+// hook's own commits on it (a regeneration, a counters update): it still
+// holds every line of the train, and nothing else's history. CI judges, and
+// trunk takes, exactly that head, so whatever the commits change is
+// checked; only a head that dropped a line or merged another in could land
+// something the train doesn't say.
+func (r *Repo) onTop(ctx context.Context, merged, head string) error {
+	if head == merged {
+		return nil
+	}
+	ok, err := r.isAncestor(ctx, state.Head(merged), state.Head(head))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("its head %s does not hold the merged train %s: a hook may only add commits", short(state.Head(head)), short(state.Head(merged)))
+	}
+	merges, err := r.git(ctx, "rev-list", "--merges", merged+".."+head)
+	if err != nil {
+		return err
+	}
+	if merges != "" {
+		return fmt.Errorf("it added a merge (%s): a hook may only add commits of its own", short(state.Head(firstLine(merges))))
+	}
+	return nil
 }
 
 // ancestor reports whether a is h or in h's history, in the clone as it is.
