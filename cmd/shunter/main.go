@@ -10,6 +10,7 @@
 //	shunt release <line|change>
 //	shunt cancel <train|line> --action park|requeue|drop --reason WHY
 //	shunt claim [<line|change>] [--lease 20m]
+//	shunt checker line-check|pre-flight|blame <version>
 //	shunt priority <line|change> --reason WHY --until 2h|TIME | --action end --reason WHY
 //	shunt withdraw <line|change>
 //	shunt pause --reason WHY
@@ -60,7 +61,7 @@ var boolFlags = map[string]bool{"alone": true, "offline": true, "verbose": true,
 var valueFlags = map[string]bool{"action": true, "reason": true, "lines": true, "socket": true, "store": true,
 	"file": true, "out": true, "trunk": true, "depth": true, "adapters": true, "config": true,
 	"stats": true, "since": true, "effects": true, "line-files": true, "state": true,
-	"until": true, "lease": true, "checks": true, "owners": true, "live": true}
+	"until": true, "lease": true, "version": true, "checks": true, "owners": true, "live": true}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -84,7 +85,7 @@ func main() {
 		fmt.Println(version)
 		return
 	}
-	req := daemon.Request{Cmd: verb, Args: pos, Alone: fl["alone"] != "", Action: fl["action"], Reason: fl["reason"], Until: fl["until"], Lease: fl["lease"], Actor: actor()}
+	req := daemon.Request{Cmd: verb, Args: pos, Alone: fl["alone"] != "", Action: fl["action"], Reason: fl["reason"], Until: fl["until"], Lease: fl["lease"], Version: fl["version"], Actor: actor()}
 	if fl["lines"] != "" {
 		req.Lines = strings.Split(fl["lines"], ",")
 	}
@@ -468,7 +469,7 @@ func watchRun(fl map[string]string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|claim|checked|handover|priority|hold|release|cancel|restore|withdraw|pause|resume|judge|status|export|import> ...")
+	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|claim|checked|checker|handover|priority|hold|release|cancel|restore|withdraw|pause|resume|judge|status|export|import> ...")
 	os.Exit(2)
 }
 

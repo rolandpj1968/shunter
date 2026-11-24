@@ -47,9 +47,10 @@ These are safety properties. Every reachable state must satisfy them, whatever t
 - **I7, one writer.** At most one actor fast-forwards trunk.
 - **I8, one state, one record.** Every line is in exactly one state of §5.1, held in one store, and so is every train. A transition is a recorded act: the subject, from, to, the actor, the time and the reason. No actor infers a line's state from anything else, and a transition that isn't in the tables of §5.1 can't be written.
 - **I10, checked before assembled.** Where the queue requires line checks (§5.4), no line is assembled into a batch without a green line check on exactly the heads its changes have. A push to any of them ends the check. A push is never taken as a fix: a line that a check charged rides again only when the check has passed on its new heads.
-- **I11, a charge is cleared by a fix.** A line that was charged never rides again at the heads it was charged on, and is offered again only by its owner (§3, P3). A push alone is not "done": anyone's push, a rebase or half a fix all move a head. Nor is an offer a fix: the heads must have moved.
+- **I11, a charge is cleared by a fix.** A line that was charged never rides again at the heads it was charged on while the charge stands (I14), and is offered again only by its owner (§3, P3). A push alone is not "done": anyone's push, a rebase or half a fix all move a head. Nor is an offer a fix: the heads must have moved.
 - **I12, never lighter than its content allows.** A batch is given the light tier of §5.4 only when every line in it is inert content, by a classifier that can only err towards the full tier.
 - **I13, a head moves only by its owner, or by a necessary rebase.** The runner moves a change's head only to rebase a waiting line that its check found in conflict with trunk. A line that merges is never touched: a rebase moves the head, and a moved head ends the line's check (I10), so a needless one leaves a line that needed nothing with no verdict.
+- **I14, a verdict is its checker's.** Every stored verdict names the checker that gave it and that checker's version: a green or a charge by the line check, a charge by the pre-flight or by blame. It counts only while that version is the present one ([the queue as a bag](docs/queue-as-bag.md) §5). When a checker changes, a waiting line's green stops counting (one that rides keeps it), a claim of the old version ends, a verdict of the old version is not recorded, a charge of the old version is void and the line goes back through the gate to be checked as it stands, and a batch still assembling is void, to run the new pre-flight. Charges by the judge at J1, holds, parks and priorities are recorded judgements, and no change of software touches them. Each adapter that runs a checker reports its version (a hash of the hook's command file and command line); the line check, run outside, declares its own (`shunt checker line-check <version>`), and every verdict it reports names it (`--version`).
 - **I15, no place.** No actor stores or edits an order of waiting lines. The order is read from facts (a manual priority, a line's age, its stack), and a line that could ride is passed only by a line with a manual priority or by one of an older stack.
 - **I9, the lander verifies.** Before it fast-forwards trunk, the runner itself reads from the forge that the batch's CI passed on exactly the head it is about to push, that the head is the one it built, that every change's head is the one it assembled (I4), and that trunk is where the batch was built (I5). It never lands on a builder's report, and no protocol message travels in a channel that tools or tests can write to.
 
@@ -141,6 +142,8 @@ Live trains form the **chain**, in landing order: train 1 is built on trunk, and
 | L31 | parked | dropped | withdraw | none | its owner | refused; the line stays where it is |
 | L32 | riding | dropped | withdraw | its train is not landing; the train goes void | its owner | refused while landing |
 | L33 | waiting | returned | line-checked (fail) | the verdict is on the line's present heads; the failing check passes on trunk alone (I6) | the line check (§5.4) | never charged without evidence |
+| L34 | returned | waiting | checker-changed | charged by a checker since replaced (I14) | the runner | the charge stands |
+| L35 | returned | parked | checker-changed | charged by a checker since replaced (I14); a park covers it | the runner | the charge stands |
 
 **Transitions of a train**
 
@@ -483,6 +486,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **I14: a verdict is its checker's.** Greens, claims and charges name their checker's version, and a change voids them (rows L34, L35). New event `checker-changed`, command `checker`, `--version` on `checked`, and the optional `adapter.Versioner`.
 
 - **§5.3, §5.5: fail fast, and nothing built on red.** A job's class 4 failure is reported while the rest of the run goes on (`Report.Early`), and the run of a batch decided red is cancelled. No batch is assembled behind a batch whose failure is kept or which waits at J1 (the model's `NoStackOnRed`).
 

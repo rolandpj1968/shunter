@@ -4,6 +4,7 @@
 package state
 
 import (
+	"maps"
 	"slices"
 	"sort"
 	"time"
@@ -88,6 +89,7 @@ const (
 	CauseLeftOut    Cause = "left-out"
 	CauseCharged    Cause = "charged"
 	CauseRequeue    Cause = "requeue"
+	CauseChargeVoid Cause = "charge-void"
 	CauseAbort      Cause = "abort"
 	CauseLanded     Cause = "landed"
 	CauseBaseLanded Cause = "base-landed"
@@ -142,6 +144,10 @@ type Line struct {
 	// any change ends it.
 	Checked   []Head
 	CheckedOn Head
+	// CheckedBy is the version of the line check that gave the green
+	// (docs/queue-as-bag.md §5). A change of the line check ends a waiting
+	// line's green; one that rides keeps it, as it was assembled on it.
+	CheckedBy string
 	// Inert says the gate classified the line as inert content only (§5.4):
 	// it takes the light tier, and joins any train whatever its size. A push
 	// ends it: the line is full until it passes the gate again.
@@ -161,6 +167,9 @@ type Line struct {
 	// not ride on those heads again: a charge is cleared by a fix, and a fix
 	// is a push.
 	ChargedAt []Head
+	// ChargedBy is the checker that made the charge, and its version; zero
+	// for a charge by the judge, which no change of software voids (§5).
+	ChargedBy Verdict
 	// Claim is the checker's claim on the line's check in flight, if any:
 	// no other checker is given the line while it stands (§5.4).
 	Claim *Claim
@@ -190,15 +199,36 @@ type Priority struct {
 	Until  time.Time
 }
 
+// The checkers whose verdicts are stored, each read only while its version
+// is the present one (docs/queue-as-bag.md §5, I14).
+const (
+	CheckerLineCheck = "line-check"
+	CheckerPreflight = "pre-flight"
+	CheckerBlame     = "blame"
+)
+
+// Checkers are the checkers' names.
+var Checkers = []string{CheckerLineCheck, CheckerPreflight, CheckerBlame}
+
+// Verdict names the checker that gave a verdict, and its version.
+type Verdict struct {
+	Checker string
+	Version string
+}
+
 // CheckKey is what a line check judges: the line's heads, in order, merged
-// with Trunk. A claim and the verdict it brings must have the same key.
+// with Trunk, by the line check of version Checker. A claim and the verdict
+// it brings must have the same key.
 type CheckKey struct {
-	Heads []Head
-	Trunk Head
+	Heads   []Head
+	Trunk   Head
+	Checker string
 }
 
 // Equal reports whether two keys are the same.
-func (k CheckKey) Equal(o CheckKey) bool { return k.Trunk == o.Trunk && slices.Equal(k.Heads, o.Heads) }
+func (k CheckKey) Equal(o CheckKey) bool {
+	return k.Trunk == o.Trunk && k.Checker == o.Checker && slices.Equal(k.Heads, o.Heads)
+}
 
 // Claim is one checker's claim on a line check, until a time.
 type Claim struct {
@@ -314,14 +344,17 @@ type Config struct {
 // State is the whole queue. Treat it as a value: Next never changes its
 // argument.
 type State struct {
-	Config    Config
-	Trunk     Head
-	Landings  []Landing
-	Lines     map[LineID]*Line
-	Trains    map[TrainID]*Train
-	Chain     []TrainID // the live trains, in landing order
-	Parks     map[ParkID]*Park
-	Paused    bool
+	Config   Config
+	Trunk    Head
+	Landings []Landing
+	Lines    map[LineID]*Line
+	Trains   map[TrainID]*Train
+	Chain    []TrainID // the live trains, in landing order
+	Parks    map[ParkID]*Park
+	Paused   bool
+	// Checkers are the present version of each checker (docs/queue-as-bag.md
+	// §5): a stored verdict counts only while its checker's version is this.
+	Checkers  map[string]string
 	PauseWhy  string
 	NextSeq   int
 	NextGroup int
@@ -371,6 +404,7 @@ func (s State) clone() State {
 		}
 		c.Trains[k] = &t
 	}
+	c.Checkers = maps.Clone(s.Checkers)
 	c.Parks = make(map[ParkID]*Park, len(s.Parks))
 	for k, v := range s.Parks {
 		p := *v

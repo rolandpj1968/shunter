@@ -31,6 +31,7 @@ import (
 	"github.com/rolandpj1968/shunter/adapter"
 	"github.com/rolandpj1968/shunter/adapter/bound"
 	"github.com/rolandpj1968/shunter/adapter/hook"
+	"github.com/rolandpj1968/shunter/state"
 )
 
 // Config is the adapter's configuration.
@@ -110,6 +111,11 @@ type Client struct {
 }
 
 // New returns a client.
+// Versions implements adapter.Versioner: the blame hook's version.
+func (c *Client) Versions() map[string]string {
+	return map[string]string{state.CheckerBlame: c.cfg.Blame.Version()}
+}
+
 func New(cfg Config) (*Client, error) {
 	if cfg.Owner == "" || cfg.Repo == "" || cfg.Trunk == "" {
 		return nil, errors.New("github: owner, repo and trunk are required")

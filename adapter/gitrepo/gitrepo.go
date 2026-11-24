@@ -133,6 +133,11 @@ func New(cfg Config) (*Repo, error) {
 // Branch is the branch of a train.
 func (r *Repo) Branch(t state.TrainID) string { return r.cfg.BranchPrefix + string(t) }
 
+// Versions implements adapter.Versioner: the pre-flight hook's version.
+func (r *Repo) Versions() map[string]string {
+	return map[string]string{state.CheckerPreflight: r.cfg.Preflight.Version()}
+}
+
 // git runs git in the clone and returns its trimmed output.
 func (r *Repo) git(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, r.cfg.Git, args...)

@@ -16,12 +16,15 @@ package hook
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -40,6 +43,26 @@ type Hook struct {
 
 // Configured reports whether there is a command to run.
 func (h Hook) Configured() bool { return len(h.Command) > 0 }
+
+// Version is the hook's version for a hook that reports none
+// (docs/queue-as-bag.md §5): a hash of its command file and its command
+// line. A command file that can't be read is hashed by its name alone. An
+// unconfigured hook has no version.
+func (h Hook) Version() string {
+	if !h.Configured() {
+		return ""
+	}
+	sum := sha256.New()
+	path := h.Command[0]
+	if !filepath.IsAbs(path) && h.Dir != "" && strings.ContainsRune(path, filepath.Separator) {
+		path = filepath.Join(h.Dir, path)
+	}
+	if b, err := os.ReadFile(path); err == nil {
+		sum.Write(b)
+	}
+	sum.Write([]byte(strings.Join(h.Command, "\x00")))
+	return hex.EncodeToString(sum.Sum(nil))[:12]
+}
 
 // Result is one run.
 type Result struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +29,8 @@ type Request struct {
 	// and judge park: "landed:<line>" is one the runner tests, and such a
 	// park ends only when that line lands or by a restore.
 	Until string `json:"until,omitempty"`
+	// Version is the version of the line check a verdict is by.
+	Version string `json:"version,omitempty"`
 	// Lease is how long a check claim stands, for claim ("20m"); empty
 	// takes the configured Claim.
 	Lease string `json:"lease,omitempty"`
@@ -89,14 +92,23 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		for _, h := range req.Args[2:] {
 			heads = append(heads, state.Head(h))
 		}
-		ev := state.LineChecked{Line: l, Heads: heads, Trunk: state.Head(req.Args[1]), Pass: req.Action == "pass"}
+		ev := state.LineChecked{Line: l, Heads: heads, Trunk: state.Head(req.Args[1]), Pass: req.Action == "pass", Version: req.Version}
 		switch req.Action {
 		case "fail":
 			ev.Evidence = req.Reason
 		case "conflict":
 			ev.Conflict = req.Reason
 		}
+		if v := d.st.State().Checkers[state.CheckerLineCheck]; req.Version != v {
+			return errResp(fmt.Errorf("the line check is at version %q, not %q: a verdict of another version is not recorded (declare a new one with checker %s <version>)", v, req.Version, state.CheckerLineCheck))
+		}
 		return d.act(actor, ev, "line "+string(l)+" check recorded: "+req.Action)
+	case "checker":
+		// checker <name> <version>: a checker's present version (docs/queue-as-bag.md §5)
+		if len(req.Args) != 2 || !slices.Contains(state.Checkers, req.Args[0]) {
+			return errResp(fmt.Errorf("usage: checker %s <version>", strings.Join(state.Checkers, "|")))
+		}
+		return d.act(actor, state.CheckerChanged{Checker: req.Args[0], Version: req.Args[1]}, "checker "+req.Args[0]+" at version "+req.Args[1])
 	case "claim":
 		return d.claim(actor, req)
 	case "priority":
@@ -214,7 +226,7 @@ func (d *Daemon) claim(actor string, req Request) Response {
 			return Response{}
 		}
 	}
-	key := state.CheckKey{Trunk: s.Trunk}
+	key := state.CheckKey{Trunk: s.Trunk, Checker: s.Checkers[state.CheckerLineCheck]}
 	for _, c := range l.Changes {
 		key.Heads = append(key.Heads, c.Head)
 	}
