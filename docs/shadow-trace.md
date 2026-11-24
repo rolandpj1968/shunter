@@ -18,7 +18,7 @@ Only (b) and (c) block the cutover. This note traces the daily shadow report of 
 | refused: judge "a change charged with no evidence (I6)" | 3 | (a) | I6 |
 | refused: assemble "lines riding together that may not" | 3 | (a), by mechanism | see below |
 | unblamed-without-judge | 6 | (a) | I6, J1 |
-| gate divergences, one run each | 6 | not traced | see below |
+| gate divergences, one line a run | 8 | (c) 1, (b) 7 | see below |
 
 ## The three landings with no passing verdict: (c), fixed
 
@@ -52,14 +52,27 @@ Every `ErrJoin` cause is a Shunter rule, so all of them are class (a). But the d
 
 Blame named nobody. The live queue split the train or sent its lines back; Shunter asks the judge (J1) and charges nobody without evidence (I6). This costs a J1 wait each time, about six a day at the present failure rate (the review's point on J1 latency).
 
-## The six gate divergences: not traced
+## The gate divergences: eight runs, traced
 
-The shadow's ten-minute runs found one waiting line each, in six runs over 24 hours, where Shunter's gate and the live queue's disagreed on whether the line could ride. The latest runs agree. Only the summary row of each run is kept, not the run's report, so the lines and the reasons on each side are lost. They cannot be traced from what is kept.
+The coordinator kept the full report of each run with a gate divergence: eight runs, one diverging line each (one line twice). Seven are one direction (the live queue takes the line, Shunter's gate does not) and one the other.
 
-What is needed: keep the report of every run that has a gate divergence, not only the latest. The report already names the line, the live queue's reason and Shunter's (marked `**`). Until a divergence is traced, the gate stays an open item for B1.
+| the line, as the report says | runs | class | outcome |
+|---|---|---|---|
+| refused: "stacked on X, which has not landed and is in no live line", X **later in the same list** | 1 | (c) | fixed |
+| refused: the same, X **not in the list**, riding in a train the live queue had in flight | 5 | (b) | fixed |
+| refused: "not from an approved producer" | 2 (one line) | (b), site configuration | for the site |
+| Shunter takes on a green the live queue no longer counts ("line check none") | 1 | (b), most likely | for the site, to confirm |
+
+**A stacked line listed before its base: (c), fixed.** The live queue's list may name a stacked line before its base. `store.FromLines` set a line's base only from lines **earlier** in the file, so the line was offered with no base and the gate refused it as stacked on a change in no live line. This is the import the cut-over itself uses (`shunt import --line-files`), so on the day it would have refused such a line. Now every line of the files is read first; a base is found anywhere in them, and a base is offered before the lines stacked on it (file order otherwise). Test: `TestFromLinesStacksALineListedBeforeItsBase`.
+
+**A base riding in a train in flight: (b), fixed.** The shadow's "now" starts from an empty state holding only the live queue's lists. A line whose base was riding in a train the live queue had open is in no list, so the gate refused the stacked line; in Shunter its base would be a live line riding, and the stacked line would wait behind it (I3). The shadow now puts the history's trains still in flight (a pull request open and no end, a green not yet landed, or merged and not yet opened) in the state as built trains before the gate runs, and a waiting line stacked on one of their lines is offered on it. Those trains count against the depth, as they do in the live queue. Test: `TestShadowGatesALineStackedOnARidingBase`.
+
+**Not from an approved producer: (b), site configuration.** The forge adapter's approval (`approved_file`, `approved_label`, `[repo.author_branches]`) did not include the change's author, whom the live queue's own list approves. The shadow's configuration must carry the same list as the live gate; then the runs agree. Nothing in Shunter changes.
+
+**A green the live queue no longer counts: (b), most likely.** The line's only verdict in the facts is a pass on its present head, and Shunter takes it (I10: a green is current while the line's heads are unchanged). The live queue answered "none". Its verdicts are keyed by more than the heads (by the checker's own version, and by the heads of the open changes beneath the line: the review's (b) 7), and its checker changed that morning, so its older verdicts stopped counting. The check facts the shadow is given carry no checker version, so it can't void them as I14 would. The fix is in the facts: give only the verdicts of the live checker's present version, or give the version with each and declare it (`checker`). To confirm from the live record of that line.
 
 ## What remains for B1
 
-- The gate divergences: keep the report of each diverging run, then trace the next ones.
+- The gate divergences: set the shadow's approved list and the check facts' checker version as the live gate has them, then watch the next runs.
 - The `ErrJoin` refusals: confirm the rule from the labelled report.
 - Rerun the daily report with the fixed binary. It should show no landed-without-verdict, no `BATCH-DRAFT`, and no unfixed-offer refusals for these trains.

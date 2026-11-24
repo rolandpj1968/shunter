@@ -17,6 +17,39 @@ import (
 	"github.com/rolandpj1968/shunter/store"
 )
 
+// A line stacked on a line that rides in a train the live queue has in
+// flight waits behind it in Shunter too (I3): the trains the history leaves
+// open are in the state the gate runs on. A line listed before its base
+// stacks on it all the same.
+func TestShadowGatesALineStackedOnARidingBase(t *testing.T) {
+	open := "BATCH-READY " + string(h('4')) + " 40\nBATCH-OPENED 940 " + string(h('4')) + "\n"
+	lg, err := trainlog.Parse("20261123T2200Z-1.out", strings.NewReader(open))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &reader{reports: map[state.Head]adapter.Outcome{h('4'): adapter.Pending}, changes: map[state.ChangeID]adapter.ChangeInfo{
+		"40": {ID: "40", Head: "h40", Open: true, Approved: true},
+		"41": {ID: "41", Head: "h41", Base: "40", Open: true, Approved: true},
+		"42": {ID: "42", Head: "h42", Base: "43", Open: true, Approved: true},
+		"43": {ID: "43", Head: "h43", Open: true, Approved: true},
+	}}
+	waiting := []store.PlainLine{{Changes: []state.ChangeID{"41"}}, {Changes: []state.ChangeID{"42"}}, {Changes: []state.ChangeID{"43"}}}
+	live := []LiveFact{
+		{Changes: []state.ChangeID{"41"}, Takes: true, Why: "green"},
+		{Changes: []state.ChangeID{"42"}, Takes: true, Why: "green"},
+		{Changes: []state.ChangeID{"43"}, Takes: true, Why: "green"},
+	}
+	rep := Run(context.Background(), Input{Logs: []trainlog.Log{lg}, Lines: store.LineFile{Waiting: waiting}, Read: r, Depth: 3, MaxLines: 8, Live: live})
+	for _, l := range rep.Waiting {
+		if l.Gate == "refused" || l.Compare != "agree" {
+			t.Errorf("%v: gate %q (%s), compare %q", l.Changes, l.Gate, l.Reason, l.Compare)
+		}
+	}
+	if rep.GateDiverge != 0 || rep.GateAgree != 3 {
+		t.Errorf("agree %d, diverge %d; want 3, 0", rep.GateAgree, rep.GateDiverge)
+	}
+}
+
 // reader is a read-only forge and CI with canned answers.
 type reader struct {
 	reports map[state.Head]adapter.Outcome

@@ -157,6 +157,37 @@ func TestLineFilesRefuse(t *testing.T) {
 	}
 }
 
+// A script queue's list may name a stacked line before its base. The import
+// stacks it on its base all the same, and offers the base first.
+func TestFromLinesStacksALineListedBeforeItsBase(t *testing.T) {
+	f := forge{"7": {ID: "7", Head: "h7", Base: "5"}, "5": {ID: "5", Head: "h5"}, "6": {ID: "6", Head: "h6"}}
+	lf := LineFile{Waiting: []PlainLine{{Changes: []state.ChangeID{"7"}}, {Changes: []state.ChangeID{"6"}}, {Changes: []state.ChangeID{"5"}}}}
+	d, err := FromLines(lf, f.describe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []state.LineID
+	for _, l := range d.Lines {
+		got = append(got, l.ID)
+		if l.ID == "7" && l.Base != "5" {
+			t.Fatalf("line 7 is stacked on %q, want 5", l.Base)
+		}
+	}
+	if want := []state.LineID{"5", "7", "6"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("lines in the order %v, want %v", got, want)
+	}
+	plan, err := Import(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.New("trunk", state.Config{Depth: 2})
+	for _, o := range plan.Offers {
+		if s, _, err = state.Next(s, o); err != nil {
+			t.Fatalf("offer %s: %v", o.Line, err)
+		}
+	}
+}
+
 // Comments, blank lines and "#123" are read as a script queue writes them.
 func TestParseWaitingAsAScriptQueueWritesIt(t *testing.T) {
 	got, err := ParseWaiting(strings.NewReader("# the list\n\nb #7 8\n  b 9 alone  \n"))

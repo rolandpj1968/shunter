@@ -415,6 +415,7 @@ func Run(ctx context.Context, in Input) Report {
 	// and parks placed as an import places them (docs/cutover.md); then the
 	// trains from what is left waiting.
 	s := state.New("trunk", state.Config{Depth: max(in.Depth, 1), RequireCheck: in.RequireCheck})
+	s = ridingTrains(ctx, read, s, in, lines)
 	s, rep.Waiting = gateLines(ctx, read, s, in.Lines, in)
 	for _, l := range rep.Waiting {
 		switch l.Compare {
@@ -442,6 +443,80 @@ func Run(ctx context.Context, in Input) Report {
 		s = next
 	}
 	return rep
+}
+
+// ridingTrains puts in s, as trains built and riding, the trains the history
+// leaves in flight: a pull request open and no end, a green not landed, or
+// merged with no pull request yet. A waiting line stacked on one of their
+// lines then waits behind it, as it would in Shunter (I3), rather than being refused for a base in
+// no live line. A line also in the line files, or whose changes can't be
+// read, is left out.
+func ridingTrains(ctx context.Context, read *cached, s state.State, in Input, lines map[state.TrainID][]adapter.BuildLine) state.State {
+	listed := map[state.ChangeID]bool{}
+	for _, pl := range in.Lines.Waiting {
+		for _, c := range pl.Changes {
+			listed[c] = true
+		}
+	}
+	for _, p := range in.Lines.Parks {
+		for _, pl := range p.Lines {
+			for _, c := range pl.Changes {
+				listed[c] = true
+			}
+		}
+	}
+	depth, check := s.Config.Depth, s.Config.RequireCheck
+	s.Config.Depth, s.Config.RequireCheck = len(in.Logs)+depth, false
+	n := 0
+	for _, lg := range in.Logs {
+		o := readLog(lg)
+		flight := o.result == "open" || (o.result == "" && o.head != "") ||
+			(o.result == "passed" && (in.Landed == nil || !in.Landed(o.pr)))
+		if !flight {
+			continue
+		}
+		before := s
+		var take []state.LineID
+		for _, bl := range lines[state.TrainID(lg.Name)] {
+			var ids []state.ChangeID
+			for _, c := range bl.Changes {
+				ids = append(ids, c.ID)
+			}
+			if len(ids) == 0 || listed[ids[0]] {
+				continue
+			}
+			info, err := read.describeAll(ctx, ids)
+			if err != nil {
+				continue
+			}
+			o := daemon.OfferFor(s, info, false)
+			next, _, err := state.Next(s, o)
+			if err != nil {
+				continue
+			}
+			if next, _, err = state.Next(next, state.GateAccept{Line: o.Line}); err != nil {
+				continue
+			}
+			s = next
+			take = append(take, o.Line)
+		}
+		if len(take) == 0 {
+			continue
+		}
+		n++
+		id := state.TrainID(fmt.Sprintf("live-%d", n))
+		next, _, err := state.Next(s, state.Assemble{Train: id, Lines: take})
+		if err == nil {
+			next, _, err = state.Next(next, state.Built{Train: id, Head: state.Head("head-of-" + string(id))})
+		}
+		if err != nil {
+			s = before
+			continue
+		}
+		s = next
+	}
+	s.Config.Depth, s.Config.RequireCheck = depth, check
+	return s
 }
 
 // gateLines offers every line of lf, runs the gate on each from the forge,
@@ -527,6 +602,15 @@ func gateLines(ctx context.Context, read *cached, s state.State, lf store.LineFi
 				ln := Line{Alone: o.Alone}
 				for _, c := range o.Changes {
 					ln.Changes = append(ln.Changes, c.ID)
+				}
+				if o.Base == "" {
+					// Its base may ride in a train in flight, which the
+					// line files don't hold.
+					if info, err := read.describeAll(ctx, []state.ChangeID{o.Changes[0].ID}); err == nil && info[0].Base != "" {
+						if b, ok := daemon.LiveChanges(s, o.Line)[info[0].Base]; ok {
+							o.Base = b
+						}
+					}
 				}
 				next, _, err := state.Next(s, o)
 				if err != nil {
