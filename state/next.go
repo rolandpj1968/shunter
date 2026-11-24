@@ -80,7 +80,7 @@ func (m *machine) setLine(l *Line, to LineState, c Cause, reason string) {
 	m.emit(Effect{Kind: EffRecord, Line: l.ID, From: from.String(), To: to.String(), Cause: c, Reason: reason})
 	switch to {
 	case LineHeld, LineParked, LineReturned, LineLanded, LineDropped:
-		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: to.String() + ": " + reason})
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, To: to.String(), Cause: c, Reason: to.String() + ": " + reason})
 	}
 	if !to.Spent() {
 		return
@@ -362,7 +362,7 @@ func (m *machine) apply(ev Event) error {
 		}
 		l.Stuck = e.Reason
 		if l.State != LineWaiting {
-			m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "conflicts with trunk (" + l.Conflict + ") and was not rebased by the runner: " + e.Reason})
+			m.emit(Effect{Kind: EffNotify, Line: l.ID, Cause: CauseConflict, Reason: "conflicts with trunk (" + l.Conflict + ") and was not rebased by the runner: " + e.Reason})
 			break
 		}
 		// Only a person can resolve it, and riding alone can't make it
@@ -1065,7 +1065,7 @@ func (m *machine) checkerChanged(e CheckerChanged) error {
 		// heads it was charged on (a push to it is a new offer, §7), so it
 		// is checked again as it stands.
 		l.ChargedAt, l.ChargedBy = nil, Verdict{}
-		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "the charge is void: the " + e.Checker + " that made it has changed; it is checked again as it stands"})
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, Cause: CauseChargeVoid, Reason: "the charge is void: the " + e.Checker + " that made it has changed; it is checked again as it stands"})
 		m.place(l, CauseChargeVoid)
 	}
 	if e.Checker == CheckerPreflight {

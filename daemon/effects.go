@@ -225,6 +225,10 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 			ids = append(ids, c.ID)
 		}
 		return func(ctx context.Context) result {
+			if t, ok := a.Notify.(adapter.Teller); ok {
+				n := adapter.OwnerNotice{Line: k.Line, Changes: ids, State: k.To, Cause: k.Cause, Message: k.Reason}
+				return result{actor: "notify", note: "owner told", err: t.Tell(ctx, k.Key, n)}
+			}
 			return result{actor: "notify", note: "owner told", err: a.Notify.Owner(ctx, k.Key, k.Line, ids, k.Reason)}
 		}, d.cfg.Call
 	case state.EffAskJudge:

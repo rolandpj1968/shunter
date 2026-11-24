@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rolandpj1968/shunter/adapter"
 	"github.com/rolandpj1968/shunter/adapter/hook"
 	"github.com/rolandpj1968/shunter/state"
 )
@@ -32,7 +33,11 @@ type Notice struct {
 	Changes []state.ChangeID `json:"changes,omitempty"`
 	Point   string           `json:"point,omitempty"` // judge: J1, J3, alert
 	Train   state.TrainID    `json:"train,omitempty"`
-	Message string           `json:"message"`
+	// State and Cause, for an owner: the state the line went to (empty
+	// for advice, the line unmoved) and why (adapter.OwnerNotice).
+	State   string      `json:"state,omitempty"`
+	Cause   state.Cause `json:"cause,omitempty"`
+	Message string      `json:"message"`
 	// Delivered is set on a second record of the same key once the hook
 	// has taken it.
 	Delivered bool `json:"delivered,omitempty"`
@@ -84,6 +89,11 @@ func Open(path string, h hook.Hook, now func() time.Time) (*Notifier, error) {
 // Owner implements adapter.Notifier.
 func (n *Notifier) Owner(ctx context.Context, key string, line state.LineID, changes []state.ChangeID, msg string) error {
 	return n.send(ctx, Notice{Key: key, To: "owner", Line: line, Changes: changes, Message: msg})
+}
+
+// Tell implements adapter.Teller.
+func (n *Notifier) Tell(ctx context.Context, key string, o adapter.OwnerNotice) error {
+	return n.send(ctx, Notice{Key: key, To: "owner", Line: o.Line, Changes: o.Changes, State: o.State, Cause: o.Cause, Message: o.Message})
 }
 
 // Judge implements adapter.Notifier.

@@ -268,6 +268,24 @@ type Merger interface {
 	Merges(ctx context.Context, line BuildLine, trunk state.Head) (conflict string, err error)
 }
 
+// OwnerNotice is a notice to a line's owner with what it is about: State is
+// the state the line went to (empty when it didn't move: advice), and Cause
+// why, so that delivery can act by kind (a charge marks the change as being
+// fixed; a conflict asks for a rebase).
+type OwnerNotice struct {
+	Line    state.LineID
+	Changes []state.ChangeID
+	State   string
+	Cause   state.Cause
+	Message string
+}
+
+// Teller is a Notifier that takes an owner's notice whole. Optional: the
+// runner calls Owner on a notifier without it.
+type Teller interface {
+	Tell(ctx context.Context, key string, n OwnerNotice) error
+}
+
 // Notifier tells people.
 type Notifier interface {
 	// Owner tells a line's owner what became of it.

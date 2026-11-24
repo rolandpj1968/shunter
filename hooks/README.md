@@ -1,12 +1,13 @@
 # Example hooks
 
-A repository's own rules stay the repository's: how its pre-flight runs, which conflicts it can resolve, and how a failure is blamed. Shunter calls them as **hooks**, commands in any language that read one JSON document on stdin and answer one on stdout ([`adapter/hook`](../adapter/hook)). This directory holds three generic ones, in Python with the standard library only, each configured by a JSON file and tested with synthetic fixtures ([`hooks_test.go`](hooks_test.go), [`testdata/`](testdata)).
+A repository's own rules stay the repository's: how its pre-flight runs, which conflicts it can resolve, and how a failure is blamed. Shunter calls them as **hooks**, commands in any language that read one JSON document on stdin and answer one on stdout ([`adapter/hook`](../adapter/hook)). This directory holds four generic ones, in Python with the standard library only, each configured by a JSON file and tested with synthetic fixtures ([`hooks_test.go`](hooks_test.go), [`testdata/`](testdata)).
 
 | Hook | Shunter calls it | It does |
 |---|---|---|
 | [`preflight.py`](preflight.py) | on the assembled train, before CI | runs named steps in order, times and records each, skips the ones that never catch anything, and blames by bisection or by the files the failure names, or leaves those lines out |
 | [`conflict.py`](conflict.py) | when a change conflicts with the train | resolves a conflict only in files a git attribute marks as generated, by regenerating them; anything else stays a conflict |
 | [`blame.py`](blame.py) | when CI fails on a train's head | names the lines the failure points at, by the files and directories it names; says when it is a flake, and when nothing can be judged |
+| [`notify.py`](notify.py) | for every notice to an owner or the judge | delivers it by rules: commands per change (a comment, a label), lines appended to files the producers read |
 
 ## A hook advises
 
@@ -125,6 +126,22 @@ Shared by `blame.py` and `preflight.py` ([`shunterhooks.py`](shunterhooks.py), `
 Each line's added lines are its own `added` in the input when given, else read with git as its files are (the blame hook), or from the tips (the pre-flight).
 
 A result naming no line, or every line, is no blame, and J1 splits the train by line. A stack is one line, so it is never split.
+
+### notify
+
+```json
+{
+  "rules": [
+    {"when": {"to": "owner", "state": "returned", "cause": "charged"},
+     "run": [["gh", "pr", "edit", "{change}", "--add-label", "wip"],
+             ["gh", "pr", "comment", "{change}", "--body", "{message}"]]},
+    {"when": {"to": "owner"},
+     "append": [{"file": "/srv/owners/returned.tsv", "format": "{time}\t{changes}\t{kind}\t{cause}\t{message}"}]}
+  ]
+}
+```
+
+Every notice an owner or the judge is sent reaches the events file first; this hook delivers it. Each notice to an owner says the `state` its line went to (`returned`, `held`, `parked`, `landed`, `dropped`; empty for advice, the line unmoved) and the `cause` (`charged`, `conflict`, `refused`, ...), so that delivery can act by kind: a charge marks the change as being fixed, a conflict asks for a rebase, every notice reaches the file its producers read. Each matching rule runs its commands (once per change when one names `{change}`) and appends its lines. Placeholders are replaced as text, never through a shell. A command that fails fails the delivery, and Shunter runs the hook again, so commands must be safe to repeat. `"dry_run": "<file>"` writes the commands there instead of running them: a rehearsal, one notice of each kind.
 
 ## The line-check worker
 

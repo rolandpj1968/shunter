@@ -490,6 +490,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 
 **0.3, unreleased.**
 
+- **An owner's notice says what it is about:** the state the line went to (none for advice) and the cause, so that delivery acts by kind (the optional `adapter.Teller`; `state` and `cause` in the events file and the notify hook's input).
+
 - **The re-offer's merge test counts what the conflict hook resolves:** `[git] resolvable` names the files (by attribute) whose conflict with trunk the build regenerates, so a returned line whose only conflict is there is offered again.
 
 - **§5.4: a pre-flight may commit to the batch,** only on top of the merged batch and with no merge; the head CI judges and trunk takes is its last commit.
