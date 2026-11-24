@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/rolandpj1968/shunter/adapter"
+	"github.com/rolandpj1968/shunter/replay"
 	"github.com/rolandpj1968/shunter/replay/adapter/trainlog"
 	"github.com/rolandpj1968/shunter/state"
 	"github.com/rolandpj1968/shunter/store"
@@ -162,6 +163,56 @@ func TestShadowComparesHistoryAndGatesTheWaitingLines(t *testing.T) {
 		if !strings.Contains(b.String(), s) {
 			t.Errorf("the report lacks %q:\n%s", s, b.String())
 		}
+	}
+}
+
+// TestShadowLabelsWhatARuleExplains: a divergence or a refusal that follows
+// from a rule of Shunter's is counted as intended and names the rule; only
+// the rest is reported line by line, and each unexplained refusal says
+// where and why.
+func TestShadowLabelsWhatARuleExplains(t *testing.T) {
+	lgs, landed := logs(t)
+	r := &reader{reports: map[state.Head]adapter.Outcome{
+		h('3'): adapter.Failed, h('5'): adapter.NoVerdict, h('6'): adapter.Failed, h('c'): adapter.Failed,
+	}}
+	rep := Run(context.Background(), Input{Logs: lgs, Landed: landed, Read: r, Depth: 2, MaxLines: 1})
+	if rep.Intended["unblamed-without-judge"] != 1 || rep.Intended["charged-on-no-verdict"] != 1 {
+		t.Errorf("intended %v", rep.Intended)
+	}
+	for k := range rep.Diverge {
+		if intended[k] != "" {
+			t.Errorf("an intended kind counted as unexplained: %s", k)
+		}
+	}
+	for _, tr := range rep.Trains {
+		if (tr.Rule != "") != (intended[tr.Kind] != "") {
+			t.Errorf("train %s: kind %s, rule %q", tr.PR, tr.Kind, tr.Rule)
+		}
+	}
+	rules := map[string]string{}
+	for _, f := range rep.Refusals {
+		rules[f.Segment] = f.Rule
+	}
+	if !strings.HasPrefix(rules["05-unblamed-one.out"], "I6") || rules["08-wrong-head.out"] != "" {
+		t.Errorf("refusals %+v", rep.Refusals)
+	}
+	if _, ok := rep.Refused["judge: "+replay.Kind(state.ErrEvidence)]; ok {
+		t.Errorf("an intended refusal counted as unexplained: %v", rep.Refused)
+	}
+	var b bytes.Buffer
+	rep.Write(&b, false)
+	out := b.String()
+	for _, s := range []string{
+		"intended: unblamed-without-judge 1  I6, J1",
+		"refused in 08-wrong-head.out: ci-passed:",
+		"judge: I6: a charge needs evidence",
+	} {
+		if !strings.Contains(out, s) {
+			t.Errorf("the report lacks %q:\n%s", s, out)
+		}
+	}
+	if strings.Contains(out, "refused in 05-unblamed-one.out") || strings.Contains(out, "906    head") {
+		t.Errorf("the report lists an intended item:\n%s", out)
 	}
 }
 
