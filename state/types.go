@@ -477,6 +477,18 @@ func (s State) Prioritised() map[LineID]bool {
 	return out
 }
 
+// DecidedRed is the first train of the chain that is decided red, or none:
+// its failure is kept (it is not first) or it waits at J1. Nothing is
+// assembled behind it (docs/queue-as-bag.md §6, the model's NoStackOnRed).
+func (s State) DecidedRed() TrainID {
+	for _, id := range s.Chain {
+		if t := s.Trains[id]; t.Behind != nil || t.State == TrainJudging {
+			return id
+		}
+	}
+	return ""
+}
+
 // Forced is the line forced through alone (docs/queue-as-bag.md §4), or
 // none: the oldest starving line that is the queue's to move. It waits, is
 // not stuck, and nothing beneath it is held, parked or spent.

@@ -175,9 +175,11 @@ var noVerdict = map[string]bool{"cancelled": true, "skipped": true, "stale": tru
 // failed check is a failure (class 4, until blame says otherwise); only
 // timeouts are timing (class 3); a cancelled or skipped required check with
 // nothing failed is no verdict (class 0). Until every required check has
-// completed, the run is pending: no fail-fast, so that blame sees every
-// failure. Only the checks in the required checks' suites count (scope):
-// a failure in another workflow on the same head is not this run's.
+// completed, the run is pending, unless a job has failed already: that
+// report is Early, and is decisive if blame finds it deterministic
+// (docs/queue-as-bag.md §6); Status says pending otherwise. Only the checks
+// in the required checks' suites count (scope): a failure in another
+// workflow on the same head is not this run's.
 func Classify(head state.Head, checks []adapter.Check, names []string) adapter.Report {
 	rep := adapter.Report{Head: head, Checks: checks}
 	req, missing := required(checks, names)
@@ -188,14 +190,26 @@ func Classify(head state.Head, checks []adapter.Check, names []string) adapter.R
 		}
 		return rep
 	}
+	rep.Checks = scope(checks, req, names)
 	for _, ch := range req {
 		if ch.Status != "completed" {
+			var failed []string
+			for _, f := range rep.Checks {
+				if f.Status == "completed" && f.Conclusion == "failure" {
+					failed = append(failed, describe(f))
+				}
+			}
+			if len(failed) > 0 {
+				rep.Outcome, rep.Early = adapter.Failed, true
+				rep.Evidence = "failed: " + strings.Join(failed, "; ")
+				return rep
+			}
+			rep.Checks = checks
 			rep.Outcome = adapter.Pending
 			rep.Why = ch.Name + " is " + ch.Status
 			return rep
 		}
 	}
-	rep.Checks = scope(checks, req, names)
 	var failed, timed, none []string
 	for _, ch := range rep.Checks {
 		if ch.Status != "completed" {
@@ -357,7 +371,18 @@ func (c *Client) Status(ctx context.Context, t state.TrainID, head state.Head, l
 	if rep.Outcome == adapter.Failed {
 		rep = c.blame(ctx, t, rep, lines, "")
 	}
-	return rep, nil
+	return Settle(rep), nil
+}
+
+// Settle holds back an early report that isn't decisive: a failure blame
+// classed as one a rerun could clear, or not a failure at all, waits for
+// the run to end (docs/queue-as-bag.md §6).
+func Settle(rep adapter.Report) adapter.Report {
+	if rep.Early && rep.Outcome != adapter.Failed {
+		return adapter.Report{Outcome: adapter.Pending, Head: rep.Head, Checks: rep.Checks,
+			Why: "a failed job that may not be decisive (" + rep.Why + "): waiting for the run to end"}
+	}
+	return rep
 }
 
 // Reblame implements adapter.Reblamer: the blame hook asked again, with the

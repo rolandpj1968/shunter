@@ -223,6 +223,7 @@ A line whose base is live **waits in the queue** and rides only behind its base 
 - **Speculation, to depth D:** while batch 1 runs, the runner builds batch 2 on batch 1's exact head, batch 3 on batch 2's, and so on up to depth D. All D batches run CI at the same time (I5).
 - **Landing is in chain order:** when batch 1 lands, the chain shifts up, batch 2 becomes batch 1, and the runner extends the chain at its tail.
 - **Only the first batch is judged.** Batch 1 is built on trunk, so its failure is its own. Batch *k* > 1 is built on a head that may never land, and its failure may be that head's, inherited. When a batch that isn't first reports a failure (in pre-flight or in CI), nothing is charged, split or parked: the report is kept. If every batch ahead lands, the failure was its own and is judged then, as if reported at that moment. If one doesn't, the batch is void with it and the report is dropped, with nobody charged. Draft 0.2 judged the report at once, and so could charge a line for the failure of the batch ahead of it.
+- **Nothing is built on a batch decided red:** one whose failure is kept, or one that waits at J1. The runner assembles no batch behind it, and the CI run of a batch decided red is cancelled, so its slot is free. A batch sent to run again at J1 is clear. A batch decided red that isn't first keeps its place; it is judged when the batches ahead land, from the kept report.
 - **When batch *j* ends without landing** (it fails, is void, or is aborted): batches *j+1…D* are void, because the head they were built on will never exist. They're rebuilt on trunk, minus whatever blame removed from batch *j*.
 - **Choosing D:** the trade-off is throughput against waste. With a batch pass probability *p*, the best case lands D batches per CI cycle, and a failure at position *j* voids D−*j* runs. Deep chains pay when *p* is high (around 0.9), and depth 1 is about the limit when *p* is near 0.5. On metered CI, voided runs cost money; on owned runners they cost only capacity, so D is bounded by free runner slots (D × one batch's jobs) more than by spend. D is set at judgement point J4.
 - **Change-based CI:** a batch's CI may run only the jobs its change can affect. "Its change" is measured against the batch beneath it, not trunk, or speculation would count batch 1's change twice.
@@ -304,6 +305,8 @@ Each failure gets one class, decided in this order:
 2. **Known flake:** a test recorded as flaky failed. One rerun.
 3. **Timing:** only timeouts or lost connections. One rerun.
 4. **Deterministic:** an assertion, or a compile or lint error. No rerun; go to blame.
+
+**A decisive failure is reported when it is decisive** ([the queue as a bag](docs/queue-as-bag.md) §6). CI reports each job as it ends. A job that fails while the rest of the run goes on is classified at once: if it is class 4, the batch's failure is reported then, blame reads that job's log, and the rest of the run is cancelled. A failure that a rerun could clear (classes 2 and 3) waits for the run to end. Blame from one job may miss a second culprit in a job that hadn't finished; it is found on the next batch, which is cheaper than every failed batch running to its end.
 
 **A recorded flake never charges a line.** A test recorded as flaky is known to fail on code where it should pass, so its failure names no line, however often it fails and however small the batch. When a known flake's one rerun fails again, nothing is judged: the batch is void, its lines go back unchanged (class 0), blame isn't asked, and J1 isn't opened. The lines' no-verdict budget (§5.10) brings a test that keeps failing to the judge (J3, then J5: fix it or quarantine it). Draft 0.3 first made the second failure class 4 and blamed it by files; the queue this protocol grew from then charged a batch of one line for a recorded flake it had not caused.
 
@@ -480,6 +483,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§5.3, §5.5: fail fast, and nothing built on red.** A job's class 4 failure is reported while the rest of the run goes on (`Report.Early`), and the run of a batch decided red is cancelled. No batch is assembled behind a batch whose failure is kept or which waits at J1 (the model's `NoStackOnRed`).
 
 - **§5.3: a starving line rides alone and first.** A line's count of cycles it didn't cause, halved by its own failure, and its queue time; the forced line; a stuck one raised at once. New event `starving`, and `[queue] starve_after_cycles`, `starve_after_hours`, `starve_alert`.
 
