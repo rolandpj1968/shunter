@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -100,6 +99,8 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		return d.act(actor, ev, "line "+string(l)+" check recorded: "+req.Action)
 	case "claim":
 		return d.claim(actor, req)
+	case "priority":
+		return d.priority(actor, req)
 	case "handover":
 		// handover <line> <new owner> --reason <why>: a line, live or returned.
 		if len(req.Args) != 2 || req.Reason == "" {
@@ -226,6 +227,38 @@ func (d *Daemon) claim(actor string, req Request) Response {
 		out = append(out, string(h))
 	}
 	return Response{Output: strings.Join(out, " ")}
+}
+
+// priority gives a line a manual priority, the one override of the bag's
+// order (docs/queue-as-bag.md §2), or with --action end takes it back.
+// --until is a duration from now or a time (RFC 3339).
+func (d *Daemon) priority(actor string, req Request) Response {
+	const usage = "usage: priority <line|change> --reason <why> --until <2h|RFC 3339 time> | priority <line|change> --action end --reason <why>"
+	if len(req.Args) != 1 || req.Reason == "" || (req.Action != "" && req.Action != "end") {
+		return errResp(errors.New(usage))
+	}
+	l, err := d.findLine(req.Args[0])
+	if err != nil {
+		return errResp(err)
+	}
+	if req.Action == "end" {
+		return d.act(actor, state.PriorityEnded{Line: l, Why: req.Reason}, "line "+string(l)+": priority ended")
+	}
+	if req.Until == "" {
+		return errResp(errors.New(usage))
+	}
+	until, err := time.Parse(time.RFC3339, req.Until)
+	if err != nil {
+		v, derr := time.ParseDuration(req.Until)
+		if derr != nil || v <= 0 {
+			return errResp(fmt.Errorf("until %q: a duration such as 2h, or an RFC 3339 time", req.Until))
+		}
+		until = d.now().Add(v)
+	}
+	if !until.After(d.now()) {
+		return errResp(fmt.Errorf("until %q is past", req.Until))
+	}
+	return d.act(actor, state.Prioritise{Line: l, By: actor, Reason: req.Reason, Until: until}, "line "+string(l)+": priority until "+until.UTC().Format(time.RFC3339))
 }
 
 // dueCheck reports whether a waiting line is due a line check: it has no
@@ -495,7 +528,7 @@ func Status(s state.State, pending []store.Keyed) string {
 				ids = append(ids, id)
 			}
 		}
-		sort.Slice(ids, func(i, j int) bool { return s.Lines[ids[i]].Seq < s.Lines[ids[j]].Seq })
+		s.SortByPolicy(ids)
 		for _, id := range ids {
 			l := s.Lines[id]
 			fmt.Fprintf(&b, "%-16s %s", st, id)
@@ -513,6 +546,9 @@ func Status(s state.State, pending []store.Keyed) string {
 			}
 			if c := l.Claim; c != nil {
 				fmt.Fprintf(&b, "  checking: %s until %s", c.By, c.Until.UTC().Format("15:04Z"))
+			}
+			if p := l.Priority; p != nil {
+				fmt.Fprintf(&b, "  priority until %s (%s)", p.Until.UTC().Format("15:04Z"), p.Reason)
 			}
 			if l.Reason != "" {
 				fmt.Fprintf(&b, "  (%s)", l.Reason)

@@ -117,7 +117,7 @@ type Change struct {
 type Line struct {
 	ID      LineID
 	State   LineState
-	Seq     int      // its place in the queue: lower goes first
+	Seq     int      // its age: the order of its first offer, lower is older; nothing changes it
 	Changes []Change // in stack order: a change's base is the one before it
 	Base    LineID   // the line this one is stacked on, if any: the line it needs (I3)
 	Alone   bool     // must ride in a train of one
@@ -164,6 +164,16 @@ type Line struct {
 	// Claim is the checker's claim on the line's check in flight, if any:
 	// no other checker is given the line while it stands (§5.4).
 	Claim *Claim
+	// Priority is a manual priority, if one stands: the one act that lets
+	// a line pass an older one (docs/queue-as-bag.md §2).
+	Priority *Priority
+}
+
+// Priority is a manual priority: who gave it, why, and until when.
+type Priority struct {
+	By     string
+	Reason string
+	Until  time.Time
 }
 
 // CheckKey is what a line check judges: the line's heads, in order, merged
@@ -329,6 +339,10 @@ func (s State) clone() State {
 			cl.Key.Heads = append([]Head(nil), v.Claim.Key.Heads...)
 			l.Claim = &cl
 		}
+		if v.Priority != nil {
+			p := *v.Priority
+			l.Priority = &p
+		}
 		c.Lines[k] = &l
 	}
 	c.Trains = make(map[TrainID]*Train, len(s.Trains))
@@ -363,12 +377,12 @@ func (s State) NeedMet(l *Line, taken map[LineID]bool) bool {
 	case b.State == LineLanded, b.State == LineRiding:
 		return true
 	case taken[b.ID] && b.State == LineWaiting:
-		return b.Seq < l.Seq && s.NeedMet(b, taken)
+		return s.NeedMet(b, taken)
 	}
 	return false
 }
 
-// Waiting returns the lines that may join a train, in queue order.
+// Waiting returns the lines that may join a train, in the policy's order.
 func (s State) Waiting() []LineID { return s.inState(LineWaiting) }
 
 func (s State) inState(st LineState) []LineID {
@@ -378,7 +392,58 @@ func (s State) inState(st LineState) []LineID {
 			out = append(out, id)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return s.Lines[out[i]].Seq < s.Lines[out[j]].Seq })
+	s.SortByPolicy(out)
+	return out
+}
+
+// SortByPolicy sorts lines into the order assembly takes them in
+// (docs/queue-as-bag.md §3): lines with a manual priority, and the lines
+// they are stacked on, first; then by the age of the bottom of each line's
+// stack, then up the stack. A base always sorts before what is stacked on
+// it. Nothing the queue does changes the order: it is read from facts.
+func (s State) SortByPolicy(ids []LineID) {
+	type key struct {
+		prio       bool
+		bottom, up int
+		age        int
+	}
+	keys := make(map[LineID]key, len(ids))
+	prio := s.prioritised()
+	for _, id := range ids {
+		l := s.Lines[id]
+		k := key{prio: prio[id], bottom: l.Seq, age: l.Seq}
+		for b, n := s.Lines[l.Base], 0; b != nil && b.State != LineLanded && n <= len(s.Lines); b, n = s.Lines[b.Base], n+1 {
+			k.bottom, k.up = b.Seq, k.up+1
+		}
+		keys[id] = k
+	}
+	sort.SliceStable(ids, func(i, j int) bool {
+		a, b := keys[ids[i]], keys[ids[j]]
+		switch {
+		case a.prio != b.prio:
+			return a.prio
+		case a.bottom != b.bottom:
+			return a.bottom < b.bottom
+		case a.up != b.up:
+			return a.up < b.up
+		}
+		return a.age < b.age
+	})
+}
+
+// prioritised is the set of live lines a manual priority covers: the line
+// that has it, and every line beneath it in its stack.
+func (s State) prioritised() map[LineID]bool {
+	out := map[LineID]bool{}
+	for id, l := range s.Lines {
+		if l.Priority == nil || l.State.Spent() {
+			continue
+		}
+		out[id] = true
+		for b, n := s.Lines[l.Base], 0; b != nil && !b.State.Spent() && n <= len(s.Lines); b, n = s.Lines[b.Base], n+1 {
+			out[b.ID] = true
+		}
+	}
 	return out
 }
 

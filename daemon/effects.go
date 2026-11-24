@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/rolandpj1968/shunter/adapter"
@@ -448,9 +447,9 @@ func (d *Daemon) backoff(n int) time.Duration {
 	return b
 }
 
-// sortedLines returns ids in queue order.
+// sortedLines returns ids in the policy's order.
 func sortedLines(s state.State, ids []state.LineID) []state.LineID {
 	out := append([]state.LineID(nil), ids...)
-	sort.Slice(out, func(i, j int) bool { return s.Lines[out[i]].Seq < s.Lines[out[j]].Seq })
+	s.SortByPolicy(out)
 	return out
 }
