@@ -199,6 +199,11 @@ type BuildResult struct {
 	PreflightFailed bool
 	Blamed          []state.LineID
 	Evidence        string
+	// NoVerdict, when set, says the pre-flight could not judge the train:
+	// its own infrastructure failed (a service it needs answered 5xx, a
+	// host was lost). The train ends with no verdict, by infrastructure
+	// (§5.5 class 1): no line is charged, and none spends a budget.
+	NoVerdict string
 }
 
 // Git builds trains and moves trunk.

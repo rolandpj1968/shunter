@@ -91,6 +91,7 @@ const (
 	CauseRequeue    Cause = "requeue"
 	CauseChargeVoid Cause = "charge-void"
 	CauseAbort      Cause = "abort"
+	CauseByHand     Cause = "requeue-by-hand"
 	CauseLanded     Cause = "landed"
 	CauseBaseLanded Cause = "base-landed"
 	CauseBaseLost   Cause = "base-lost"

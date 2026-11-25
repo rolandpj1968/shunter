@@ -110,7 +110,8 @@ unanswered = "10m" # a line check given up with no verdict (`checked --action in
 attempts = 3
 backoff = "2s"
 max_backoff = "30s"
-# Across calls, in the daemon: tries of one effect before J3 is alerted.
+# Across calls, in the daemon: tries of one effect before J3 is alerted. A train's
+# own build, pull request and rerun are retried until the train's deadline instead.
 effects = 3
 effect_backoff = "5s"
 

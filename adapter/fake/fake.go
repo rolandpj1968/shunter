@@ -86,6 +86,9 @@ type World struct {
 	// PushFaults are errors the next pushes return, in order, before trunk
 	// moves.
 	PushFaults []error
+	// OpenPRFaults are errors the next pull requests opened return, in
+	// order, before one is opened.
+	OpenPRFaults []error
 	// AfterPush, when set, runs after a push has moved trunk and before the
 	// call returns: a crash between the act and its record.
 	AfterPush func(ctx context.Context) error
@@ -284,6 +287,11 @@ func (w *World) OpenPR(ctx context.Context, key string, t state.TrainID, changes
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if len(w.OpenPRFaults) > 0 {
+		err := w.OpenPRFaults[0]
+		w.OpenPRFaults = w.OpenPRFaults[1:]
+		return "", err
+	}
 	if pr, ok := w.prs[key]; ok {
 		return pr, nil
 	}
@@ -432,7 +440,7 @@ func (w *World) Build(ctx context.Context, key string, req adapter.BuildRequest)
 			return r, err
 		}
 	}
-	if r.Head == "" && !r.PreflightFailed {
+	if r.Head == "" && !r.PreflightFailed && r.NoVerdict == "" {
 		r.Head = mergeHead(req, r.LeftOut)
 	}
 	w.mu.Lock()
@@ -473,6 +481,11 @@ func (w *World) OpenDraft(ctx context.Context, key string, t state.TrainID, chan
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if len(w.OpenPRFaults) > 0 {
+		err := w.OpenPRFaults[0]
+		w.OpenPRFaults = w.OpenPRFaults[1:]
+		return "", err
+	}
 	if pr, ok := w.prs[key]; ok {
 		return pr, nil
 	}

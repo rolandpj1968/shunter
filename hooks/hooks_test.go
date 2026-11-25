@@ -508,3 +508,25 @@ func TestPreflightStepMayLeaveOut(t *testing.T) {
 		t.Fatalf("leave-out with blame none answered %q (%v)", out, err)
 	}
 }
+
+// TestPreflightExit75IsNoVerdict: a step that exits 75 could not judge the
+// train: the hook answers no verdict with its output, runs no later step,
+// and records no row for it.
+func TestPreflightExit75IsNoVerdict(t *testing.T) {
+	tr := newTrain(t, map[string]string{"one.txt": "1\n"}, map[string]string{"src/b.go": "package src\n"})
+	record := filepath.Join(t.TempDir(), "steps.tsv")
+	cfg := map[string]any{"record": record, "steps": []any{
+		map[string]any{"name": "fetch", "command": []string{"sh", "-c", "echo 'registry: 503 Service Unavailable'; exit 75"}},
+		map[string]any{"name": "after", "command": []string{"sh", "-c", "echo ran; exit 1"}},
+	}}
+	a, stderr := hook(t, "preflight.py", cfg, tr.input())
+	if a["pass"] != false || !strings.Contains(fmt.Sprint(a["no_verdict"]), "503") || a["blamed"] != nil {
+		t.Fatalf("%v\n%s", a, stderr)
+	}
+	if strings.Contains(stderr, "after exit") {
+		t.Fatalf("a step ran after the no verdict:\n%s", stderr)
+	}
+	if b, err := os.ReadFile(record); err == nil && strings.Contains(string(b), "fetch") {
+		t.Fatalf("a row was recorded for the no verdict: %s", b)
+	}
+}

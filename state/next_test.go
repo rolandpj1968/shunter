@@ -342,6 +342,25 @@ var transitions = []tcase{
 		ev:    Abort{Train: "t1", Reason: "r", Lines: map[LineID]Dispose{"a": {Kind: Return}, "b": {Kind: ParkIt, Park: "q", Cond: "the fill has landed"}}},
 		lines: lineWant{"a": LineReturned, "b": LineParked, "c": LineWaiting}, trains: trainWant{"t1": TrainAborted}, fx: []EffectKind{EffCancelRun, EffClosePR, EffNotify}},
 	{name: "abort while judging", setup: cat(ready("a", "b"), testing_("t1", "a", "b"), CIFailed{Train: "t1"}), ev: Abort{Train: "t1", Reason: "r"}, trains: trainWant{"t1": TrainAborted}},
+	{name: "requeue by hand a charged line", setup: cat(ready("a", "b"), testing_("t1", "a", "b"), CIFailed{Train: "t1", Blamed: ids("a"), Evidence: "e"}),
+		ev: RequeueByHand{Line: "a", Reason: "the outage, not a's"}, lines: lineWant{"a": LineWaiting},
+		check: func(t *testing.T, s State) {
+			if l := s.Lines["a"]; len(l.ChargedAt) != 0 || l.ChargedBy != (Verdict{}) {
+				t.Errorf("the charge stands: %+v", l)
+			}
+		}},
+	{name: "requeue by hand a train at J1", setup: cat(ready("a"), testing_("t1", "a"), CINoVerdict{Train: "t1", Why: "w"}, testing_("t2", "a"), CIFailed{Train: "t2"}),
+		ev: RequeueByHand{Train: "t2", Reason: "the forge's outage"}, lines: lineWant{"a": LineWaiting}, trains: trainWant{"t2": TrainAborted},
+		check: func(t *testing.T, s State) {
+			if s.Paused || len(s.Parks) != 0 || s.Lines["a"].NoVerdicts != 0 {
+				t.Errorf("paused %v, parks %v, no-verdicts %d", s.Paused, s.Parks, s.Lines["a"].NoVerdicts)
+			}
+		}},
+	{name: "requeue by hand into a park", setup: cat(ready("a"), testing_("t1", "a"), CIFailed{Train: "t1", Blamed: ids("a"), Evidence: "e"}, allPark),
+		ev: RequeueByHand{Train: "t1", Reason: "r"}, lines: lineWant{"a": LineParked}},
+	{name: "requeue by hand a landing train", setup: cat(ready("a"), landing("t1", "a")), ev: RequeueByHand{Train: "t1", Reason: "r"}, err: ErrLanding},
+	{name: "requeue by hand a landed line", setup: cat(ready("a"), landing("t1", "a"), PushOK{Train: "t1"}), ev: RequeueByHand{Line: "a", Reason: "r"}, err: ErrState},
+	{name: "requeue by hand with no reason", setup: cat(ready("a"), testing_("t1", "a")), ev: RequeueByHand{Train: "t1"}, err: ErrReason},
 	{name: "abort a green train", setup: cat(ready("a"), green("t1", "a")), ev: Abort{Train: "t1", Reason: "r"}, lines: lineWant{"a": LineWaiting}, trains: trainWant{"t1": TrainAborted}},
 	{name: "abort requeues into a park", setup: cat(allPark, fix("f"), GateAccept{Line: "f"}, testing_("t1", "f"), Restore{Park: "p"}, ParkLines{Park: "p2", Cond: "c"}),
 		ev: Abort{Train: "t1", Reason: "r"}, lines: lineWant{"f": LineParked}, trains: trainWant{"t1": TrainAborted}},

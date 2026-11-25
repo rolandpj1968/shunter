@@ -194,6 +194,21 @@ type Abort struct {
 	Lines  map[LineID]Dispose
 }
 
+// RequeueByHand is the operator's override (§5.9): the lines of a train, or
+// one line, go back to waiting, whatever happened to them. A live train is
+// aborted first, its lines requeued. A line its train returned, charged or
+// not, waits again. Each line's budgets and cycles are reset: its
+// no-verdict strikes, its count, its split half, and the heads it was
+// charged at. Nothing is charged and nothing is parked; a park that already
+// covers the queue still covers the line. A line that landed or was
+// dropped, rides another train, or is held or parked keeps its state, and
+// only its budgets reset. Train or Line names the target, not both.
+type RequeueByHand struct {
+	Train  TrainID
+	Line   LineID
+	Reason string
+}
+
 // LandingVerified is the lander's own reading, from the forge, immediately
 // before it pushes (I9): the head CI passed, each change's head, and trunk.
 type LandingVerified struct {
@@ -361,6 +376,7 @@ func (Judge) event() string           { return "judge" }
 func (JudgeTimeout) event() string    { return "judge-timeout" }
 func (HeadMoved) event() string       { return "head-moved" }
 func (Abort) event() string           { return "abort" }
+func (RequeueByHand) event() string   { return "requeue" }
 func (LandingVerified) event() string { return "landing-verified" }
 func (PushOK) event() string          { return "push-ok" }
 func (PushRefused) event() string     { return "push-refused" }

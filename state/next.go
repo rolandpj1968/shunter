@@ -512,6 +512,8 @@ func (m *machine) apply(ev Event) error {
 		return m.headMoved(e)
 	case Abort:
 		return m.abort(e)
+	case RequeueByHand:
+		return m.requeueByHand(e)
 	case LandingVerified:
 		return m.verified(e)
 	case PushOK:
@@ -1353,7 +1355,7 @@ func (m *machine) judge(e Judge) error {
 		m.end(t, TrainFailed, CauseJudged, "park: "+e.Why, nil)
 	case JudgeRerun:
 		if t.Head == "" || t.Judged >= 1 {
-			return bad(ErrBudget, "train %s cannot be rerun", t.ID)
+			return bad(ErrBudget, "train %s cannot be rerun (%s); if the failure was not the train's, requeue it by hand (shunt requeue)", t.ID, cannotRerun(t))
 		}
 		t.Judged++
 		m.setTrain(t, TrainTesting, CauseRerun, e.Why)
@@ -1362,6 +1364,14 @@ func (m *machine) judge(e Judge) error {
 		return bad(ErrInput, "J1 has no action %q", e.Action)
 	}
 	return nil
+}
+
+// cannotRerun says why a train at J1 has no rerun left.
+func cannotRerun(t *Train) string {
+	if t.Head == "" {
+		return "it failed before it was built: it has no head to rerun"
+	}
+	return "its one rerun at J1 is spent"
 }
 
 func (m *machine) headMoved(e HeadMoved) error {
@@ -1449,6 +1459,59 @@ func (m *machine) abort(e Abort) error {
 		m.place(l, CauseAbort) // requeue: through the gate, as the abort's act
 		return true
 	})
+	return nil
+}
+
+// requeueByHand is the operator's override (§5.9, RequeueByHand). It is
+// for what the rules cannot see: a failure that was the infrastructure's,
+// judged or charged as if it were a line's.
+func (m *machine) requeueByHand(e RequeueByHand) error {
+	if e.Reason == "" {
+		return bad(ErrReason, "a requeue")
+	}
+	if (e.Train == "") == (e.Line == "") {
+		return bad(ErrInput, "a requeue names a train or a line")
+	}
+	var lines []LineID
+	var t *Train
+	if e.Train != "" {
+		var err error
+		if t, err = m.train(e.Train); err != nil {
+			return err
+		}
+		lines = append(lines, t.Lines...)
+	} else {
+		l, err := m.line(e.Line)
+		if err != nil {
+			return err
+		}
+		if l.State == LineLanded || l.State == LineDropped {
+			return bad(ErrState, "line %s is %s", l.ID, l.State)
+		}
+		if l.State == LineRiding {
+			t = m.s.Trains[l.Train]
+		}
+		lines = []LineID{l.ID}
+	}
+	reason := "requeued by hand: " + e.Reason
+	if t != nil && t.State.Live() {
+		// Abort is §5.9's: no charge, no budget, and refused while the
+		// train lands. Its lines go back through the gate in train order.
+		if err := m.abort(Abort{Train: t.ID, Reason: reason}); err != nil {
+			return err
+		}
+	}
+	for _, id := range lines {
+		l := m.s.Lines[id]
+		if l.State == LineLanded || l.State == LineDropped {
+			continue
+		}
+		l.NoVerdicts, l.Count, l.Group = 0, 0, 0
+		l.ChargedAt, l.ChargedBy = nil, Verdict{}
+		if l.State == LineReturned {
+			m.place(l, CauseByHand)
+		}
+	}
 	return nil
 }
 

@@ -95,6 +95,8 @@ func buildTable() []Row {
 		lr(LineReturned, LineWaiting, CauseChargeVoid, "checker-changed", "charged by a checker since replaced (I14)", oRunner, "the charge stands"),
 		lr(LineReturned, LineParked, CauseChargeVoid, "checker-changed", "charged by a checker since replaced (I14); a park covers it", oRunner, "the charge stands"),
 		lr(LineWaiting, LineReturned, CauseConflict, "rebase-failed", "it is in conflict with trunk, and the runner could not rebase it (§5.2)", "rule: only a person resolves it", "returned uncharged; offered again once it merges, at its first offer's age"),
+		lr(LineReturned, LineWaiting, CauseByHand, "requeue", "a reason is given; its budgets and cycles reset", "a human (§5.9)", "stays returned"),
+		lr(LineReturned, LineParked, CauseByHand, "requeue", "a reason is given; the queue is parked and this is not the park's fix", "a human (§5.9)", "stays returned"),
 
 		// A train.
 		tr(TrainNone, TrainAssembling, CauseAssemble, "assemble", "not paused; the chain is shorter than D; the train ahead has a head", "the runner (§5.3)", "no train"),
