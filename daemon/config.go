@@ -95,7 +95,10 @@ type Config struct {
 	// line counted. Zero is no cap.
 	MaxChanges int
 	// Retries is how many times a transient failure of an effect is
-	// retried before it is escalated to J3. Default 3.
+	// retried before it is escalated to J3. Default 3. A train's own
+	// effects (its build, its pull request, its rerun) are not bounded by
+	// it: they are retried until the train's deadline (Build, Open, CI),
+	// which then ends the train with no verdict (PROTOCOL.md §5.5).
 	Retries int
 	// Backoff is the first retry's wait; it doubles, to at most 5m.
 	// Default 5s.

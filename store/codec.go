@@ -25,7 +25,7 @@ func init() {
 		state.ParkLines{}, state.Restore{}, state.Withdraw{}, state.Assemble{}, state.LeaveOut{},
 		state.PreflightFailed{}, state.Built{}, state.Opened{}, state.CIPassed{}, state.CIRerun{},
 		state.CINoVerdict{}, state.CIFailed{}, state.Judge{}, state.JudgeTimeout{}, state.HeadMoved{},
-		state.Abort{}, state.LandingVerified{}, state.PushOK{}, state.PushRefused{}, state.Pause{},
+		state.Abort{}, state.RequeueByHand{}, state.LandingVerified{}, state.PushOK{}, state.PushRefused{}, state.Pause{},
 		state.Resume{}, state.ExpireBudget{}, state.Stale{}, state.Fresh{}, state.LineChecked{}, state.HandOver{}, state.RebaseFailed{},
 		state.CheckClaimed{}, state.ClaimExpired{}, state.ClaimReleased{}, state.Prioritise{}, state.PriorityEnded{}, state.DraftOpened{}, state.Starving{}, state.CheckerChanged{},
 	} {

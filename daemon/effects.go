@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 
 	"github.com/rolandpj1968/shunter/adapter"
@@ -410,6 +411,10 @@ func built(req adapter.BuildRequest, r adapter.BuildResult) []state.Event {
 	}
 	switch {
 	case kept == 0:
+	case r.NoVerdict != "":
+		// The pre-flight could not judge (its own infrastructure failed):
+		// no verdict, by infrastructure (§5.5 class 1), never a charge.
+		out = append(out, state.CINoVerdict{Train: req.Train, Infra: true, Why: "pre-flight: " + r.NoVerdict})
 	case r.PreflightFailed:
 		out = append(out, state.PreflightFailed{Train: req.Train, Blamed: r.Blamed, Evidence: r.Evidence})
 	default:
@@ -476,8 +481,9 @@ func (d *Daemon) complete(r result) {
 }
 
 // failed handles an effect whose call failed. A push's refusal is the
-// machine's to count (§5.10); a build, a pull request or a rerun that cannot
-// be made is no verdict; anything else is retried, and escalated to J3 when
+// machine's to count (§5.10); a build, a pull request or a rerun refused
+// permanently is no verdict, and one failing transiently is retried until
+// the train's deadline; anything else is retried, and escalated to J3 when
 // its budget is spent.
 func (d *Daemon) failed(k store.Keyed, r result) {
 	perm := adapter.IsPermanent(r.err)
@@ -502,15 +508,34 @@ func (d *Daemon) failed(k store.Keyed, r result) {
 		}
 		return
 	case state.EffBuild, state.EffOpenPR, state.EffRerun:
-		if perm || n > d.cfg.Retries {
+		// A train's own effect. A permanent refusal ends it with no
+		// verdict now. A transient one (a 5xx, a rate limit, a lost
+		// connection, a try's deadline) is retried, with a growing wait,
+		// for as long as the train's own deadline allows: GitHub-style
+		// outages are seldom total, and the next try often takes. When the
+		// deadline passes, the timer ends the train with no verdict, by
+		// infrastructure (tick): never a failure, never a charge.
+		if perm {
 			d.apply(r.actor, state.CINoVerdict{Train: k.Train, Infra: true, Why: string(k.Kind) + ": " + why}, k.Key)
 			return
 		}
+		d.log.Printf("train %s: %s failed (try %d), retried until the train's deadline: %s", k.Train, k.Kind, n, why)
+		d.retry[k.Key] = retry{n: n, at: d.now().Add(jitter(d.backoff(n)))}
+		return
 	}
 	if n > d.cfg.Retries || perm {
 		d.alert("J3:"+k.Key, fmt.Sprintf("J3: %s %s%s keeps failing (%d tries): %s", k.Kind, k.Line, k.Train, n, why))
 	}
 	d.retry[k.Key] = retry{n: n, at: d.now().Add(d.backoff(n))}
+}
+
+// jitter spreads a wait over [w, 1.25w), so that effects failing together
+// in an outage do not all try again at once. Never shorter than w.
+func jitter(w time.Duration) time.Duration {
+	if w <= 0 {
+		return w
+	}
+	return w + time.Duration(rand.Int64N(int64(w)/4+1))
 }
 
 func (d *Daemon) backoff(n int) time.Duration {

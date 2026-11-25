@@ -10,6 +10,7 @@ examples/shunter.toml):
         "tips": {"<line>": "<its last commit in the train>"}}
   out: {"pass": true} or {"pass": false, "blamed": [...], "evidence": "..."}
        or {"pass": false, "left_out": {"<line>": "<why>"}, "evidence": "..."}
+       or {"pass": false, "no_verdict": "<why>"}
 
 Steps run in order and stop at the first failure, each with
 SHUNTER_TRAIN, SHUNTER_BASE and SHUNTER_HEAD in its environment. Each run
@@ -35,6 +36,15 @@ Steps in `always` always run. Steps in `never` never run here. A step
 named in the `recalled` file (rows: time, step, why) in the window runs
 whatever its record: write a row when CI fails in what a skipped step
 covers.
+
+A step that exits 75 (EX_TEMPFAIL) says it could not judge the train: its
+own infrastructure failed (a service it needs answered 5xx, a host it uses
+was lost). The hook stops there and answers no verdict, with the step's
+output as why. Shunter ends the train with no verdict, by infrastructure:
+nobody is charged, no line's budget is spent, and the lines ride again
+(PROTOCOL.md §5.5 class 1). No row is recorded for it: it caught nothing,
+and it ran nothing to the end. A step must not remember such an exit as
+its result for the tree.
 
 On a failure, blame, as the step's "blame" says ("files" when unset):
   - "none": nobody is named, and Shunter's J1 decides (its default splits
@@ -94,6 +104,10 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shunterhooks as sh  # noqa: E402
+
+
+# A step's exit that says it could not judge: EX_TEMPFAIL, from sysexits.h.
+NO_VERDICT = 75
 
 
 def iso(t):
@@ -306,8 +320,11 @@ def main():
         timeout = sh.parse_duration(step.get("timeout"), 600)
         untracked = sh.dirty(doc["dir"])[1] if step.get("commit") else set()
         rc, secs, out = run_step(step, doc, timeout)
-        record_row(cfg, base, train, name, secs, rc)
         sh.log("pre-flight: %s exit %d in %.1fs" % (name, rc, secs))
+        if rc == NO_VERDICT:
+            sh.answer({"no_verdict": ("pre-flight step %s could not judge (exit %d, %.0fs):\n%s"
+                                      % (name, rc, secs, tail(out)))[:4000], "pass": False})
+        record_row(cfg, base, train, name, secs, rc)
         if rc == 0:
             if step.get("commit"):
                 try:

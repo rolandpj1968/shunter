@@ -145,6 +145,8 @@ Live trains form the **chain**, in landing order: train 1 is built on trunk, and
 | L34 | returned | waiting | checker-changed | charged by a checker since replaced (I14) | the runner | the charge stands |
 | L35 | returned | parked | checker-changed | charged by a checker since replaced (I14); a park covers it | the runner | the charge stands |
 | L36 | waiting | returned | rebase-failed | it is in conflict with trunk, and the runner could not rebase it (§5.2) | rule: only a person resolves it | returned uncharged; offered again once it merges, at its first offer's age |
+| L37 | returned | waiting | requeue | a reason is given; its budgets and cycles reset | a human (§5.9) | stays returned |
+| L38 | returned | parked | requeue | a reason is given; the queue is parked and this is not the park's fix | a human (§5.9) | stays returned |
 
 **Transitions of a train**
 
@@ -311,6 +313,8 @@ Each failure gets one class, decided in this order:
 
 0. **No verdict:** the run was cancelled, skipped, superseded or timed out, the builder died, or the result can't be read. Nothing is judged. The batch is void and its lines go back unchanged. Repeated no-verdicts on the same line go to J3 (§5.10). They're never promoted to "deterministic".
 1. **Infrastructure:** no check ran (setup, tooling, the runner lost), or the forge refused for a transient reason (§2.2). The batch reruns, or the line goes back unchanged.
+
+**An outage is ridden through, not judged.** Forge outages are seldom total: the API answers 500 to one call and 201 to the next. So a batch's own effect (its build, its pull request, its rerun) that fails transiently (a 5xx, a rate limit, a lost connection, a call's deadline) is tried again, with a growing wait and jitter, for as long as the batch's own deadline allows (`[deadlines] build`, `open`, `ci`), not for a fixed few tries. Only when that deadline passes does the batch end, with no verdict, by infrastructure: never a failure, never J1, never a charge. A refusal that is permanent (§2.2) ends it at once, also with no verdict. A pre-flight that knows it could not judge (a service it needs was down) says so (`no_verdict` in its answer; exit 75 from a step of the example hook), and the batch ends the same way, instead of as a failure blame can't attribute. The queue this protocol grew from gave an effect three quick tries, and a pre-flight's lost connection reached J1 as a failure, where the judge could only charge the innocent line or park the queue.
 2. **Known flake:** a test recorded as flaky failed. One rerun.
 3. **Timing:** only timeouts or lost connections. One rerun.
 4. **Deterministic:** an assertion, or a compile or lint error. No rerun; go to blame.
@@ -364,7 +368,9 @@ The judge may abort a riding batch at any stage before its push: assembling, pre
 
 **An abort asked for one line acts on that line, not on the train's other lines.** A cancel names a change; it acts on the line that holds it, and on the lines stacked on that line (I3): they go back with it, uncharged, when it is returned, and wait behind it while it is parked. Every other line of the train goes back to waiting, as old as it was. The queue this protocol grew from dropped a whole train of eleven when one of its changes was cancelled, and the other ten were queued again by hand.
 
-An abort is not a failure. It charges no change (I6) and uses no retry budget. Aborting twice is the same as once. The one stage an abort can't reach is the push itself (§5.1, "landing"): the request is refused, and the caller hears that the batch is past the point of no return.
+An abort is not a failure. It charges no change (I6) and uses no retry budget.
+
+**Requeue by hand is the operator's override** (`shunt requeue <batch|line> --reason`), for what the rules can't see: a failure judged or charged as a line's that was the infrastructure's. Usable in any state but landing. It aborts the batch if it is live; it puts the lines back to waiting in their order, a returned line too, its charge gone (rows L37, L38); it resets each line's budgets and cycles (its no-verdict strikes, its count, its split half); it charges nothing and parks nothing (a park that already covers the queue still covers the line); and it is recorded, with its reason, as an act like any other. A line that landed, was dropped, rides another batch, or is held or parked keeps its state; only its budgets reset. It serves where J1's menu has nothing right: a batch of one line whose pre-flight could not reach the forge has no head to rerun and can't be split, and charge and park are both wrong. Aborting twice is the same as once. The one stage an abort can't reach is the push itself (§5.1, "landing"): the request is refused, and the caller hears that the batch is past the point of no return.
 
 ### 5.10 Retry budgets
 
@@ -382,7 +388,7 @@ Each point defines what the judge **sees**, what it **may choose**, the **deadli
   - split the batch (whole lines, in train order, so that each line rides only behind its base);
   - **park** (§6.4): the failure isn't the batch's, trunk or a shared fixture is broken;
   - rerun once (stating why it might differ).
-- **May not choose:** to return a line with no evidence (I6). A batch of one line can't be split, so for it the menu is charge with evidence, park, or rerun.
+- **May not choose:** to return a line with no evidence (I6). A batch of one line can't be split, so for it the menu is charge with evidence, park, or rerun. A failure that was the infrastructure's is not on the menu: the operator's requeue by hand (§5.9) takes the batch off J1 with nothing charged and nothing parked.
 - **Deadline:** 10 minutes. **Default:**
   - the same test failed in the previous batch with unrelated changes: **park** (trunk or a shared fixture is suspect, J2). **Not when the test scans the whole tree** (§5.6): two unrelated batches failing on it are two changes that each broke the set it holds, and the rules below apply;
   - else the batch is one line: **charge it, by elimination.** It is judged at the head of the chain (§5.3), so its base is trunk, which is tested (I1), and the failure was not in the batch before: the line is the only change there is, and that is its evidence (I6). Draft 0.2 parked the whole queue here. That stopped every line for one line's failure, and when the park's deadline restored the queue the line rode and failed again;
@@ -492,6 +498,8 @@ The novelty isn't the mechanism, which is a subset of Zuul's. It's treating judg
 ## Change log
 
 **0.3, unreleased.**
+
+- **§5.5: an outage is ridden through, not judged.** A batch's build, pull request or rerun that fails transiently is retried with a growing, jittered wait until the batch's own deadline, then ends with no verdict, by infrastructure: never J1 (it was three quick tries, then no verdict). A pre-flight may answer `no_verdict` (exit 75 from a step of the example hook): no verdict, not a failure. **§5.9: requeue by hand** (`shunt requeue`, event `requeue`, rows L37, L38): the operator's override that puts a batch's or a line's lines back to waiting, budgets and cycles reset, nothing charged or parked. A rerun refused at J1 now says why, and names it.
 
 - **An owner's notice says what it is about:** the state the line went to (none for advice) and the cause, so that delivery acts by kind (the optional `adapter.Teller`; `state` and `cause` in the events file and the notify hook's input).
 

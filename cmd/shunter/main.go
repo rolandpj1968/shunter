@@ -9,6 +9,7 @@
 //	shunt hold <line|change> --reason WHY
 //	shunt release <line|change>
 //	shunt cancel <train|line> --action park|requeue|drop --reason WHY
+//	shunt requeue <train|line|change> --reason WHY
 //	shunt claim [<line|change>] [--lease 20m] [--version V]
 //	shunt checked <line|change> <trunk> <head>... --action pass|fail|conflict|infra [--reason WHY] --version V
 //	shunt checker line-check|pre-flight|blame <version>
@@ -477,7 +478,7 @@ func watchRun(fl map[string]string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|claim|checked|checker|handover|priority|hold|release|cancel|restore|withdraw|pause|resume|judge|status|export|import> ...")
+	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|claim|checked|checker|handover|priority|hold|release|cancel|requeue|restore|withdraw|pause|resume|judge|status|export|import> ...")
 	os.Exit(2)
 }
 

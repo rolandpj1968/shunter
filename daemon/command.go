@@ -145,6 +145,8 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 		return d.act(actor, state.Release{Line: l}, "line "+string(l)+" released")
 	case "cancel":
 		return d.cancel(actor, req)
+	case "requeue":
+		return d.requeue(actor, req)
 	case "withdraw":
 		if len(req.Args) != 1 {
 			return errResp(errors.New("usage: withdraw <line|change>"))
@@ -408,6 +410,24 @@ func OfferFor(s state.State, info []adapter.ChangeInfo, alone bool) state.Offer 
 		}
 	}
 	return o
+}
+
+// requeue is the operator's override (§5.9): requeue <train|line>. A train
+// is named by its id; anything else names a line, or a change of one. A
+// live train is aborted; the lines go back to waiting, uncharged, with their
+// budgets and cycles reset, and nothing parked.
+func (d *Daemon) requeue(actor string, req Request) Response {
+	if len(req.Args) != 1 || req.Reason == "" {
+		return errResp(errors.New("usage: requeue <train|line> --reason <why>"))
+	}
+	if t := d.st.State().Trains[state.TrainID(req.Args[0])]; t != nil {
+		return d.act(actor, state.RequeueByHand{Train: t.ID, Reason: req.Reason}, fmt.Sprintf("train %s: its lines requeued", t.ID))
+	}
+	l, err := d.findLine(req.Args[0])
+	if err != nil {
+		return errResp(err)
+	}
+	return d.act(actor, state.RequeueByHand{Line: l, Reason: req.Reason}, "line "+string(l)+" requeued")
 }
 
 // cancel aborts a train (§5.9), named by itself or by one of its lines. The

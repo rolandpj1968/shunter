@@ -297,6 +297,15 @@ func TestPreflightHook(t *testing.T) {
 	if err == nil || res.PreflightFailed {
 		t.Fatalf("a crashed pre-flight: %+v %v", res, err)
 	}
+	// A pre-flight that says it could not judge: no verdict, no head, no
+	// failure, nobody blamed.
+	if err := os.WriteFile(p, []byte("#!/bin/sh\ncat > /dev/null\necho '{\"pass\":false,\"no_verdict\":\"the registry answered 503\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	res, err = w.repo.Build(ctx, "k4", adapter.BuildRequest{Train: "t4", Base: base, Lines: []adapter.BuildLine{line("2", ch("2", h2))}})
+	if err != nil || res.NoVerdict != "the registry answered 503" || res.PreflightFailed || res.Head != "" || len(res.Blamed) != 0 {
+		t.Fatalf("a pre-flight with no verdict: %+v %v", res, err)
+	}
 }
 
 func TestLeaseRefusedWhenTrunkMoved(t *testing.T) {

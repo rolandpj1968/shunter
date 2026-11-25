@@ -286,6 +286,9 @@ type PreflightAnswer struct {
 	Blamed   []state.LineID          `json:"blamed,omitempty"`
 	Evidence string                  `json:"evidence,omitempty"`
 	LeftOut  map[state.LineID]string `json:"left_out,omitempty"`
+	// NoVerdict says the pre-flight could not judge (its infrastructure
+	// failed), with why: the train ends with no verdict, charging nobody.
+	NoVerdict string `json:"no_verdict,omitempty"`
 }
 
 // ConflictInput is what the conflict hook reads. The working tree is in the
@@ -377,7 +380,7 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	if head == "" {
 		return res, r.remember(key, res)
 	}
-	if res.PreflightFailed {
+	if res.PreflightFailed || res.NoVerdict != "" {
 		return res, r.remember(key, res)
 	}
 	var err error
@@ -470,6 +473,9 @@ func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[stat
 		return res, head, true, nil
 	}
 	switch {
+	case !a.Pass && a.NoVerdict != "":
+		res.NoVerdict = a.NoVerdict
+		return res, head, false, nil
 	case !a.Pass:
 		res.PreflightFailed = true
 		for _, id := range a.Blamed {
