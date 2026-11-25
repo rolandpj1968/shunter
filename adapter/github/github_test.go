@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -123,7 +124,7 @@ func TestReadOnlyRefusesWritesBeforeSending(t *testing.T) {
 	c.cfg.ReadOnly = true
 	s.refs["main"] = "trunk1"
 	s.refs["shunter/t1"] = "h1"
-	_, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	_, err := c.OpenPR(ctx, "k1", "t1", nil, "h1", "trunk1")
 	if !errors.Is(err, errReadOnly) || !adapter.IsPermanent(err) {
 		t.Fatalf("open in read-only: %v", err)
 	}
@@ -145,11 +146,11 @@ func TestOpenPRIsIdempotentAndFindsItsBase(t *testing.T) {
 	s, c := newServer(t)
 	s.refs["main"] = "trunk1"
 	s.refs["shunter/t1"] = "h1"
-	pr, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	pr, err := c.OpenPR(ctx, "k1", "t1", nil, "h1", "trunk1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	again, err := c.OpenPR(ctx, "k1", "t1", nil, "h1", "trunk1")
 	if err != nil || again != pr || s.count("POST", "/pulls") != 1 {
 		t.Fatalf("again: %s %v (posts %d)", again, err, s.count("POST", "/pulls"))
 	}
@@ -159,7 +160,7 @@ func TestOpenPRIsIdempotentAndFindsItsBase(t *testing.T) {
 	// Train 2 is built on train 1's head: its pull request goes to train
 	// 1's branch.
 	s.refs["shunter/t2"] = "h2"
-	if _, err := c.OpenPR(ctx, "k2", "t2", "h2", "h1"); err != nil {
+	if _, err := c.OpenPR(ctx, "k2", "t2", nil, "h2", "h1"); err != nil {
 		t.Fatal(err)
 	}
 	if base := s.pulls[502]["base"].(map[string]any)["ref"]; base != "shunter/t1" {
@@ -167,12 +168,12 @@ func TestOpenPRIsIdempotentAndFindsItsBase(t *testing.T) {
 	}
 	// A branch not at the built head is refused, permanently.
 	s.refs["shunter/t3"] = "other"
-	if _, err := c.OpenPR(ctx, "k3", "t3", "h3", "trunk1"); !adapter.IsPermanent(err) {
+	if _, err := c.OpenPR(ctx, "k3", "t3", nil, "h3", "trunk1"); !adapter.IsPermanent(err) {
 		t.Fatalf("branch elsewhere: %v", err)
 	}
 	// A base that is nothing known is refused.
 	s.refs["shunter/t4"] = "h4"
-	if _, err := c.OpenPR(ctx, "k4", "t4", "h4", "nowhere"); !adapter.IsPermanent(err) {
+	if _, err := c.OpenPR(ctx, "k4", "t4", nil, "h4", "nowhere"); !adapter.IsPermanent(err) {
 		t.Fatalf("unknown base: %v", err)
 	}
 }
@@ -182,14 +183,14 @@ func TestDispatchMode(t *testing.T) {
 	c.cfg.Dispatch, c.cfg.Workflow = true, "ci.yml"
 	s.refs["main"] = "trunk1"
 	s.refs["shunter/t1"] = "h1"
-	if _, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1"); err != nil {
+	if _, err := c.OpenPR(ctx, "k1", "t1", nil, "h1", "trunk1"); err != nil {
 		t.Fatal(err)
 	}
 	if n := s.count("POST", "/actions/workflows/ci.yml/dispatches"); n != 1 {
 		t.Fatalf("%d dispatches", n)
 	}
 	s.run(1, "h1", "shunter/t1", "queued", "")
-	if _, err := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1"); err != nil {
+	if _, err := c.OpenPR(ctx, "k1", "t1", nil, "h1", "trunk1"); err != nil {
 		t.Fatal(err)
 	}
 	if n := s.count("POST", "/actions/workflows/ci.yml/dispatches"); n != 1 {
@@ -201,7 +202,7 @@ func TestClosePR(t *testing.T) {
 	s, c := newServer(t)
 	s.refs["main"] = "trunk1"
 	s.refs["shunter/t1"] = "h1"
-	pr, _ := c.OpenPR(ctx, "k1", "t1", "h1", "trunk1")
+	pr, _ := c.OpenPR(ctx, "k1", "t1", nil, "h1", "trunk1")
 	if err := c.ClosePR(ctx, "k2", "t1", "void: a head moved"); err != nil {
 		t.Fatal(err)
 	}
@@ -696,5 +697,80 @@ func TestFilesIsWholeOrAnError(t *testing.T) {
 	s.pulls[32]["files"] = []map[string]any{{"filename": "docs/a.md"}}
 	if _, err := c.Files(ctx, "32"); err == nil {
 		t.Fatal("a list with no count to check it against was given as whole")
+	}
+}
+
+// A train's pull request title names its changes in ride order, and stays
+// within titleMax: those that do not fit are counted, not named.
+func TestTrainTitleNamesItsChanges(t *testing.T) {
+	many := make([]state.ChangeID, 30)
+	for i := range many {
+		many[i] = state.ChangeID(strconv.Itoa(1000 + i))
+	}
+	for _, tc := range []struct {
+		changes []state.ChangeID
+		want    string
+	}{
+		{nil, "Merge train t8"},
+		{[]state.ChangeID{"12"}, "Merge train t8: #12"},
+		{[]state.ChangeID{"15", "12", "40"}, "Merge train t8: #15 #12 #40"},
+		// "Merge train t8:" is 15, each " #10nn" is 6 and " +22 more" is
+		// 9: eight are named.
+		{many, "Merge train t8: #1000 #1001 #1002 #1003 #1004 #1005 #1006 #1007 +22 more"},
+	} {
+		got := trainTitle("t8", tc.changes)
+		if got != tc.want {
+			t.Errorf("trainTitle(%v) = %q, want %q", tc.changes, got, tc.want)
+		}
+		if len(got) > titleMax {
+			t.Errorf("trainTitle(%v) is %d long", tc.changes, len(got))
+		}
+	}
+	// Exactly at the cap, every change is named.
+	exact := []state.ChangeID{}
+	for !strings.Contains(trainTitle("t8", append(exact, "1234567")), "more") {
+		exact = append(exact, "1234567")
+	}
+	if got := trainTitle("t8", exact); strings.Contains(got, "more") || len(got) > titleMax {
+		t.Errorf("all fit: %q", got)
+	}
+	if got := trainTitle("t8", append(exact, "1234567")); !strings.HasSuffix(got, " more") || len(got) > titleMax {
+		t.Errorf("one too many: %q", got)
+	}
+}
+
+// The train's pull request lists its changes, one to a line so the forge
+// links each, ahead of the text and the key's mark.
+func TestOpenPRNamesTheChangesInTitleAndBody(t *testing.T) {
+	s, c := newServer(t)
+	s.refs["main"] = "trunk1"
+	s.refs["shunter/t1"] = "h1"
+	if _, err := c.OpenPR(ctx, "k1", "t1", []state.ChangeID{"15", "12"}, "h1", "trunk1"); err != nil {
+		t.Fatal(err)
+	}
+	var in map[string]any
+	for _, p := range s.posted {
+		if p["method"] == "POST" && p["path"] == "/pulls" {
+			in = p["body"].(map[string]any)
+		}
+	}
+	if in == nil {
+		t.Fatal("no pull request posted")
+	}
+	if in["title"] != "Merge train t1: #15 #12" {
+		t.Fatalf("title %q", in["title"])
+	}
+	body := in["body"].(string)
+	list := "- #15\n- #12\n"
+	i, j := strings.Index(body, list), strings.Index(body, "A merge train")
+	if i < 0 || j < 0 || i > j {
+		t.Fatalf("the changes are not listed ahead of the text:\n%s", body)
+	}
+	if !strings.HasSuffix(body, "\n\n<!-- shunter-key: k1 -->\n") {
+		t.Fatalf("the key's mark is not as it was:\n%s", body)
+	}
+	// Opening it again finds it by its head, and posts nothing.
+	if _, err := c.OpenPR(ctx, "k1", "t1", []state.ChangeID{"15", "12"}, "h1", "trunk1"); err != nil || s.count("POST", "/pulls") != 1 {
+		t.Fatalf("again: %v, posts %d", err, s.count("POST", "/pulls"))
 	}
 }

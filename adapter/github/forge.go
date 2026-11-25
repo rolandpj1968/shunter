@@ -268,15 +268,15 @@ func keyMark(key string) string { return "<!-- shunter-key: " + key + " -->" }
 // is trunk's tip, and otherwise to the train branch whose tip is base: the
 // train this one is built on. An open pull request from the train's branch
 // on the same head is the same pull request; so is one carrying the key.
-func (c *Client) OpenPR(ctx context.Context, key string, t state.TrainID, head, base state.Head) (string, error) {
-	return c.open(ctx, key, t, head, base, false)
+func (c *Client) OpenPR(ctx context.Context, key string, t state.TrainID, changes []state.ChangeID, head, base state.Head) (string, error) {
+	return c.open(ctx, key, t, changes, head, base, false)
 }
 
 // OpenDraft implements adapter.Drafter: the pull request opens as a draft,
 // and no CI is dispatched. A workflow run by pull request events should
 // skip drafts and run when one is marked ready.
-func (c *Client) OpenDraft(ctx context.Context, key string, t state.TrainID, head, base state.Head) (string, error) {
-	return c.open(ctx, key, t, head, base, true)
+func (c *Client) OpenDraft(ctx context.Context, key string, t state.TrainID, changes []state.ChangeID, head, base state.Head) (string, error) {
+	return c.open(ctx, key, t, changes, head, base, true)
 }
 
 // Promote implements adapter.Drafter: the draft is marked ready for review,
@@ -318,7 +318,7 @@ func (c *Client) Promote(ctx context.Context, key string, t state.TrainID, pr st
 
 // open opens the train's pull request, a draft or not. A draft is the
 // same pull request whatever head its branch has moved to.
-func (c *Client) open(ctx context.Context, key string, t state.TrainID, head, base state.Head, draft bool) (string, error) {
+func (c *Client) open(ctx context.Context, key string, t state.TrainID, changes []state.ChangeID, head, base state.Head, draft bool) (string, error) {
 	branch := c.Branch(t)
 	start := func() error {
 		if draft {
@@ -350,8 +350,7 @@ func (c *Client) open(ctx context.Context, key string, t state.TrainID, head, ba
 	if err != nil {
 		return "", err
 	}
-	body := fmt.Sprintf("A merge train, assembled by Shunter. It lands when CI passes on exactly this head.\n\nTrain `%s`, head `%s`, built on `%s`.\n\n%s\n", t, head, base, keyMark(key))
-	in := map[string]any{"title": fmt.Sprintf("Merge train %s", t), "head": branch, "base": baseBranch, "body": body, "draft": draft}
+	in := map[string]any{"title": trainTitle(t, changes), "head": branch, "base": baseBranch, "body": trainBody(key, t, changes, head, base), "draft": draft}
 	var p ghPull
 	if err := c.do(ctx, http.MethodPost, c.repo("/pulls"), in, &p); err != nil {
 		if isStatus(err, http.StatusUnprocessableEntity) {
@@ -370,6 +369,48 @@ func (c *Client) open(ctx context.Context, key string, t state.TrainID, head, ba
 		return "", fmt.Errorf("train %s: the forge opened no pull request number", t)
 	}
 	return strconv.Itoa(p.Number), start()
+}
+
+// titleMax is the most characters a train's pull request title holds.
+const titleMax = 72
+
+// trainTitle names the train and the changes it carries, as pull request
+// numbers in ride order: "Merge train t8: #12 #15". When they do not all
+// fit in titleMax, it names as many as fit, then "+N more".
+func trainTitle(t state.TrainID, changes []state.ChangeID) string {
+	title := fmt.Sprintf("Merge train %s", t)
+	if len(changes) == 0 {
+		return title
+	}
+	title += ":"
+	for k := len(changes); k >= 0; k-- {
+		s := title
+		for _, id := range changes[:k] {
+			s += " #" + string(id)
+		}
+		if k < len(changes) {
+			s += fmt.Sprintf(" +%d more", len(changes)-k)
+		}
+		if len(s) <= titleMax || k == 0 {
+			return s
+		}
+	}
+	return title
+}
+
+// trainBody lists the train's changes, one to a line so the forge links
+// each, then says what the train is and carries the key's mark.
+func trainBody(key string, t state.TrainID, changes []state.ChangeID, head, base state.Head) string {
+	var b strings.Builder
+	if len(changes) > 0 {
+		b.WriteString("Changes, in ride order:\n\n")
+		for _, id := range changes {
+			fmt.Fprintf(&b, "- #%s\n", id)
+		}
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(&b, "A merge train, assembled by Shunter. It lands when CI passes on exactly this head.\n\nTrain `%s`, head `%s`, built on `%s`.\n\n%s\n", t, head, base, keyMark(key))
+	return b.String()
 }
 
 // baseBranch names the branch whose tip is base: trunk, or a train's.

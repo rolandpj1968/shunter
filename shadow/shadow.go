@@ -830,7 +830,7 @@ func (c *cached) Describe(ctx context.Context, ids []state.ChangeID) ([]adapter.
 }
 
 // The adapter.Forge methods a gate never calls.
-func (c *cached) OpenPR(context.Context, string, state.TrainID, state.Head, state.Head) (string, error) {
+func (c *cached) OpenPR(context.Context, string, state.TrainID, []state.ChangeID, state.Head, state.Head) (string, error) {
 	return "", adapter.Permanent(fmt.Errorf("shadow: no side effects"))
 }
 func (c *cached) ClosePR(context.Context, string, state.TrainID, string) error {
