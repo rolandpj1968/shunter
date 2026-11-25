@@ -122,11 +122,16 @@ type restackCheck struct {
 	line  state.Line
 	needs needs
 	base  *state.Line // its base line, when the base isn't riding: read again too
+	// heads says only the line's heads are read, not its needs: a held
+	// line, so that a push while it is held re-keys it while it is held,
+	// and it rides at its new head once released (PROTOCOL.md row L39).
+	heads bool
 }
 
 // restack reads again, outside the loop, the lines that wait behind a base
 // or are stale, and their bases: a head that moved is a head-moved event,
-// and a line whose staleness changed is a stale or fresh event.
+// and a line whose staleness changed is a stale or fresh event. It reads
+// the heads of every held line too.
 func (d *Daemon) restack(now time.Time, s state.State) {
 	anc, ok := d.ad.Git.(adapter.Ancestry)
 	if !ok || d.ad.Forge == nil || d.restacking || now.Sub(d.restackedAt) < restackEvery {
@@ -144,6 +149,9 @@ func (d *Daemon) restack(now time.Time, s state.State) {
 			c.base = &bc
 		}
 		checks = append(checks, c)
+	}
+	for _, id := range s.Held() {
+		checks = append(checks, restackCheck{line: copyLine(s.Lines[id]), heads: true})
 	}
 	d.restackedAt = now
 	if len(checks) == 0 {
@@ -207,6 +215,9 @@ func readNeeds(ctx context.Context, f adapter.Forge, anc adapter.Ancestry, check
 		info, err := read(c.line)
 		if err != nil {
 			return out, err
+		}
+		if c.heads {
+			continue
 		}
 		changes := withHeads(c.line.Changes, moved)
 		n := c.needs

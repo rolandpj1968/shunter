@@ -71,10 +71,17 @@ type Assemble struct {
 }
 
 // LeaveOut removes a line from an assembling train, with a reason.
+//
+// Moved, when set, says why: the builder read new heads for changes of the
+// line (pushed to since it was offered, or while it was held). The line is
+// re-keyed at them, once, as a head-moved event would re-key it: its check
+// ends (I10), it keeps its place, and the cycle is its own, so it counts
+// none (row L39).
 type LeaveOut struct {
 	Train  TrainID
 	Line   LineID
 	Reason string
+	Moved  []Change
 }
 
 // PreflightFailed reports a pre-flight failure and the lines blame names.
