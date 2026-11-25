@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1634,5 +1635,32 @@ func TestAClaimedCheckIsGivenToNoOtherCheckerAcrossARestart(t *testing.T) {
 	}
 	if got := claim("w3"); got != "b T0 b-1" {
 		t.Fatalf("after the lease: %q", got)
+	}
+}
+
+// TestATrainsPullRequestNamesItsChangesInRideOrder: the forge is told the
+// changes a train carries, in the order they ride, when its pull request
+// opens, and when its draft opens.
+func TestATrainsPullRequestNamesItsChangesInRideOrder(t *testing.T) {
+	for _, drafts := range []bool{false, true} {
+		t.Run(fmt.Sprintf("drafts=%v", drafts), func(t *testing.T) {
+			var opts []func(*rig)
+			if drafts {
+				opts = append(opts, withDrafts)
+			}
+			r := newRigWith(t, 0, tier.Rules{}, opts...)
+			r.open("c", "a", "b")
+			r.together("c", "a", "b")
+			t1 := r.trainOf("c")
+			r.wantTrain(t1, state.TrainTesting)
+			lines := r.train(t1).Lines
+			if len(lines) != 3 || lines[0] != "c" || lines[1] != "a" || lines[2] != "b" {
+				t.Fatalf("ride order %v, want queue order c a b", lines)
+			}
+			want := []state.ChangeID{"c", "a", "b"}
+			if got := r.w.Named(t1); !slices.Equal(got, want) {
+				t.Fatalf("the pull request names %v, want %v", got, want)
+			}
+		})
 	}
 }

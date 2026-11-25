@@ -166,7 +166,7 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 					if drafted {
 						return
 					}
-					pr, err := dr.OpenDraft(ctx, k.Key+".draft", req.Train, head, req.Base)
+					pr, err := dr.OpenDraft(ctx, k.Key+".draft", req.Train, buildChanges(req), head, req.Base)
 					if err != nil {
 						// The draft only shows the train; the build goes on.
 						d.log.Printf("train %s: no draft opened: %v", req.Train, err)
@@ -196,8 +196,9 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 				return result{events: evs(state.Opened{Train: k.Train, PR: pr, Head: k.Head}), actor: "forge", err: err}
 			}, d.cfg.Call
 		}
+		changes := trainChanges(s, t)
 		return func(ctx context.Context) result {
-			pr, err := a.Forge.OpenPR(ctx, k.Key, k.Train, k.Head, k.Expect)
+			pr, err := a.Forge.OpenPR(ctx, k.Key, k.Train, changes, k.Head, k.Expect)
 			return result{events: evs(state.Opened{Train: k.Train, PR: pr, Head: k.Head}), actor: "forge", err: err}
 		}, d.cfg.Call
 	case state.EffRerun:
@@ -214,13 +215,7 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 			return result{actor: "forge", note: "pull request closed", err: a.Forge.ClosePR(ctx, k.Key, k.Train, k.Reason)}
 		}, d.cfg.Call
 	case state.EffVerify:
-		t := s.Trains[k.Train]
-		var ids []state.ChangeID
-		for _, id := range t.Lines {
-			for _, c := range s.Lines[id].Changes {
-				ids = append(ids, c.ID)
-			}
-		}
+		ids := trainChanges(s, s.Trains[k.Train])
 		return func(ctx context.Context) result {
 			r, err := a.Forge.ReadLanding(ctx, k.Train, k.Head, ids)
 			ev := state.LandingVerified{Train: k.Train, Verdict: r.Verdict, Heads: r.Heads, Trunk: r.Trunk}
@@ -274,6 +269,29 @@ func inert(ctx context.Context, f adapter.Forge, rules tier.Rules, l state.Line)
 }
 
 // liveChanges maps each change of a live line other than skip to its line.
+// trainChanges is the changes the train carries, in ride order: its lines
+// in queue order, each line's changes in stack order.
+func trainChanges(s state.State, t *state.Train) []state.ChangeID {
+	var ids []state.ChangeID
+	for _, id := range t.Lines {
+		for _, c := range s.Lines[id].Changes {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
+}
+
+// buildChanges is the changes a build request carries, in ride order.
+func buildChanges(req adapter.BuildRequest) []state.ChangeID {
+	var ids []state.ChangeID
+	for _, l := range req.Lines {
+		for _, c := range l.Changes {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
+}
+
 func liveChanges(s state.State, skip state.LineID) map[state.ChangeID]state.LineID {
 	out := map[state.ChangeID]state.LineID{}
 	for id, l := range s.Lines {

@@ -60,6 +60,7 @@ type World struct {
 	reruns  map[state.TrainID]int
 	drafts  map[state.TrainID]string // train -> its draft, not yet promoted
 	cancels map[state.TrainID]int
+	named   map[state.TrainID][]state.ChangeID // train -> the changes its pull request names
 	nextPR  int
 
 	// Calls counts calls by kind; Acts counts acts that changed the world.
@@ -107,7 +108,7 @@ func New(trunk state.Head) *World {
 		trunk: trunk, changes: map[state.ChangeID]*Change{},
 		builds: map[string]adapter.BuildResult{}, prs: map[string]string{}, open: map[state.TrainID]string{},
 		heads: map[state.TrainID]state.Head{}, verdict: map[state.TrainID]state.Head{}, report: map[state.TrainID]adapter.Report{},
-		reruns: map[state.TrainID]int{}, drafts: map[state.TrainID]string{}, cancels: map[state.TrainID]int{}, nextPR: 100,
+		reruns: map[state.TrainID]int{}, drafts: map[state.TrainID]string{}, cancels: map[state.TrainID]int{}, named: map[state.TrainID][]state.ChangeID{}, nextPR: 100,
 		Rebases: map[state.LineID]adapter.RebaseResult{}, Merging: map[state.LineID]bool{},
 		Calls: map[string]int{}, Acts: map[string]int{}, blocks: map[string]chan struct{}{}, waiters: map[chan struct{}]int{},
 	}
@@ -277,7 +278,7 @@ func (w *World) Describe(ctx context.Context, ids []state.ChangeID) ([]adapter.C
 }
 
 // OpenPR implements adapter.Forge.
-func (w *World) OpenPR(ctx context.Context, key string, t state.TrainID, head, base state.Head) (string, error) {
+func (w *World) OpenPR(ctx context.Context, key string, t state.TrainID, changes []state.ChangeID, head, base state.Head) (string, error) {
 	if err := w.enter(ctx, "open-pr"); err != nil {
 		return "", err
 	}
@@ -289,6 +290,7 @@ func (w *World) OpenPR(ctx context.Context, key string, t state.TrainID, head, b
 	w.nextPR++
 	pr := fmt.Sprint(w.nextPR)
 	w.prs[key], w.open[t], w.heads[t] = pr, pr, head
+	w.named[t] = append([]state.ChangeID(nil), changes...)
 	w.report[t] = adapter.Report{Outcome: adapter.Pending, Head: head}
 	w.Acts["open-pr"]++
 	return pr, nil
@@ -456,8 +458,16 @@ func mergeHead(req adapter.BuildRequest, out map[state.LineID]string) state.Head
 	return state.Head(fmt.Sprintf("%s+%s", req.Base, strings.Join(parts, ",")))
 }
 
+// Named is the changes the train's pull request was opened naming, in the
+// order the runner gave them.
+func (w *World) Named(t state.TrainID) []state.ChangeID {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]state.ChangeID(nil), w.named[t]...)
+}
+
 // OpenDraft implements adapter.Drafter: a draft starts no CI.
-func (w *World) OpenDraft(ctx context.Context, key string, t state.TrainID, head, base state.Head) (string, error) {
+func (w *World) OpenDraft(ctx context.Context, key string, t state.TrainID, changes []state.ChangeID, head, base state.Head) (string, error) {
 	if err := w.enter(ctx, "open-draft"); err != nil {
 		return "", err
 	}
@@ -469,6 +479,7 @@ func (w *World) OpenDraft(ctx context.Context, key string, t state.TrainID, head
 	w.nextPR++
 	pr := fmt.Sprint(w.nextPR)
 	w.prs[key], w.open[t], w.drafts[t] = pr, pr, pr
+	w.named[t] = append([]state.ChangeID(nil), changes...)
 	w.Acts["open-draft"]++
 	return pr, nil
 }

@@ -70,8 +70,10 @@ type Forge interface {
 	// Describe reads the changes a line is made of.
 	Describe(ctx context.Context, ids []state.ChangeID) ([]ChangeInfo, error)
 	// OpenPR opens the train's pull request on head, against base, and so
-	// starts its CI. The same key returns the same pull request.
-	OpenPR(ctx context.Context, key string, train state.TrainID, head, base state.Head) (pr string, err error)
+	// starts its CI. Changes are the changes the train carries, in ride
+	// order, for the pull request to name. The same key returns the same
+	// pull request.
+	OpenPR(ctx context.Context, key string, train state.TrainID, changes []state.ChangeID, head, base state.Head) (pr string, err error)
 	// ClosePR closes the train's pull request, with the reason. Closing a
 	// closed one, or one never opened, is no error.
 	ClosePR(ctx context.Context, key string, train state.TrainID, reason string) error
@@ -180,8 +182,9 @@ type BuildRequest struct {
 // starts no CI. Optional: without it, the pull request opens at promotion.
 type Drafter interface {
 	// OpenDraft opens the train's pull request on head, against base, as
-	// a draft. The same key returns the same pull request.
-	OpenDraft(ctx context.Context, key string, train state.TrainID, head, base state.Head) (pr string, err error)
+	// a draft. Changes are as for Forge.OpenPR. The same key returns the
+	// same pull request.
+	OpenDraft(ctx context.Context, key string, train state.TrainID, changes []state.ChangeID, head, base state.Head) (pr string, err error)
 	// Promote marks the draft ready and starts its CI on head, the built
 	// head, to which the train's branch has moved.
 	Promote(ctx context.Context, key string, train state.TrainID, pr string, head state.Head) error
