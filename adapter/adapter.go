@@ -194,8 +194,13 @@ type Drafter interface {
 // come back with a reason each. A pre-flight failure names the lines its
 // blame rules name, which may be none.
 type BuildResult struct {
-	Head            state.Head
-	LeftOut         map[state.LineID]string
+	Head    state.Head
+	LeftOut map[state.LineID]string
+	// Moved gives the new head of each change the builder found pushed to
+	// since its line was offered (or re-keyed). Its line is left out, and
+	// re-keyed at the new head once (PROTOCOL.md row L39), not left out
+	// again at every assembly at a head it no longer has.
+	Moved           map[state.ChangeID]state.Head
 	PreflightFailed bool
 	Blamed          []state.LineID
 	Evidence        string

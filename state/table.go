@@ -97,6 +97,7 @@ func buildTable() []Row {
 		lr(LineWaiting, LineReturned, CauseConflict, "rebase-failed", "it is in conflict with trunk, and the runner could not rebase it (§5.2)", "rule: only a person resolves it", "returned uncharged; offered again once it merges, at its first offer's age"),
 		lr(LineReturned, LineWaiting, CauseByHand, "requeue", "a reason is given; its budgets and cycles reset", "a human (§5.9)", "stays returned"),
 		lr(LineReturned, LineParked, CauseByHand, "requeue", "a reason is given; the queue is parked and this is not the park's fix", "a human (§5.9)", "stays returned"),
+		lr(LineRiding, LineWaiting, CauseMoved, "leave-out (a head moved)", "the train is assembling; the builder read a new head for a change of the line", "the builder", "re-keyed once at the new heads, as a push would re-key it: it keeps its age and place, its check ends (I10), and it counts no cycle"),
 
 		// A train.
 		tr(TrainNone, TrainAssembling, CauseAssemble, "assemble", "not paused; the chain is shorter than D; the train ahead has a head", "the runner (§5.3)", "no train"),

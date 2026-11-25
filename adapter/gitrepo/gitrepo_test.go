@@ -236,7 +236,7 @@ func TestMovedHeadIsLeftOut(t *testing.T) {
 	w := newWorld(t, Config{})
 	base := w.trunk()
 	h1 := w.change("1", "main", map[string]string{"one.txt": "1\n"})
-	w.change("1", "c1", map[string]string{"one.txt": "1 again\n"}) // pushed to after the offer
+	n1 := w.change("1", "c1", map[string]string{"one.txt": "1 again\n"}) // pushed to after the offer
 	h2 := w.change("2", "main", map[string]string{"two.txt": "2\n"})
 	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{
 		line("1", ch("1", h1)), line("2", ch("2", h2)),
@@ -246,6 +246,16 @@ func TestMovedHeadIsLeftOut(t *testing.T) {
 	}
 	if !strings.Contains(res.LeftOut["1"], "moved") || res.Head == "" {
 		t.Fatalf("result %+v", res)
+	}
+	// The new head comes back, so that the line is re-keyed at it once
+	// (PROTOCOL.md row L39), and the unmoved line has none.
+	if len(res.Moved) != 1 || res.Moved["1"] != n1 {
+		t.Fatalf("moved %v, want 1 at %s", res.Moved, n1)
+	}
+	// Built again at the new head, it is not left out.
+	res, err = w.repo.Build(ctx, "k2", adapter.BuildRequest{Train: "t2", Base: base, Lines: []adapter.BuildLine{line("1", ch("1", n1))}})
+	if err != nil || len(res.LeftOut) != 0 || len(res.Moved) != 0 || res.Head == "" {
+		t.Fatalf("at the new head: %+v %v", res, err)
 	}
 }
 

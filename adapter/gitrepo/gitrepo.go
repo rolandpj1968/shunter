@@ -364,18 +364,22 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	// out starts another round without them, so that the head never holds a
 	// line the train doesn't: at most one round a line, and one more.
 	out := map[state.LineID]string{}
+	moved := map[state.ChangeID]state.Head{}
 	var res adapter.BuildResult
 	var head string
 	for {
 		var err error
 		var again bool
-		res, head, again, err = r.round(ctx, req, out)
+		res, head, again, err = r.round(ctx, req, out, moved)
 		if err != nil {
 			return adapter.BuildResult{}, err
 		}
 		if !again {
 			break
 		}
+	}
+	if len(moved) > 0 {
+		res.Moved = moved
 	}
 	if head == "" {
 		return res, r.remember(key, res)
@@ -395,11 +399,12 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 }
 
 // round builds the train on its base without the lines in out, and runs
-// pre-flight on it. It adds to out the lines it leaves out. again says that
+// pre-flight on it. It adds to out the lines it leaves out, and to moved the
+// new head of each change it found pushed to. again says that
 // pre-flight left lines out of this build, which must be built again
 // without them. An empty head with no error is a train with every line
 // left out.
-func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[state.LineID]string) (res adapter.BuildResult, head string, again bool, err error) {
+func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[state.LineID]string, moved map[state.ChangeID]state.Head) (res adapter.BuildResult, head string, again bool, err error) {
 	r.reset(ctx)
 	if _, err := r.git(ctx, "checkout", "--quiet", "--detach", "--force", string(req.Base)); err != nil {
 		return res, "", false, err
@@ -415,7 +420,7 @@ func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[stat
 			res.LeftOut[l.ID] = why
 			continue
 		}
-		why, err := r.apply(ctx, req.Train, l)
+		why, err := r.apply(ctx, req.Train, l, moved)
 		if err != nil {
 			r.reset(ctx)
 			return res, "", false, err
@@ -646,7 +651,9 @@ func (r *Repo) reset(ctx context.Context) {
 }
 
 // apply puts one line on HEAD. It returns why the line is left out, or "".
-func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine) (string, error) {
+// A change whose head moved since it was offered is left out with its new
+// head in moved.
+func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, moved map[state.ChangeID]state.Head) (string, error) {
 	start, err := r.git(ctx, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
@@ -659,12 +666,25 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine) 
 		return why, nil
 	}
 	var prev state.Head
+	// Every moved change of the line is reported at once, so that the line
+	// is re-keyed in one act, not once a change.
+	var why string
+	for _, c := range l.Changes {
+		if got, err := r.git(ctx, "rev-parse", "--verify", "--quiet", localChangeRef(c.ID)); err == nil && got != "" && got != string(c.Head) {
+			if moved != nil {
+				moved[c.ID] = state.Head(got)
+			}
+			if why == "" {
+				why = fmt.Sprintf("change %s: its head moved from %s to %s", c.ID, short(c.Head), short(state.Head(got)))
+			}
+		}
+	}
+	if why != "" {
+		return back(why)
+	}
 	for i, c := range l.Changes {
 		if !r.has(ctx, c.Head) {
 			return back(fmt.Sprintf("change %s: its head %s is not on the forge (pushed to since it was offered?)", c.ID, short(c.Head)))
-		}
-		if got, err := r.git(ctx, "rev-parse", "--verify", "--quiet", localChangeRef(c.ID)); err == nil && got != string(c.Head) {
-			return back(fmt.Sprintf("change %s: its head moved from %s to %s", c.ID, short(c.Head), short(state.Head(got))))
 		}
 		cur, err := r.git(ctx, "rev-parse", "HEAD")
 		if err != nil {

@@ -1141,12 +1141,35 @@ func (m *machine) leaveOut(e LeaveOut) error {
 	if e.Reason == "" {
 		return bad(ErrReason, "line %s left out of train %s", e.Line, t.ID)
 	}
+	l := m.s.Lines[e.Line]
+	idx := make([]int, len(e.Moved))
+	for k, c := range e.Moved {
+		idx[k] = -1
+		for i, lc := range l.Changes {
+			if lc.ID == c.ID {
+				idx[k] = i
+			}
+		}
+		if idx[k] < 0 || c.Head == "" {
+			return bad(ErrUnknown, "change %q of line %s at %q", c.ID, l.ID, c.Head)
+		}
+	}
 	t.drop(e.Line)
-	// It did not fit with the lines taken: a cycle it did not cause (§4).
-	// It stays in the bag, and the starving rule bounds how often (owner's
-	// ruling of 24 Nov).
-	bump(m.s.Lines[e.Line])
-	m.setLine(m.s.Lines[e.Line], LineWaiting, CauseLeftOut, e.Reason)
+	if len(e.Moved) > 0 {
+		// Its own head moved (pushed to while it waited or was held): it is
+		// re-keyed at the new heads, once, as a push read anywhere else
+		// would re-key it (row L39). The cycle is its own: it counts none.
+		for k, c := range e.Moved {
+			m.rekey(l, idx[k], c.Head)
+		}
+		m.setLine(l, LineWaiting, CauseMoved, e.Reason)
+	} else {
+		// It did not fit with the lines taken: a cycle it did not cause
+		// (§4). It stays in the bag, and the starving rule bounds how
+		// often (owner's ruling of 24 Nov).
+		bump(l)
+		m.setLine(l, LineWaiting, CauseLeftOut, e.Reason)
+	}
 	// A line of the train that needs a line left out is left out too (I3):
 	// the train would hold it without its base.
 	for again := true; again; {
@@ -1397,17 +1420,22 @@ func (m *machine) headMoved(e HeadMoved) error {
 			l.Late = e.Head
 			return nil
 		}
-		l.Changes[i].Head, l.NoVerdicts, l.Stuck = e.Head, 0, ""
-		l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert, l.Claim = nil, "", "", "", false, nil
+		m.rekey(l, i, e.Head)
 		m.bumpRiders(t, l.ID)
 		m.end(t, TrainVoid, CauseVoid, fmt.Sprintf("change %s moved while it rode (I4)", e.Change), nil)
 		return nil
 	}
-	l.Changes[i].Head, l.NoVerdicts, l.Stuck = e.Head, 0, ""
-	// A push may bring anything: the line is full until the gate has read
-	// its files again.
-	l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert, l.Claim = nil, "", "", "", false, nil
+	m.rekey(l, i, e.Head)
 	return nil
+}
+
+// rekey takes change i of the line at a new head. Its check ends (I10),
+// with its claim, its conflict and its no-verdict strikes. A push may bring
+// anything: the line is full until the gate has read its files again. Its
+// state, its age and its hold are its own and stay.
+func (m *machine) rekey(l *Line, i int, h Head) {
+	l.Changes[i].Head, l.NoVerdicts, l.Stuck = h, 0, ""
+	l.Checked, l.CheckedOn, l.Conflict, l.ConflictOn, l.Inert, l.Claim = nil, "", "", "", false, nil
 }
 
 func (m *machine) abort(e Abort) error {

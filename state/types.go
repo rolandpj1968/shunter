@@ -87,6 +87,7 @@ const (
 	CauseWithdraw   Cause = "withdraw"
 	CauseJoin       Cause = "join"
 	CauseLeftOut    Cause = "left-out"
+	CauseMoved      Cause = "head-moved"
 	CauseCharged    Cause = "charged"
 	CauseRequeue    Cause = "requeue"
 	CauseChargeVoid Cause = "charge-void"
@@ -437,6 +438,9 @@ func (s State) NeedMet(l *Line, taken map[LineID]bool) bool {
 
 // Waiting returns the lines that may join a train, in the policy's order.
 func (s State) Waiting() []LineID { return s.inState(LineWaiting) }
+
+// Held lists the held lines, in the policy's order.
+func (s State) Held() []LineID { return s.inState(LineHeld) }
 
 func (s State) inState(st LineState) []LineID {
 	var out []LineID

@@ -237,6 +237,12 @@ var transitions = []tcase{
 				t.Errorf("left out: count %d, cause %s", l.Count, l.Cause)
 			}
 		}},
+	{name: "left out at a moved head", setup: cat(ready("a", "b"), assemble("t1", "a", "b")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "change a: its head moved from a1 to a2", Moved: []Change{{ID: "a", Head: "a2"}}},
+		lines: lineWant{"a": LineWaiting, "b": LineRiding}, trains: trainWant{"t1": TrainAssembling}, check: func(t *testing.T, s State) {
+			if l := s.Lines["a"]; l.Count != 0 || l.Cause != CauseMoved || l.Changes[0].Head != "a2" {
+				t.Errorf("re-keyed: count %d, cause %s, head %s", l.Count, l.Cause, l.Changes[0].Head)
+			}
+		}},
 	{name: "every line left out", setup: cat(ready("a"), assemble("t1", "a")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x"},
 		lines: lineWant{"a": LineWaiting}, trains: trainWant{"t1": TrainEmpty}},
 	{name: "pre-flight blames one", setup: cat(ready("a", "b"), assemble("t1", "a", "b")), ev: PreflightFailed{Train: "t1", Blamed: ids("a"), Evidence: "lint at a line a added"},
@@ -556,6 +562,8 @@ var refusals = []tcase{
 	{name: "halves of a split ride apart", setup: cat(ready("a", "b"), testing_("t1", "a", "b"), CIFailed{Train: "t1"}, Judge{Train: "t1", Action: JudgeSplit}), ev: assemble("t2", "a", "b"), err: ErrJoin},
 	{name: "leave out without a reason", setup: cat(ready("a"), assemble("t1", "a")), ev: LeaveOut{Train: "t1", Line: "a"}, err: ErrReason},
 	{name: "leave out after the build", setup: cat(ready("a"), built("t1", "a")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "r"}, err: ErrState},
+	{name: "leave out at a stranger's moved head", setup: cat(ready("a"), assemble("t1", "a")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "r", Moved: []Change{{ID: "zz", Head: "z2"}}}, err: ErrUnknown},
+	{name: "leave out at an empty moved head", setup: cat(ready("a"), assemble("t1", "a")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "r", Moved: []Change{{ID: "a"}}}, err: ErrUnknown},
 	{name: "leave out a stranger", setup: cat(ready("a", "b"), assemble("t1", "a")), ev: LeaveOut{Train: "t1", Line: "b", Reason: "r"}, err: ErrUnknown},
 	{name: "built on its own base", setup: cat(ready("a"), assemble("t1", "a")), ev: Built{Train: "t1", Head: "trunk0"}, err: ErrHead},
 	{name: "built twice", setup: cat(ready("a"), built("t1", "a")), ev: Built{Train: "t1", Head: "h2"}, err: ErrState},
@@ -803,7 +811,11 @@ func TestRandomWalk(t *testing.T) {
 				trains++
 				ev = Assemble{Train: TrainID(fmt.Sprintf("t%d", trains)), Lines: w[:1+r.Intn(len(w))]}
 			case 13:
-				ev = LeaveOut{Train: tr, Line: pick(), Reason: "conflict"}
+				lo := LeaveOut{Train: tr, Line: pick(), Reason: "conflict"}
+				if r.Intn(2) == 0 {
+					lo.Moved = []Change{{ID: ChangeID(lo.Line), Head: Head(fmt.Sprintf("m%d", i))}}
+				}
+				ev = lo
 			case 14:
 				ev = Built{Train: tr, Head: head}
 			case 15:
