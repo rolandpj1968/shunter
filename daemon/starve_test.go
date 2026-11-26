@@ -36,36 +36,95 @@ func TestALineStarvesByQueueTimeAndTheJudgeIsTold(t *testing.T) {
 	if !r.alerted("1 lines are starving at once") {
 		t.Fatal("the judge was not told")
 	}
-	if got := daemon.Join(s, daemon.Caps{Lines: 1}); got != nil {
-		t.Fatalf("assembled %v behind live trains while c is forced", got)
+	// It leads the next train, behind the trains that ride.
+	if got, want := daemon.Join(s, daemon.Caps{Lines: 1}), []state.LineID{"c"}; !slices.Equal(got, want) {
+		t.Fatalf("join took %v, want %v", got, want)
 	}
 }
 
-// While a line is forced, join takes it, with what beneath it still waits,
-// alone, once the chain is empty, past the caps; a prioritised line still
-// goes first.
-func TestJoinTakesTheForcedLineAlone(t *testing.T) {
-	s := waiting(t, 1, 1, 1)
-	for _, ev := range []state.Event{
-		state.Offer{Line: "l4", Base: "l3", Changes: []state.Change{{ID: "c4", Head: "h"}}},
-		state.GateAccept{Line: "l4"},
-		state.Starving{Line: "l4", Why: "3 cycles"},
-	} {
+func apply(t *testing.T, s state.State, evs ...state.Event) state.State {
+	t.Helper()
+	for _, ev := range evs {
 		next, _, err := state.Next(s, ev)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", state.Name(ev), err)
 		}
 		s = next
 	}
+	return s
+}
+
+// While a line is forced, join takes it first, with what beneath it still
+// waits, past the caps, and fills the train behind it in the policy's
+// order, up to the caps; a prioritised line still goes first.
+func TestJoinLeadsWithTheForcedLine(t *testing.T) {
+	s := apply(t, waiting(t, 1, 1, 1),
+		state.Offer{Line: "l4", Base: "l3", Changes: []state.Change{{ID: "c4", Head: "h"}}},
+		state.GateAccept{Line: "l4"},
+		state.Starving{Line: "l4", Why: "3 cycles"})
 	if got, want := daemon.Join(s, daemon.Caps{Lines: 1}), []state.LineID{"l3", "l4"}; !slices.Equal(got, want) {
 		t.Fatalf("%v, want %v", got, want)
 	}
-	next, _, err := state.Next(s, state.Prioritise{Line: "l2", By: "judge", Reason: "fixes trunk", Until: time.Now().Add(time.Hour)})
-	if err != nil {
-		t.Fatal(err)
+	if got, want := daemon.Join(s, daemon.Caps{Lines: 3}), []state.LineID{"l3", "l4", "l1"}; !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
 	}
+	next := apply(t, s, state.Prioritise{Line: "l2", By: "judge", Reason: "fixes trunk", Until: time.Now().Add(time.Hour)})
 	if got, want := daemon.Join(next, daemon.Caps{Lines: 8}), []state.LineID{"l2"}; !slices.Equal(got, want) {
 		t.Fatalf("%v, want %v", got, want)
+	}
+}
+
+// Two starving lines lead the same train, oldest first, and the train fills
+// behind them up to the cap.
+func TestJoinTakesEveryStarvingLineFirst(t *testing.T) {
+	s := apply(t, waiting(t, 1, 1, 1, 1, 1),
+		state.Starving{Line: "l4", Why: "3 cycles"}, state.Starving{Line: "l2", Why: "12h"})
+	if got, want := daemon.Join(s, daemon.Caps{Lines: 3}), []state.LineID{"l2", "l4", "l1"}; !slices.Equal(got, want) {
+		t.Fatalf("%v, want %v", got, want)
+	}
+}
+
+// A starving line marked alone rides alone; one that alone reaches the
+// change cap does too. Neither is a reason of starving's.
+func TestJoinKeepsTheOtherReasonsForAlone(t *testing.T) {
+	marked := apply(t, waiting(t, 1, -1, 1), state.Starving{Line: "l2", Why: "3 cycles"})
+	if got, want := daemon.Join(marked, daemon.Caps{Lines: 8}), []state.LineID{"l2"}; !slices.Equal(got, want) {
+		t.Fatalf("marked alone: %v, want %v", got, want)
+	}
+	big := apply(t, waiting(t, 1, 4, 1), state.Starving{Line: "l2", Why: "3 cycles"})
+	if got, want := daemon.Join(big, daemon.Caps{Lines: 8, Changes: 4}), []state.LineID{"l2"}; !slices.Equal(got, want) {
+		t.Fatalf("at the change cap: %v, want %v", got, want)
+	}
+}
+
+// Sometimes alone (owner's ruling of 26 Nov): a starving line with no
+// failure blame could not clear it from leads a full train; with
+// StarveAlone of them since its last offer, it rides alone, and, not
+// forced, it waits for its turn rather than ride in company.
+func TestJoinRidesAStarvingLineAloneWhenCompanyIsTheDoubt(t *testing.T) {
+	caps := daemon.Caps{Lines: 8, StarveAlone: 1}
+	s := apply(t, waiting(t, 1, 1, 1, 1), state.Starving{Line: "l2", Why: "3 cycles"})
+	if got, want := daemon.Join(s, caps), []state.LineID{"l2", "l1", "l3", "l4"}; !slices.Equal(got, want) {
+		t.Fatalf("no doubt: %v, want %v", got, want)
+	}
+	// Its train fails, and blame names nobody: J1, and the judge aborts.
+	s = apply(t, s, state.Assemble{Train: "t1", Lines: []state.LineID{"l2", "l3"}},
+		state.Built{Train: "t1", Head: "h1"}, state.Opened{Train: "t1", PR: "p1", Head: "h1"},
+		state.CIFailed{Train: "t1", Evidence: "something fails"}, state.Abort{Train: "t1", Reason: "the judge"})
+	if n := s.Lines["l2"].Unclear; n != 1 {
+		t.Fatalf("unclear %d", n)
+	}
+	if got, want := daemon.Join(s, caps), []state.LineID{"l2"}; !slices.Equal(got, want) {
+		t.Fatalf("after an unattributed failure: %v, want %v", got, want)
+	}
+	if got, want := daemon.Join(s, daemon.Caps{Lines: 8}), []state.LineID{"l2", "l1", "l3", "l4"}; !slices.Equal(got, want) {
+		t.Fatalf("with the rule off: %v, want %v", got, want)
+	}
+	// Starving but not forced, it is skipped meanwhile; l3, in the same
+	// failure but not starving, rides in company as any line does.
+	s = apply(t, s, state.Starving{Line: "l1", Why: "12h"})
+	if got, want := daemon.Join(s, caps), []state.LineID{"l1", "l3", "l4"}; !slices.Equal(got, want) {
+		t.Fatalf("l1 forced: %v, want %v", got, want)
 	}
 }
 

@@ -87,9 +87,14 @@ max_lines = 8   # lines in one train (J4)
 #                   # promoted (CI starts) when its pre-flight passes. A workflow
 #                   # run by pull request events should skip drafts.
 # starve_after_cycles = 3  # a line that went round this many cycles it did not
-#                          # cause rides alone and first; 0 is off
+#                          # cause rides first, at the head of the next train;
+#                          # 0 is off
 # starve_after_hours = 12  # or this much queue time; 0 is off
 # starve_alert = 3         # this many starving at once is raised to the judge
+# starve_alone_after = 1   # a starving line rides alone, not at the head of a
+#                          # full train, once it has been in this many failed
+#                          # trains since its last offer that blame could not
+#                          # clear it from (J1); 0 is never
 
 [deadlines]
 # Every wait has one (§2.5). Shown: the defaults.

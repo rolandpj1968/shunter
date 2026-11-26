@@ -645,7 +645,7 @@ func Status(s state.State, pending []store.Keyed) string {
 			case l.Starving && l.Stuck != "":
 				fmt.Fprintf(&b, "  STARVING, STUCK: %s", l.Stuck)
 			case l.Starving:
-				b.WriteString("  STARVING: rides alone and first")
+				b.WriteString("  STARVING: rides first")
 			case l.Count > 0:
 				fmt.Fprintf(&b, "  cycles: %d", l.Count)
 			}

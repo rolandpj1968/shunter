@@ -365,7 +365,7 @@ func (m *machine) apply(ev Event) error {
 			m.emit(Effect{Kind: EffNotify, Line: l.ID, Cause: CauseConflict, Reason: "conflicts with trunk (" + l.Conflict + ") and was not rebased by the runner: " + e.Reason})
 			break
 		}
-		// Only a person can resolve it, and riding alone can't make it
+		// Only a person can resolve it, and riding first can't make it
 		// merge: it goes back to its owner, uncharged, and loses no
 		// seniority (owner's ruling of 24 Nov, docs/queue-as-bag.md §4).
 		starving := l.Starving
@@ -632,7 +632,7 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrState, "line %s is starving already", l.ID)
 		}
 		l.Starving = true
-		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "starving: it rides alone and first (" + e.Why + ")"})
+		m.emit(Effect{Kind: EffNotify, Line: l.ID, Reason: "starving: it rides first, at the head of the next train (" + e.Why + ")"})
 	default:
 		return bad(ErrInput, "unknown event %T", ev)
 	}
@@ -1082,8 +1082,10 @@ func (m *machine) checkerChanged(e CheckerChanged) error {
 }
 
 // forcedFirst refuses a train that would pass the forced line
-// (docs/queue-as-bag.md §4): while one is forced, the only train assembled
-// is its own, alone, with the chain empty, or one of prioritised lines.
+// (docs/queue-as-bag.md §4): while one is forced, every train assembled is
+// one of prioritised lines, or holds the forced line and whatever beneath it
+// still waits. Other lines may ride behind it in that train, as the joining
+// rule fills it (owner's ruling of 26 Nov).
 func (m *machine) forcedFirst(lines []LineID) error {
 	f := m.s.Forced()
 	if f == "" {
@@ -1098,12 +1100,10 @@ func (m *machine) forcedFirst(lines []LineID) error {
 		return nil
 	}
 	want := m.s.ForcedTrain(f)
-	ok := len(m.s.Chain) == 0 && len(lines) == len(want)
 	for _, id := range want {
-		ok = ok && slices.Contains(lines, id)
-	}
-	if !ok {
-		return bad(ErrJoin, "line %s is starving: it rides alone and first, in a train of %v when the chain is empty", f, want)
+		if !slices.Contains(lines, id) {
+			return bad(ErrJoin, "line %s is starving: it rides first, and a train without %v would pass it", f, want)
+		}
 	}
 	return nil
 }
@@ -1266,6 +1266,11 @@ func (m *machine) fail(t *Train, blamed []LineID, evidence string) error {
 
 func (m *machine) judgeFailure(t *Train, blamed []LineID, evidence string) error {
 	if len(blamed) == 0 || (len(blamed) == len(t.Lines) && len(t.Lines) > 1) {
+		for _, id := range t.Lines {
+			// Blame could not clear it: a doubt about its company
+			// (Line.Unclear).
+			m.s.Lines[id].Unclear++
+		}
 		m.setTrain(t, TrainJudging, CauseUnblamed, evidence)
 		m.emit(Effect{Kind: EffAskJudge, Point: "J1", Train: t.ID, Reason: "a failure blame cannot attribute"})
 		return nil

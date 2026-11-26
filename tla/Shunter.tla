@@ -48,9 +48,11 @@
 (* passed only by a prioritised line or by a starving one.  A line starves *)
 (* when its count of cycles it did not cause (a conflict found, a train    *)
 (* ended by another line or by the train ahead) reaches StarveAt; a        *)
-(* failure of its own halves the count.  A starving line rides alone,      *)
-(* first in the chain, and no other train is assembled while it is made    *)
-(* ready.  The backstop of age is a clock, and is not modelled.            *)
+(* failure of its own halves the count.  A starving line rides first: no   *)
+(* other train is assembled while it is made ready, and then it leads a    *)
+(* train that other lines may join, the other starving ones first (owner's *)
+(* ruling of 26 Nov).  The backstop of age is a clock, and is not          *)
+(* modelled.                                                               *)
 (*                                                                         *)
 (* A verdict is its checker's: cv is the checker's present version, a      *)
 (* green line check counts only while the checker that gave it is the      *)
@@ -257,17 +259,17 @@ Checked(l) == green[l] = ver[l] + 1 /\ greenBy[l] = cv
 \* The policy of assembly.  A line starves at StarveAt; it is urgent while
 \* it waits and nothing beneath it is held or with its owner.  One line is
 \* forced at a time, the oldest urgent one, with whatever beneath it still
-\* waits.
+\* waits.  Every urgent line, and what it stands on, comes before the rest.
 Starving(l) == bumps[l] >= StarveAt
 Urgent == {l \in Lines : /\ line[l] = "waiting" /\ Starving(l)
                          /\ \A b \in Under(l) : line[b] \in {"waiting", "riding", "landed"}}
 Forced == {f \in Urgent : \A g \in Urgent : Rank[f] <= Rank[g]}
 ForcedTrain(f) == {f} \cup {b \in Under(f) : line[b] = "waiting"}
-InForced(l) == \E f \in Forced : l \in ForcedTrain(f)
+InStarved(l) == \E f \in Urgent : l \in ForcedTrain(f)
 
-\* The order assembly takes lines in: a manual priority, the forced line,
-\* then the oldest.
-Class(l) == IF prio[l] THEN 0 ELSE IF InForced(l) THEN 1 ELSE 2
+\* The order assembly takes lines in: a manual priority, the starving
+\* lines, then the oldest.
+Class(l) == IF prio[l] THEN 0 ELSE IF InStarved(l) THEN 1 ELSE 2
 Before(k, l) == Class(k) < Class(l) \/ (Class(k) = Class(l) /\ Rank[k] < Rank[l])
 
 \* Line k could ride in a train of the lines S.
@@ -279,14 +281,14 @@ Ready(k, S) ==
 \* train may still stop short (the caps), so S is any front of the order.
 InOrder(S) == \A l \in S : \A k \in Lines \ S : Before(k, l) => ~Ready(k, S)
 
-\* While a line is forced, the only train assembled is its own: alone, on
-\* trunk, so that no line with it and no train ahead can send it round
-\* again.  Only a manual priority goes before it.
+\* While a line is forced, every train assembled holds it and what it
+\* stands on, so none is assembled until it is ready; other lines may ride
+\* behind it, in the order.  Only a manual priority goes before it.
 Policy(S) ==
     /\ InOrder(S)
     /\ Forced # {} =>
           \/ \A l \in S : prio[l]
-          \/ chain = <<>> /\ \E f \in Forced : S = ForcedTrain(f)
+          \/ \E f \in Forced : ForcedTrain(f) \subseteq S
 
 \* The line check (§5.4): a waiting line, alone, merged with trunk.  A check
 \* takes time: it starts on the head the line has then, and its verdict
@@ -771,16 +773,17 @@ NoJump ==
             /\ Rank[k] < Rank[l]
             /\ Checked(k) /\ ~conflict[k]
             /\ \A b \in BaseOf(k) : line'[b] \in {"landed", "riding"} )
-          => prio[l] \/ InForced(l)]_vars
+          => prio[l] \/ InStarved(l)]_vars
 
-\* L4: a starving line rides alone and first.  While a line is forced, no
-\* train is assembled but its own, of that line and what it stands on, with
-\* the chain empty; only prioritised lines go before it.
+\* L4: a starving line rides first.  While a line is forced, no train is
+\* assembled that does not hold that line and what it stands on; only
+\* prioritised lines go before it.  (As first ruled, its train was its
+\* own, alone, with the chain empty; amended 26 Nov.)
 ForcedFirst ==
     [][\A t \in Trains :
           tstate[t] = "unused" /\ tstate'[t] # "unused" /\ Forced # {} =>
               \/ \A l \in cargo'[t] : prio[l]
-              \/ chain = <<>> /\ \E f \in Forced : cargo'[t] = ForcedTrain(f)]_vars
+              \/ \E f \in Forced : ForcedTrain(f) \subseteq cargo'[t]]_vars
 
 \* The count that makes a line starve goes down only by a failure of the
 \* line's own: nothing else, and no push, clears it.

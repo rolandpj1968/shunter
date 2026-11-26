@@ -1,6 +1,6 @@
 # The queue as a bag
 
-*A design note, adopted by the owner's ruling of 24 November (§9). It answers five pieces of feedback from the queue this protocol grew from: waiting lines are a bag and assembly picks by policy; stacks drain from the bottom; a starving line rides alone; a verdict belongs to the version of the checker that gave it; and a train decided red is cut short and never built on. The model in [`tla/`](../tla/) carries the proposal so that CI checks it. [`PROTOCOL.md`](../PROTOCOL.md) and the daemon take it item by item, as §10 lists.*
+*A design note, adopted by the owner's ruling of 24 November (§9). It answers five pieces of feedback from the queue this protocol grew from: waiting lines are a bag and assembly picks by policy; stacks drain from the bottom; a starving line rides first (alone, as first ruled; at the head of a train of the usual size, as amended on 26 November); a verdict belongs to the version of the checker that gave it; and a train decided red is cut short and never built on. The model in [`tla/`](../tla/) carries the proposal so that CI checks it. [`PROTOCOL.md`](../PROTOCOL.md) and the daemon take it item by item, as §10 lists.*
 
 ## 1. The problem
 
@@ -38,7 +38,7 @@ Assembly is a pure function: from the bag, the chain, the settings and the time,
 **The order.** Lines are taken in this order, and a line that can't be taken is skipped, with its reason, as today (§5.3):
 
 1. **Lines with a manual priority**, oldest first.
-2. **The forced line**, if a line is starving (§4). While one is, this step and step 1 are the whole policy.
+2. **The starving lines** (§4), oldest first, each with what beneath it still waits, the forced line leading. While the forced line is not yet ready, step 1 is the whole policy.
 3. **Everything else, by the age of its stack.** A line's key is the born of the bottom waiting line of its stack, then its depth in the stack. An unstacked line's key is its own born.
 
 **Stacks drain from the bottom.** Step 3's key puts a whole waiting stack where its bottom is, bottom first. A stack then rides in one train when the caps allow, and in consecutive trains when they don't, and each landing leaves less to rebuild. Under the order of offers alone, the upper lines of a stack wait behind every unrelated line offered in between, trunk moves under them, and a four-deep stack was rebuilt four times over. A line counts as stacked only by ancestry, which the gate already reads (§5.2), so a stack can't be declared to gain a place. The producer's side of this is P2: stack only when necessary, and keep a stack shallow unless its base already rides.
@@ -49,16 +49,16 @@ Assembly is a pure function: from the bag, the chain, the settings and the time,
 
 **Size and freshness.** The caps of J4 are the only use of size. A green line check older than the queue's age bound is refreshed in policy order; it isn't a reason to pass the line.
 
-## 4. Starving lines ride alone
+## 4. Starving lines ride first
 
-**The count.** A line's count goes up by one for each cycle that riding alone and first would have avoided:
+**The count.** A line's count goes up by one for each cycle it didn't cause:
 
 - its line check finds it in conflict with trunk, because trunk moved against it;
 - its train ended because of another line in it: one was charged, pushed to, held or withdrawn, or the train was split at J1;
 - its train was discarded because a train ahead didn't land;
 - it was left out at assembly because it didn't fit with the lines taken.
 
-It doesn't go up for a no-verdict or an infrastructure failure of its own train (riding alone wouldn't have helped; §5.10's budget and J3 own that), for an abort of its own train (the judge's act), when its base is lost, or when it is left out at assembly because its own head moved (PROTOCOL.md L39: it is re-keyed at the new head, once, and riding alone wouldn't have helped).
+It doesn't go up for a no-verdict or an infrastructure failure of its own train (riding first wouldn't have helped; §5.10's budget and J3 own that), for an abort of its own train (the judge's act), when its base is lost, or when it is left out at assembly because its own head moved (PROTOCOL.md L39: it is re-keyed at the new head, once, and riding first wouldn't have helped).
 
 **A failure of the line's own halves the count.** A red line check (L33) or a charge in a train (L17) means the line needs its owner's fix, not priority. Halving, and not clearing, keeps a line that alternates between real fixes and other lines' conflicts from starving. Nothing else lowers the count: not a push, a rebase, a new offer or a hand-over. This is an exception to §5.10, whose budgets reset when a head moves; a rebase moves the head of exactly the line this count exists for.
 
@@ -66,16 +66,19 @@ It doesn't go up for a no-verdict or an infrastructure failure of its own train 
 
 **The forced line.** One line is forced at a time: the oldest starving line that is the queue's to move (it waits, and nothing beneath it is held, parked or with its owner). While a line is forced:
 
-1. **No other train is assembled,** but one of prioritised lines. Trains already riding finish; they are at most D, so they can reopen the forced line's conflict at most D more times.
+1. **No other train is assembled until it is ready,** but one of prioritised lines. Trains already riding finish; they are at most D, so they can reopen the forced line's conflict at most D more times.
 2. **The runner makes it ready.** If it is in conflict, the rebase hook is asked at once; its line check goes first, against trunk as it is.
-3. **It rides alone, first in the chain:** in a train of that line and whatever beneath it in its stack still waits, assembled when the chain is empty. No line beside it can fail it, and no train ahead can discard it. Other trains may be built behind it as usual.
-4. **If it fails then, the failure is its own.** It is charged by elimination (J1's rule for a train of one line), its count is halved, and it goes to its owner.
+3. **It rides first,** at the head of the next train: that line and whatever beneath it in its stack still waits, taken whole and past the caps. The train then fills behind it as any train does: the other starving lines, oldest first, then everything else by the order of §3, up to the caps. The chain need not be empty. Being first, it is merged first, so a line of the train that conflicts with it is the one left out.
+4. **It rides alone only where company is the problem.** Where any line would: it is marked to ride alone, or it alone reaches the change cap (§3). And where it has been, since its last offer, in `starve_alone_after` (default 1) failed trains that blame could not clear it from: a failure that went to J1 with it aboard, because blame named nobody or every line of several, a half of a split that failed so included. Its company is then the doubt, and riding alone proves it good or bad. Such a starving line is skipped when it is not the forced one, and, forced, its train is it and whatever beneath it still waits. The count of those failures starts again at a new offer; 0 turns the rule off.
+5. **If its train fails, the existing rules judge it** (PROTOCOL.md §5.6, J1). Blame that names it charges it: its count is halved and it goes to its owner. Blame that names another line charges that line; the starving line, uncharged, counts the cycle, stays starving, and leads the next train. A train of one line is charged by elimination, as before.
+
+*Amended* (owner's ruling, 26 Nov, of his ruling of 24 Nov): "Prioritise old PRs, but they ride normally with trains." As first ruled, the forced line rode alone, in a train of its own assembled when the chain was empty. After an outage, the oldest lines all starved at once and went out as a string of single-line trains, which throttled the queue when it was furthest behind. The same day he refined it: "Sometimes alone": alone where company is the problem (item 4).
 
 **When the runner can't make it ready, it is raised at once.** A conflict the hook can't resolve needs a person. The line goes back to its owner, uncharged, so the queue moves; it keeps its age, its count and its starving for when it is offered again, once it merges; and it is raised to the judge as starving and stuck, without waiting for the owner's deadline (§7). A line with no live owner is the judge's to hand over. This is how an old, ownerless change gets through in time: the queue does everything that needs no person, and what does need one is asked for at once and by name.
 
-**Conflicts by kind** (owner's ruling, 24 Nov). The two kinds of conflict go different ways. A conflict with **trunk** that the rebase hook can't resolve sends the line back to its owner, forced or not: only a person can fix it, and riding alone can't make it merge. Offered again once it merges cleanly, it keeps its first offer's age. A conflict with **other lines of a batch** leaves the line out of that batch, and it stays in the bag at its age; the count above rises, and at three cycles it rides alone and first, where no other line can conflict with it.
+**Conflicts by kind** (owner's ruling, 24 Nov). The two kinds of conflict go different ways. A conflict with **trunk** that the rebase hook can't resolve sends the line back to its owner, forced or not: only a person can fix it, and riding first can't make it merge. Offered again once it merges cleanly, it keeps its first offer's age. A conflict with **other lines of a batch** leaves the line out of that batch, and it stays in the bag at its age; the count above rises, and at three cycles it starves and leads the next batch, where it is merged first and a line that conflicts with it is the one left out.
 
-**Many lines starving at once is not starvation.** After a long outage every line may pass the age bound together, and forcing them one by one would serialise the queue when it is furthest behind. Three things bound that: queue time doesn't run while the queue is paused or parked (and J3's default for a persistent failure is a pause); one line is forced at a time, and the others ride normally behind it; and more than `starve_alert` starving lines at once is raised to the judge (J4), who may raise the thresholds.
+**Many lines starving at once is not starvation.** After a long outage every line may pass the age bound together, and forcing them one by one would serialise the queue when it is furthest behind. Three things bound that: queue time doesn't run while the queue is paused or parked (and J3's default for a persistent failure is a pause); the starving lines ride together, at the head of trains of the usual size, not one train each (as amended on 26 Nov); and more than `starve_alert` starving lines at once is raised to the judge (J4), who may raise the thresholds.
 
 ## 5. A verdict is its checker's
 
@@ -107,8 +110,8 @@ It doesn't go up for a no-verdict or an infrastructure failure of its own train 
 
 ## 7. Fairness
 
-- **No jumping.** A line that could ride is passed only by a line with a manual priority, by the forced line, or by a line of an older stack. The first is a recorded act with an expiry, the second is bounded by the thresholds, and the third is the order itself.
-- **No starvation.** Each cycle that passes a line for another's doing adds to its count. At the threshold the queue stops for it, readies it and rides it alone and first, where only its own failure or the infrastructure can stop it. Its own failure sends it to its owner; an infrastructure failure leaves it forced, and it rides again. A line that keeps losing rebase races is the first case.
+- **No jumping.** A line that could ride is passed only by a line with a manual priority, by a starving line, or by a line of an older stack. The first is a recorded act with an expiry, the second is bounded by the thresholds, and the third is the order itself.
+- **No starvation.** Each cycle that passes a line for another's doing adds to its count. At the threshold the queue stops for it, readies it and rides it at the head of the next train, where it is merged first. Its own failure sends it to its owner; another line's failure charges that line, and an infrastructure failure charges nobody: either way it stays forced, and leads again. A line that keeps losing rebase races is the first case.
 - **A manual priority can starve nothing for long.** It expires, and every train it sends past a line adds to nothing that line can't recover: the line is as old as it was, and oldest goes first when the priority ends.
 
 ## 8. The model
@@ -117,8 +120,8 @@ It doesn't go up for a no-verdict or an infrastructure failure of its own train 
 
 | Property | Says |
 |---|---|
-| `NoJump` | a line that could ride is left waiting, while a line behind it in the order is taken, only for a manual priority or for the forced line and what it stands on |
-| `ForcedFirst` | while a line is forced, the only train assembled is its own, alone, with the chain empty; only prioritised lines go before it |
+| `NoJump` | a line that could ride is left waiting, while a line behind it in the order is taken, only for a manual priority or for a starving line and what it stands on |
+| `ForcedFirst` | while a line is forced, every train assembled holds it and what it stands on, or is of prioritised lines; other lines may ride with it (amended 26 Nov: it was its own train, alone, with the chain empty) |
 | `CountFallsOnlyByACharge` | a line's count goes down only by a failure of its own |
 | `VerdictsByPresentChecker` | a line is taken only on a green of the present checker; a charge is made by the present checker or the judge; a charge is dropped only when its checker has been replaced |
 | `NoStackOnRed` | no train is assembled while a train in the chain is decided red |
@@ -136,12 +139,14 @@ The owner ruled on 24 November: yes to the five that shape the design (1, 2, 4, 
 4. **The thresholds.** *Recommended: `starve_after_cycles = 3`, `starve_after_hours = 12`, `starve_alert = 3`.* The case that prompted this had twenty-one cycles in eleven hours; three would have forced it within the first hour or two. **Ruled: three cycles and twelve hours of queue time; `starve_alert = 3`, as recommended.**
 5. **Should the age backstop count hours, or landings that passed the line?** *Recommended: hours of queue time, as asked, with the clock stopped as in §4.* Landings passed is immune to outages by construction and could be modelled; hours are what an operator reads on the status. Revisit if an outage ever forces lines in numbers. **Ruled: hours of queue time, as recommended.**
 6. **Does a forced line stop every other train, or only lines that touch its files?** *Recommended: every train, to begin with.* It is certain, simple and rare. Narrowing it to shared files is a later economy, from data. **Ruled: every other train.**
-7. **May forced lines ride in a chain, each alone, one behind the other?** *Recommended: not yet.* The strict rule (the chain empty) is the one the model checks. Chaining them costs a discarded train when the first fails. **Ruled: not yet, as recommended.**
+7. **May forced lines ride in a chain, each alone, one behind the other?** *Recommended: not yet.* The strict rule (the chain empty) is the one the model checks. Chaining them costs a discarded train when the first fails. **Ruled: not yet, as recommended.** *Overtaken on 26 Nov (below): a forced line no longer rides alone, and needs no empty chain.*
 8. **Which outranks: a manual priority or the forced line?** *Recommended: the priority.* It is a person's recorded act with an expiry, and a park (§6.4) remains the way to land a fix for trunk ahead of everything. **Ruled: the priority, as recommended.**
 9. **Does a change of the blame rules void charges made in trains, as well as the line check's?** *Recommended: yes, as the owner put it: every verdict inferred by an earlier version.* Its cost is that a line charged in a train and not yet fixed rides once more and, if the charge was right, fails once more. **Ruled: yes; a change of the blame rules voids charges made in trains too.**
 10. **How fine is a checker's version?** *Recommended: one version per checker, reported by its hook.* One version for the whole scripts directory is simpler and voids everything on any change to any script; it is offered as a setting. **Ruled: one version per checker, as recommended.**
 11. **Is a train at J1 decided red?** *Recommended: yes, until the judge orders a rerun.* Its failure is deterministic and unattributed; the common outcomes all end it. **Ruled: yes, as recommended.**
 12. **Should a train decided red, but not first, be replaced at once?** *Recommended: no.* Its failure may be inherited, so it can't be judged, and replacing it needs a second chain (§10's "speculating on failure"). Keeping its place costs a chain position, not a CI slot. **Ruled: no, as recommended.**
+
+**Amended on 26 November.** The owner amended the ruling of 24 November: "Prioritise old PRs, but they ride normally with trains." A starving line rides first, at the head of the next train, which fills behind it as usual; several starving lines lead the same train, oldest first, up to the caps. It rides alone where any line would (marked alone, or alone at the change cap), and, refined the same day ("sometimes alone"), where it has been in `starve_alone_after` (1) failed trains since its last offer that blame could not clear it from. §3, §4, §7 and §8 read accordingly; questions 6 and 8 stand (a forced line still stops other trains until it is ready, and a priority still outranks it), and question 7 is overtaken.
 
 ## 10. Changes to the protocol
 

@@ -2,6 +2,7 @@ package state
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -44,8 +45,8 @@ func TestATrunkConflictTheRebaseCannotResolveGoesBackKeepingItsAge(t *testing.T)
 
 // A line left out at assembly because it didn't fit with the lines taken (a
 // conflict with another line of the train) stays in the bag: it waits, at
-// its age, and counts the cycle; at three it is starving and rides alone and
-// first (owner's ruling of 24 Nov, docs/queue-as-bag.md §4).
+// its age, and counts the cycle; at three it is starving and leads the next
+// train (owner's ruling of 24 Nov, docs/queue-as-bag.md §4).
 func TestALineInConflictWithAnotherLineStaysInTheBag(t *testing.T) {
 	s := apply(t, New("trunk0", Config{Depth: 2}), ready("a", "b", "c")...)
 	seq := s.Lines["c"].Seq
@@ -58,10 +59,14 @@ func TestALineInConflictWithAnotherLineStaysInTheBag(t *testing.T) {
 		}
 	}
 	s = apply(t, s, Starving{Line: "c", Why: "3 cycles"})
-	if _, _, err := Next(s, assemble("t4", "a", "c")); !errors.Is(err, ErrJoin) {
-		t.Fatalf("a starving line rode beside another: %v", err)
+	if _, _, err := Next(s, assemble("t4", "a", "b")); !errors.Is(err, ErrJoin) {
+		t.Fatalf("a train passed the starving line: %v", err)
 	}
-	apply(t, s, assemble("t4", "c"))
+	// It leads the train, and is merged first.
+	s = apply(t, s, assemble("t4", "a", "c"))
+	if got := s.Trains["t4"].Lines; !slices.Equal(got, ids("c", "a")) {
+		t.Fatalf("the train is %v", got)
+	}
 }
 
 // A line that needs a line left out leaves with it (I3), and waits too.
