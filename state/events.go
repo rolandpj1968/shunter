@@ -360,6 +360,10 @@ type PriorityEnded struct {
 type DraftOpened struct {
 	Train TrainID
 	PR    string
+	// Changes is what the draft names, in ride order. Absent (a log
+	// written before it was recorded), it is the train's changes when the
+	// draft opened.
+	Changes []ChangeID
 }
 
 // ExpireBudget resets a line's retry budgets after their stated time (§5.10).

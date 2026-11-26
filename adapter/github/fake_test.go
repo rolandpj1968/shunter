@@ -181,6 +181,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.nextPR++
 		s.pull(s.nextPR, "open", s.refs[head], head, in["base"].(string), "shunter-bot")
 		s.pulls[s.nextPR]["body"] = in["body"]
+		s.pulls[s.nextPR]["title"] = in["title"]
 		s.pulls[s.nextPR]["draft"] = in["draft"] == true
 		s.pulls[s.nextPR]["node_id"] = fmt.Sprintf("PR_%d", s.nextPR)
 		reply(s.pulls[s.nextPR])
@@ -201,6 +202,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if b, ok := in["base"].(string); ok {
 			s.pulls[n]["base"] = map[string]any{"ref": b, "sha": "b"}
+		}
+		for _, f := range []string{"title", "body"} {
+			if v, ok := in[f].(string); ok {
+				s.pulls[n][f] = v
+			}
 		}
 		reply(s.pulls[n])
 	case r.Method == "POST" && len(parts) == 3 && parts[0] == "issues" && parts[2] == "labels":

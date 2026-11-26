@@ -188,6 +188,14 @@ type Drafter interface {
 	// Promote marks the draft ready and starts its CI on head, the built
 	// head, to which the train's branch has moved.
 	Promote(ctx context.Context, key string, train state.TrainID, pr string, head state.Head) error
+	// Retitle names on the draft pr the changes the train carries now, in
+	// ride order, as OpenDraft names them: its title and its list of
+	// changes, with head the built head and base the train's base. The
+	// mark of the key the draft was opened with is kept as it is. A build
+	// that leaves lines out leaves the draft naming changes it does not
+	// carry; the runner retitles it at promotion. It is cosmetic: the
+	// runner never holds a train for it.
+	Retitle(ctx context.Context, train state.TrainID, pr string, changes []state.ChangeID, head, base state.Head) error
 }
 
 // BuildResult is the builder's answer. Lines left out (a conflict, a cap)

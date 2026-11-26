@@ -43,6 +43,8 @@ type Daemon struct {
 	polled   map[state.TrainID]time.Time
 	pollErrs map[state.TrainID]int
 	alerted  map[string]bool
+	// retitled is the list each train's draft was last retitled to.
+	retitled map[state.TrainID]string
 	// paced holds the line checks given up with no verdict (release).
 	paced map[state.LineID]unanswered
 	// mergeTried is the heads and trunk each line sent back uncharged was
@@ -106,7 +108,7 @@ func New(st *store.Store, ad adapter.Set, cfg Config, logger *log.Logger) *Daemo
 		cfg: cfg.withDefaults(), st: st, ad: ad, log: logger,
 		in: make(chan func()), results: make(chan result), quit: make(chan struct{}),
 		jobs: map[string]*job{}, retry: map[string]retry{}, polls: map[state.TrainID]bool{},
-		polled: map[state.TrainID]time.Time{}, pollErrs: map[state.TrainID]int{}, alerted: map[string]bool{}, paced: map[state.LineID]unanswered{},
+		polled: map[state.TrainID]time.Time{}, pollErrs: map[state.TrainID]int{}, alerted: map[string]bool{}, retitled: map[state.TrainID]string{}, paced: map[state.LineID]unanswered{},
 		mergeTried: map[state.LineID]string{},
 	}
 }
