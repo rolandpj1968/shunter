@@ -121,6 +121,10 @@ type Queue struct {
 	StarveAfterCycles *int `toml:"starve_after_cycles"`
 	StarveAfterHours  *int `toml:"starve_after_hours"`
 	StarveAlert       *int `toml:"starve_alert"`
+	// StarveAloneAfter: a starving line rides alone once it has been in
+	// this many failed trains since its last offer that blame could not
+	// clear it from (owner's ruling of 26 Nov). Unset, 1; 0 turns it off.
+	StarveAloneAfter *int `toml:"starve_alone_after"`
 }
 
 // The ruled starvation thresholds (docs/queue-as-bag.md §9.4).
@@ -128,6 +132,7 @@ const (
 	defaultStarveCycles = 3
 	defaultStarveHours  = 12
 	defaultStarveAlert  = 3
+	defaultStarveAlone  = 1
 )
 
 func orDefault(p *int, def int) int {
@@ -335,7 +340,7 @@ func (f *File) check() error {
 	if len(f.CI.Checks) == 0 {
 		errs = append(errs, errors.New("ci.checks: name the checks whose success is the verdict"))
 	}
-	for k, p := range map[string]*int{"starve_after_cycles": f.Queue.StarveAfterCycles, "starve_after_hours": f.Queue.StarveAfterHours, "starve_alert": f.Queue.StarveAlert} {
+	for k, p := range map[string]*int{"starve_after_cycles": f.Queue.StarveAfterCycles, "starve_after_hours": f.Queue.StarveAfterHours, "starve_alert": f.Queue.StarveAlert, "starve_alone_after": f.Queue.StarveAloneAfter} {
 		if p != nil && *p < 0 {
 			errs = append(errs, fmt.Errorf("queue.%s %d: 0 (off) or more", k, *p))
 		}
@@ -366,6 +371,7 @@ func (f *File) Daemon(version string) daemon.Config {
 		StarveCycles: orDefault(f.Queue.StarveAfterCycles, defaultStarveCycles),
 		StarveAfter:  time.Duration(orDefault(f.Queue.StarveAfterHours, defaultStarveHours)) * time.Hour,
 		StarveAlert:  orDefault(f.Queue.StarveAlert, defaultStarveAlert),
+		StarveAlone:  orDefault(f.Queue.StarveAloneAfter, defaultStarveAlone),
 	}
 }
 

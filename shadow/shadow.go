@@ -154,7 +154,7 @@ func refusalRule(err error) string {
 	case strings.Contains(msg, "rides alone"):
 		return "§5.2: a line marked alone rides alone"
 	case strings.Contains(msg, "is starving"):
-		return "§5.2: a starving line rides alone and first"
+		return "§5.3: a starving line rides first, at the head of the next train"
 	case strings.Contains(msg, "(I3)"):
 		return "I3: a line rides only behind its base"
 	case strings.Contains(msg, "conflicts with trunk"):

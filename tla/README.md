@@ -22,8 +22,8 @@
 | `JudgedOnlyAtHead` | action | §5.3: a train enters J1 or ends as failed only when it is first in the chain, on trunk |
 | `ChargedOnlyAtPresentHead` | action | a charge is only ever on the head the line has at that moment: a line check's verdict on a head since replaced charges nobody. A charge is otherwise only dropped, as void |
 | `VerdictsByPresentChecker` | action | proposed I14: a line is taken only on a green of the present checker; a charge is made by the present checker or the judge; a charge is dropped only when its checker has been replaced |
-| `NoJump` | action | proposed I15: a line that could ride is left waiting, while a line behind it in the order is taken, only for a manual priority or for the forced line and what it stands on |
-| `ForcedFirst` | action | proposed L4: while a starving line is forced, the only train assembled is its own, alone, with the chain empty; only prioritised lines go before it |
+| `NoJump` | action | proposed I15: a line that could ride is left waiting, while a line behind it in the order is taken, only for a manual priority or for a starving line and what it stands on |
+| `ForcedFirst` | action | proposed L4: while a starving line is forced, every train assembled holds it and what it stands on, and other lines may ride behind it (owner's ruling of 26 Nov; it rode alone, with the chain empty); only prioritised lines go before it |
 | `CountFallsOnlyByACharge` | action | a line's count of cycles it did not cause goes down only by a failure of its own |
 | `NoStackOnRed` | action | no train is assembled while a train in the chain is decided red: its failure kept, or waiting at J1 |
 | `NoRideAtChargedHead` | invariant | I11: a charged line never rides again at the head it was charged on |

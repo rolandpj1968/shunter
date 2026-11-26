@@ -179,15 +179,23 @@ type Line struct {
 	// Priority is a manual priority, if one stands: the one act that lets
 	// a line pass an older one (docs/queue-as-bag.md §2).
 	Priority *Priority
-	// Count is the cycles the line went round that riding alone and first
-	// would have avoided (docs/queue-as-bag.md §4). A failure of its own
-	// halves it; nothing else lowers it, not a push, a rebase or a new offer.
+	// Count is the cycles the line went round that it did not cause
+	// (docs/queue-as-bag.md §4). A failure of its own halves it; nothing
+	// else lowers it, not a push, a rebase or a new offer.
 	Count int
 	// Starving says the runner found the line past a starvation threshold:
-	// its count, or its queue time. A starving line is forced (Forced). A
-	// failure of its own, or its offer ending, clears it; the runner marks
-	// it again while a threshold still holds.
+	// its count, or its queue time. A starving line rides first, at the
+	// head of the next train (Starved, Forced). A failure of its own, or
+	// its offer ending, clears it; the runner marks it again while a
+	// threshold still holds.
 	Starving bool
+	// Unclear is the failed trains it rode since its last offer that blame
+	// could not clear it from: each that went to J1 with it aboard (blame
+	// named nobody, or every line of several). A starving line with
+	// enough of them rides alone, since company is then the doubt
+	// (docs/queue-as-bag.md §4, owner's ruling of 26 Nov). A new offer
+	// starts it again.
+	Unclear int
 	// Stuck is why the runner could not rebase the line out of its present
 	// conflict. A stuck line is not forced: it needs a person, and a
 	// starving one is raised to the judge at once. A new conflict verdict
@@ -468,7 +476,7 @@ func (s State) SortByPolicy(ids []LineID) {
 	keys := make(map[LineID]key, len(ids))
 	prio := s.Prioritised()
 	forced := map[LineID]bool{}
-	if f := s.Forced(); f != "" {
+	for _, f := range s.Starved() {
 		for _, id := range s.ForcedTrain(f) {
 			forced[id] = true
 		}
@@ -529,10 +537,24 @@ func (s State) DecidedRed() TrainID {
 	return ""
 }
 
-// Forced is the line forced through alone (docs/queue-as-bag.md §4), or
-// none: the oldest starving line that is the queue's to move. It waits, is
-// not stuck, and nothing beneath it is held, parked or spent.
+// Forced is the forced line (docs/queue-as-bag.md §4), or none: the oldest
+// starving line that is the queue's to move (the first of Starved). It
+// leads the next train assembled, and no other train is assembled, but one
+// of prioritised lines, until it is ready to.
 func (s State) Forced() LineID {
+	if st := s.Starved(); len(st) > 0 {
+		return st[0]
+	}
+	return ""
+}
+
+// Starved is every starving line that is the queue's to move, oldest
+// first: it waits, is not stuck, and nothing beneath it is held, parked or
+// spent. Each sorts, with what beneath it still waits, after the
+// prioritised lines and before everything else (SortByPolicy), so that the
+// starving lines lead a train together (owner's ruling of 26 Nov).
+func (s State) Starved() []LineID {
+	var out []LineID
 	for _, id := range s.lineIDs() {
 		l := s.Lines[id]
 		if l.State != LineWaiting || !l.Starving || l.Stuck != "" {
@@ -546,14 +568,14 @@ func (s State) Forced() LineID {
 			}
 		}
 		if ok {
-			return id
+			out = append(out, id)
 		}
 	}
-	return ""
+	return out
 }
 
-// ForcedTrain is the train the forced line f rides in: f and whatever
-// beneath it in its stack still waits, bottom first.
+// ForcedTrain is what the forced line f takes into the train it leads: f
+// and whatever beneath it in its stack still waits, bottom first.
 func (s State) ForcedTrain(f LineID) []LineID {
 	out := []LineID{f}
 	for b, n := s.Lines[s.Lines[f].Base], 0; b != nil && n <= len(s.Lines); b, n = s.Lines[b.Base], n+1 {

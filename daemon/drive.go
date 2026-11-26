@@ -36,7 +36,7 @@ func (d *Daemon) assemble() {
 				return
 			}
 		}
-		lines := join(s, Caps{Lines: d.cfg.MaxLines, Changes: d.cfg.MaxChanges})
+		lines := join(s, Caps{Lines: d.cfg.MaxLines, Changes: d.cfg.MaxChanges, StarveAlone: d.cfg.StarveAlone})
 		if len(lines) == 0 {
 			return
 		}
@@ -50,9 +50,18 @@ func (d *Daemon) assemble() {
 // Caps bound one train (J4): at most Lines lines, and at most Changes
 // changes in all (a stack is several changes in one line). Zero is no cap.
 // A line that alone has more changes than the cap rides alone, first in
-// order, so that no line waits for ever.
+// order, so that no line waits for ever. A starving line with StarveAlone
+// or more failed trains since its last offer that blame could not clear
+// it from (state.Line.Unclear) rides alone: company is then the doubt, and
+// riding alone settles it. Zero is never.
 type Caps struct {
 	Lines, Changes int
+	StarveAlone    int
+}
+
+// soloStarving says the starving line l rides alone (Caps.StarveAlone).
+func soloStarving(l *state.Line, c Caps) bool {
+	return l.Starving && c.StarveAlone > 0 && l.Unclear >= c.StarveAlone
 }
 
 // Join is the joining rule: the lines the next train takes, in order. Shadow
@@ -60,12 +69,19 @@ type Caps struct {
 func Join(s state.State, c Caps) []state.LineID { return join(s, c) }
 
 // join is the joining rule. While a line is forced (docs/queue-as-bag.md
-// §4), only prioritised lines may ride before it, and then it rides alone,
-// with what beneath it still waits, once the chain is empty and it is ready.
+// §4), only prioritised lines may ride before it. Once it is ready, it
+// leads the next train, with what beneath it still waits, past the caps;
+// the train then fills behind it in the policy's order, so that the other
+// starving lines come next, oldest first, and then everything else (owner's
+// ruling of 26 Nov: they ride normally with trains). It rides alone where
+// a line must anyway (it is marked to, or it alone reaches the changes
+// cap), and where company is the doubt: past Caps.StarveAlone failures
+// blame could not clear it from ("sometimes alone", the same ruling). Such
+// a starving line that is not forced is skipped until it is.
 func join(s state.State, c Caps) []state.LineID {
 	f := s.Forced()
 	if f == "" {
-		return joinFrom(s, c, s.Waiting())
+		return joinFrom(s, c, nil, s.Waiting())
 	}
 	prio := s.Prioritised()
 	var first []state.LineID
@@ -74,26 +90,48 @@ func join(s state.State, c Caps) []state.LineID {
 			first = append(first, id)
 		}
 	}
-	if out := joinFrom(s, c, first); len(out) > 0 {
+	if out := joinFrom(s, c, nil, first); len(out) > 0 {
 		return out
 	}
-	if len(s.Chain) > 0 {
+	want := s.ForcedTrain(f)
+	if got := joinFrom(s, Caps{}, nil, want); len(got) != len(want) {
+		// Not ready yet: nothing else is assembled meanwhile.
 		return nil
 	}
-	want := s.ForcedTrain(f)
-	if got := joinFrom(s, Caps{}, want); len(got) == len(want) {
-		return got
+	if soloStarving(s.Lines[f], c) {
+		return want
 	}
-	return nil
+	return joinFrom(s, c, want, s.Waiting())
 }
 
-// joinFrom takes lines from ids, which are in the policy's order.
-func joinFrom(s state.State, c Caps, ids []state.LineID) []state.LineID {
+// joinFrom takes lines from ids, which are in the policy's order, behind
+// lead: lines already found ready, taken first and whole, past the caps.
+// A lead that holds a line that must ride alone is the whole train.
+func joinFrom(s state.State, c Caps, lead, ids []state.LineID) []state.LineID {
 	var out []state.LineID
 	taken := map[state.LineID]bool{}
 	group, changes := -1, 0
 	counted, full := 0, false // the lines that count against the cap; whether it is reached
+	for _, id := range lead {
+		l := s.Lines[id]
+		if l.Alone {
+			return lead
+		}
+		if !l.Inert || len(out) == 0 {
+			counted++
+		}
+		group = l.Group
+		out = append(out, id)
+		taken[id] = true
+		changes += len(l.Changes)
+	}
+	if c.Lines > 0 && len(lead) > 0 && counted >= c.Lines {
+		full = true
+	}
 	for _, id := range ids {
+		if taken[id] {
+			continue
+		}
 		l := s.Lines[id]
 		n := len(l.Changes)
 		if l.Stale != "" || !s.NeedMet(l, taken) {
@@ -113,6 +151,9 @@ func joinFrom(s state.State, c Caps, ids []state.LineID) []state.LineID {
 		case len(out) == 0 && l.Alone:
 			return []state.LineID{id}
 		case l.Alone:
+			continue
+		case soloStarving(l, c):
+			// It rides alone when it is forced.
 			continue
 		case group >= 0 && l.Group != group:
 			continue
@@ -568,7 +609,7 @@ func (d *Daemon) starving(now time.Time) {
 		}
 	}
 	if d.cfg.StarveAlert > 0 && len(starving) >= d.cfg.StarveAlert {
-		d.alert("starving:"+strings.Join(starving, ","), fmt.Sprintf("J4: %d lines are starving at once (%s): one rides at a time; raise the thresholds if the queue is only behind", len(starving), strings.Join(starving, ", ")))
+		d.alert("starving:"+strings.Join(starving, ","), fmt.Sprintf("J4: %d lines are starving at once (%s): they lead the next trains, oldest first; raise the thresholds if the queue is only behind", len(starving), strings.Join(starving, ", ")))
 	}
 }
 

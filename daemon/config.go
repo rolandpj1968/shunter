@@ -83,11 +83,15 @@ type Config struct {
 	// StarveCycles and StarveAfter are the starvation thresholds
 	// (docs/queue-as-bag.md §4): a waiting line whose count reaches
 	// StarveCycles, or whose queue time reaches StarveAfter, is starving and
-	// rides alone and first. StarveAlert starving lines at once are raised
-	// to the judge (J4). Zero turns each off.
+	// rides first, at the head of the next train. StarveAlert starving lines
+	// at once are raised to the judge (J4). Zero turns each off.
 	StarveCycles int
 	StarveAfter  time.Duration
 	StarveAlert  int
+	// StarveAlone is how many failed trains since its last offer that
+	// blame could not clear it from make a starving line ride alone
+	// (Caps.StarveAlone). Zero is never.
+	StarveAlone int
 
 	// MaxLines caps the lines of one train (J4's bounds). Default 8.
 	MaxLines int
