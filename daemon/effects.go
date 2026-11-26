@@ -396,7 +396,9 @@ func gateInfo(ctx context.Context, f adapter.Forge, l state.Line, live map[state
 
 // built turns a builder's answer into events: each left-out line, then the
 // pre-flight failure or the built head. A line left out for its own moved
-// heads carries them, and is re-keyed at them (row L39).
+// heads carries them, and is re-keyed at them (row L39). One left out for a
+// conflict with the train's base says so, and on trunk goes to the rebase
+// and back to its owner if that fails (row L40).
 func built(req adapter.BuildRequest, r adapter.BuildResult) []state.Event {
 	var out []state.Event
 	kept := 0
@@ -405,7 +407,7 @@ func built(req adapter.BuildRequest, r adapter.BuildResult) []state.Event {
 			if why == "" {
 				why = "left out at assembly"
 			}
-			lo := state.LeaveOut{Train: req.Train, Line: l.ID, Reason: why}
+			lo := state.LeaveOut{Train: req.Train, Line: l.ID, Reason: why, Base: r.Conflicted[l.ID]}
 			for _, c := range l.Changes {
 				if h, ok := r.Moved[c.ID]; ok && h != "" && h != c.Head {
 					lo.Moved = append(lo.Moved, state.Change{ID: c.ID, Head: h})

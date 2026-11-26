@@ -207,6 +207,48 @@ func TestConflictLeavesTheLineOut(t *testing.T) {
 	w.cat(res.Head, "three.txt")
 }
 
+// Issue 55: the builder says which lines it left out for a conflict with
+// the train's base, and not with a line before them, so that a conflict
+// with trunk goes back to its owner once (PROTOCOL.md row L40) while a
+// conflict with another line stays in the bag (L16).
+func TestConflictWithTheBaseIsToldFromOneWithALine(t *testing.T) {
+	w := newWorld(t, Config{})
+	root := string(w.trunk())
+	w.change("0", "main", map[string]string{"a.txt": "a1\nZERO\na3\n"})
+	run(t, w.dev, "push", "--quiet", "origin", "c0:main") // trunk moves against line 2
+	base := w.trunk()
+	h1 := w.change("1", root, map[string]string{"one.txt": "1\n"})
+	h2 := w.change("2", root, map[string]string{"a.txt": "a1\nTWO\na3\n"})
+	h4 := w.change("4", root, map[string]string{"one.txt": "4\n"})
+	res, err := w.repo.Build(ctx, "k1", adapter.BuildRequest{Train: "t1", Base: base, Lines: []adapter.BuildLine{
+		line("1", ch("1", h1)), line("2", ch("2", h2)), line("4", ch("4", h4)),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.LeftOut) != 2 || !strings.Contains(res.LeftOut["2"], "a.txt") || !strings.Contains(res.LeftOut["4"], "one.txt") {
+		t.Fatalf("left out %v", res.LeftOut)
+	}
+	if !res.Conflicted["2"] || res.Conflicted["4"] || len(res.Conflicted) != 1 {
+		t.Fatalf("conflicted with the base %v, want line 2 only", res.Conflicted)
+	}
+	if !strings.Contains(res.LeftOut["2"], "with the train's base") || !strings.Contains(res.LeftOut["4"], "with a line before it") {
+		t.Fatalf("the reasons don't say which: %v", res.LeftOut)
+	}
+	// Line 1 is on the train as it was: the try alone moved nothing.
+	if got := w.cat(res.Head, "one.txt"); got != "1" {
+		t.Fatalf("one.txt %q", got)
+	}
+	// First on the base, line 2 is told the same, with no try alone.
+	res, err = w.repo.Build(ctx, "k2", adapter.BuildRequest{Train: "t2", Base: base, Lines: []adapter.BuildLine{line("2", ch("2", h2)), line("1", ch("1", h1))}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Conflicted["2"] || len(res.Conflicted) != 1 || res.Head == "" {
+		t.Fatalf("result %+v", res)
+	}
+}
+
 func TestConflictHookResolves(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "resolve.sh")
