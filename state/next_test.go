@@ -243,6 +243,12 @@ var transitions = []tcase{
 				t.Errorf("re-keyed: count %d, cause %s, head %s", l.Count, l.Cause, l.Changes[0].Head)
 			}
 		}},
+	{name: "left out in conflict with trunk", setup: cat(ready("a", "b"), assemble("t1", "a", "b")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x, not resolved", Base: true},
+		lines: lineWant{"a": LineWaiting, "b": LineRiding}, trains: trainWant{"t1": TrainAssembling}, fx: []EffectKind{EffRebase}, check: func(t *testing.T, s State) {
+			if l := s.Lines["a"]; l.Count != 0 || l.Cause != CauseConflict || l.Conflict == "" || l.ConflictOn != "trunk0" {
+				t.Errorf("in conflict: count %d, cause %s, conflict %q on %q", l.Count, l.Cause, l.Conflict, l.ConflictOn)
+			}
+		}},
 	{name: "every line left out", setup: cat(ready("a"), assemble("t1", "a")), ev: LeaveOut{Train: "t1", Line: "a", Reason: "conflict in x"},
 		lines: lineWant{"a": LineWaiting}, trains: trainWant{"t1": TrainEmpty}},
 	{name: "pre-flight blames one", setup: cat(ready("a", "b"), assemble("t1", "a", "b")), ev: PreflightFailed{Train: "t1", Blamed: ids("a"), Evidence: "lint at a line a added"},
@@ -812,8 +818,11 @@ func TestRandomWalk(t *testing.T) {
 				ev = Assemble{Train: TrainID(fmt.Sprintf("t%d", trains)), Lines: w[:1+r.Intn(len(w))]}
 			case 13:
 				lo := LeaveOut{Train: tr, Line: pick(), Reason: "conflict"}
-				if r.Intn(2) == 0 {
+				switch r.Intn(3) {
+				case 0:
 					lo.Moved = []Change{{ID: ChangeID(lo.Line), Head: Head(fmt.Sprintf("m%d", i))}}
+				case 1:
+					lo.Base = true
 				}
 				ev = lo
 			case 14:

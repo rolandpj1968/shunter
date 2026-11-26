@@ -58,7 +58,7 @@ Assembly is a pure function: from the bag, the chain, the settings and the time,
 - its train was discarded because a train ahead didn't land;
 - it was left out at assembly because it didn't fit with the lines taken.
 
-It doesn't go up for a no-verdict or an infrastructure failure of its own train (riding first wouldn't have helped; §5.10's budget and J3 own that), for an abort of its own train (the judge's act), when its base is lost, or when it is left out at assembly because its own head moved (PROTOCOL.md L39: it is re-keyed at the new head, once, and riding first wouldn't have helped).
+It doesn't go up for a no-verdict or an infrastructure failure of its own train (riding first wouldn't have helped; §5.10's budget and J3 own that), for an abort of its own train (the judge's act), when its base is lost, or when it is left out at assembly because its own head moved (PROTOCOL.md L39: it is re-keyed at the new head, once, and riding first wouldn't have helped) or because it conflicts with trunk (PROTOCOL.md L40: it goes to the runner's rebase, and back to its owner if that fails, and riding first can't make it merge).
 
 **A failure of the line's own halves the count.** A red line check (L33) or a charge in a train (L17) means the line needs its owner's fix, not priority. Halving, and not clearing, keeps a line that alternates between real fixes and other lines' conflicts from starving. Nothing else lowers the count: not a push, a rebase, a new offer or a hand-over. This is an exception to §5.10, whose budgets reset when a head moves; a rebase moves the head of exactly the line this count exists for.
 

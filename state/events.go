@@ -77,11 +77,21 @@ type Assemble struct {
 // re-keyed at them, once, as a head-moved event would re-key it: its check
 // ends (I10), it keeps its place, and the cycle is its own, so it counts
 // none (row L39).
+//
+// Base, when set, says the line was left out for a conflict with the
+// train's base itself that the conflict hook could not resolve, not with a
+// line before it in the train. On a train built on trunk that is a conflict
+// with trunk: the line is in conflict, as a line check would find it, and
+// the runner is asked to rebase it; if it can't, the line goes back to its
+// owner, uncharged (row L40, then L36). It counts no cycle. On a train
+// built on the train ahead, or for a conflict with a line before it, the
+// line stays in the bag (L16).
 type LeaveOut struct {
 	Train  TrainID
 	Line   LineID
 	Reason string
 	Moved  []Change
+	Base   bool
 }
 
 // PreflightFailed reports a pre-flight failure and the lines blame names.

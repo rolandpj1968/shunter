@@ -1163,6 +1163,17 @@ func (m *machine) leaveOut(e LeaveOut) error {
 			m.rekey(l, idx[k], c.Head)
 		}
 		m.setLine(l, LineWaiting, CauseMoved, e.Reason)
+	} else if e.Base && t.BaseHead == m.s.Trunk {
+		// It does not merge onto trunk, and the conflict hook could not
+		// resolve it: the conflict a line check would have found. It goes
+		// the same way (§5.2): it joins no train, the runner is asked to
+		// rebase it, and if it can't, it goes back to its owner, uncharged,
+		// at its age (L36), once, not left out at every assembly (row
+		// L40). Riding first can't make it merge: it counts no cycle.
+		l.Checked, l.CheckedOn = nil, ""
+		l.Conflict, l.ConflictOn, l.Stuck = e.Reason, t.BaseHead, ""
+		m.setLine(l, LineWaiting, CauseConflict, e.Reason)
+		m.emit(Effect{Kind: EffRebase, Line: l.ID, Reason: e.Reason})
 	} else {
 		// It did not fit with the lines taken: a cycle it did not cause
 		// (§4). It stays in the bag, and the starving rule bounds how

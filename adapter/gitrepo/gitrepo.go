@@ -365,12 +365,13 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	// line the train doesn't: at most one round a line, and one more.
 	out := map[state.LineID]string{}
 	moved := map[state.ChangeID]state.Head{}
+	based := map[state.LineID]bool{}
 	var res adapter.BuildResult
 	var head string
 	for {
 		var err error
 		var again bool
-		res, head, again, err = r.round(ctx, req, out, moved)
+		res, head, again, err = r.round(ctx, req, out, moved, based)
 		if err != nil {
 			return adapter.BuildResult{}, err
 		}
@@ -380,6 +381,9 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 	}
 	if len(moved) > 0 {
 		res.Moved = moved
+	}
+	if len(based) > 0 {
+		res.Conflicted = based
 	}
 	if head == "" {
 		return res, r.remember(key, res)
@@ -399,12 +403,14 @@ func (r *Repo) Build(ctx context.Context, key string, req adapter.BuildRequest) 
 }
 
 // round builds the train on its base without the lines in out, and runs
-// pre-flight on it. It adds to out the lines it leaves out, and to moved the
-// new head of each change it found pushed to. again says that
+// pre-flight on it. It adds to out the lines it leaves out, to moved the
+// new head of each change it found pushed to, and to based the lines left
+// out for a conflict with the base itself (not with a line before them).
+// again says that
 // pre-flight left lines out of this build, which must be built again
 // without them. An empty head with no error is a train with every line
 // left out.
-func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[state.LineID]string, moved map[state.ChangeID]state.Head) (res adapter.BuildResult, head string, again bool, err error) {
+func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[state.LineID]string, moved map[state.ChangeID]state.Head, based map[state.LineID]bool) (res adapter.BuildResult, head string, again bool, err error) {
 	r.reset(ctx)
 	if _, err := r.git(ctx, "checkout", "--quiet", "--detach", "--force", string(req.Base)); err != nil {
 		return res, "", false, err
@@ -420,10 +426,26 @@ func (r *Repo) round(ctx context.Context, req adapter.BuildRequest, out map[stat
 			res.LeftOut[l.ID] = why
 			continue
 		}
-		why, err := r.apply(ctx, req.Train, l, moved)
+		why, conflict, err := r.apply(ctx, req.Train, l, moved)
 		if err != nil {
 			r.reset(ctx)
 			return res, "", false, err
+		}
+		if conflict {
+			// With the base, or with a line before it? The answer decides
+			// whether only a person can resolve it (PROTOCOL.md L40), or it
+			// merely didn't fit this train (L16).
+			onBase, err := r.conflictsWithBase(ctx, req, l, len(kept) == 0)
+			if err != nil {
+				r.reset(ctx)
+				return res, "", false, err
+			}
+			if onBase {
+				based[l.ID] = true
+				why += " (with the train's base)"
+			} else {
+				why += " (with a line before it in the train)"
+			}
 		}
 		if why != "" {
 			res.LeftOut[l.ID], out[l.ID] = why, why
@@ -650,20 +672,57 @@ func (r *Repo) reset(ctx context.Context) {
 	r.git(ctx, "reset", "--quiet", "--hard")
 }
 
-// apply puts one line on HEAD. It returns why the line is left out, or "".
-// A change whose head moved since it was offered is left out with its new
+// conflictsWithBase says whether a line that apply found in a conflict it
+// could not resolve conflicts with the train's base itself: it does not
+// merge onto Base alone either. first says no line was put on Base before
+// it, so that the conflict was with Base. Otherwise the line is tried alone
+// on Base, and HEAD is put back where it was. A stacked line whose base is
+// not on Base can't be tried alone: its conflict is taken as with a line
+// before it, which leaves it in the bag.
+func (r *Repo) conflictsWithBase(ctx context.Context, req adapter.BuildRequest, l adapter.BuildLine, first bool) (bool, error) {
+	if l.Upstream != "" && !r.ancestor(ctx, l.Upstream, req.Base) {
+		return false, nil
+	}
+	if first {
+		return true, nil
+	}
+	tip, err := r.git(ctx, "rev-parse", "HEAD")
+	if err != nil {
+		return false, err
+	}
+	if _, err := r.git(ctx, "checkout", "--quiet", "--detach", "--force", string(req.Base)); err != nil {
+		return false, err
+	}
+	why, conflict, err := r.apply(ctx, req.Train, l, nil)
+	if err != nil {
+		return false, err
+	}
+	r.reset(ctx)
+	if _, err := r.git(ctx, "checkout", "--quiet", "--detach", "--force", tip); err != nil {
+		return false, err
+	}
+	return conflict && why != "", nil
+}
+
+// apply puts one line on HEAD. It returns why the line is left out, or "",
+// and whether that is a conflict the conflict hook could not resolve. A
+// change whose head moved since it was offered is left out with its new
 // head in moved.
-func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, moved map[state.ChangeID]state.Head) (string, error) {
+func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, moved map[state.ChangeID]state.Head) (string, bool, error) {
 	start, err := r.git(ctx, "rev-parse", "HEAD")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	back := func(why string) (string, error) {
+	back := func(why string) (string, bool, error) {
 		r.reset(ctx)
 		if _, err := r.git(ctx, "checkout", "--quiet", "--detach", "--force", start); err != nil {
-			return "", err
+			return "", false, err
 		}
-		return why, nil
+		return why, false, nil
+	}
+	clash := func(why string) (string, bool, error) {
+		why, _, err := back(why)
+		return why, err == nil, err
 	}
 	var prev state.Head
 	// Every moved change of the line is reported at once, so that the line
@@ -688,7 +747,7 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, 
 		}
 		cur, err := r.git(ctx, "rev-parse", "HEAD")
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		var args []string
 		var cont []string
@@ -713,7 +772,7 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, 
 		for tries := 0; err != nil && tries < 50; tries++ {
 			var ge *bound.GitError
 			if !errors.As(err, &ge) {
-				return "", err
+				return "", false, err
 			}
 			files, _ := r.git(ctx, "diff", "--name-only", "--diff-filter=U")
 			if files == "" {
@@ -721,7 +780,7 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, 
 			}
 			fs := strings.Fields(files)
 			if !r.cfg.Conflict.Configured() {
-				return back(fmt.Sprintf("conflict with the train's base or the lines before it, in %s", strings.Join(fs, " ")))
+				return clash(fmt.Sprintf("conflict in %s, and no conflict hook is configured", strings.Join(fs, " ")))
 			}
 			var a ConflictAnswer
 			if _, herr := r.cfg.Conflict.Run(ctx, ConflictInput{Dir: r.cfg.Dir, Train: t, Line: l.ID, Change: c.ID, Files: fs}, &a); herr != nil || !a.Resolved {
@@ -729,10 +788,10 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, 
 				if herr != nil {
 					why = "the conflict hook gave no answer: " + herr.Error()
 				}
-				return back(fmt.Sprintf("conflict in %s, not resolved: %s", strings.Join(fs, " "), why))
+				return clash(fmt.Sprintf("conflict in %s, not resolved: %s", strings.Join(fs, " "), why))
 			}
 			if left, _ := r.git(ctx, "diff", "--name-only", "--diff-filter=U"); left != "" {
-				return back(fmt.Sprintf("conflict in %s: the conflict hook said resolved, and left %s unresolved", strings.Join(fs, " "), left))
+				return clash(fmt.Sprintf("conflict in %s: the conflict hook said resolved, and left %s unresolved", strings.Join(fs, " "), left))
 			}
 			_, err = r.git(ctx, cont...)
 		}
@@ -743,12 +802,12 @@ func (r *Repo) apply(ctx context.Context, t state.TrainID, l adapter.BuildLine, 
 	}
 	end, err := r.git(ctx, "rev-parse", "HEAD")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if end == start {
 		return back("nothing to land: its changes are already on the train's base")
 	}
-	return "", nil
+	return "", false, nil
 }
 
 // Push implements adapter.Git: trunk moves from expect to head, by

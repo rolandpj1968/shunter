@@ -200,7 +200,15 @@ type BuildResult struct {
 	// since its line was offered (or re-keyed). Its line is left out, and
 	// re-keyed at the new head once (PROTOCOL.md row L39), not left out
 	// again at every assembly at a head it no longer has.
-	Moved           map[state.ChangeID]state.Head
+	Moved map[state.ChangeID]state.Head
+	// Conflicted names the lines left out for a conflict with the train's
+	// base itself, that the conflict hook could not resolve: the line alone
+	// does not merge onto Base. A line left out for a conflict only with a
+	// line before it in the train is not named. On a train built on trunk,
+	// a line named is in conflict with trunk, and goes to the runner's
+	// rebase and, if that fails, back to its owner once (PROTOCOL.md row
+	// L40), not left out again at every assembly.
+	Conflicted      map[state.LineID]bool
 	PreflightFailed bool
 	Blamed          []state.LineID
 	Evidence        string
