@@ -89,6 +89,9 @@ type World struct {
 	// OpenPRFaults are errors the next pull requests opened return, in
 	// order, before one is opened.
 	OpenPRFaults []error
+	// RetitleFaults are errors the next retitles return, in order, before
+	// a draft is retitled.
+	RetitleFaults []error
 	// AfterPush, when set, runs after a push has moved trunk and before the
 	// call returns: a crash between the act and its record.
 	AfterPush func(ctx context.Context) error
@@ -515,6 +518,27 @@ func (w *World) Promote(ctx context.Context, key string, t state.TrainID, pr str
 	w.heads[t] = head
 	w.report[t] = adapter.Report{Outcome: adapter.Pending, Head: head}
 	w.Acts["promote"]++
+	return nil
+}
+
+// Retitle implements adapter.Drafter: the pull request names changes.
+func (w *World) Retitle(ctx context.Context, t state.TrainID, pr string, changes []state.ChangeID, head, base state.Head) error {
+	if err := w.enter(ctx, "retitle"); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.RetitleFaults) > 0 {
+		err := w.RetitleFaults[0]
+		w.RetitleFaults = w.RetitleFaults[1:]
+		w.Acts["retitle-failed"]++
+		return err
+	}
+	if w.open[t] != pr {
+		return adapter.Permanent(fmt.Errorf("train %s: pull request %s is not open", t, pr))
+	}
+	w.named[t] = append([]state.ChangeID(nil), changes...)
+	w.Acts["retitle"]++
 	return nil
 }
 

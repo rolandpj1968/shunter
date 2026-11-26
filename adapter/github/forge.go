@@ -316,6 +316,53 @@ func (c *Client) Promote(ctx context.Context, key string, t state.TrainID, pr st
 	return c.dispatch(ctx, c.Branch(t), head)
 }
 
+// Retitle implements adapter.Drafter: the draft's title and body name
+// changes, as OpenDraft names them. The body keeps the key's mark it
+// carries, byte for byte; one with no mark is given none. A draft that
+// already says so is left alone.
+func (c *Client) Retitle(ctx context.Context, t state.TrainID, pr string, changes []state.ChangeID, head, base state.Head) error {
+	n, err := strconv.Atoi(pr)
+	if err != nil {
+		return adapter.Permanent(fmt.Errorf("train %s: pull request %q", t, pr))
+	}
+	p, err := c.pull(ctx, n)
+	if err != nil {
+		if IsNotFound(err) {
+			return adapter.Permanent(fmt.Errorf("train %s: pull request %d not found", t, n))
+		}
+		return err
+	}
+	if p.State != "open" {
+		return adapter.Permanent(fmt.Errorf("train %s: pull request %d is %s", t, n, p.State))
+	}
+	title := trainTitle(t, changes)
+	body := trainBody("", t, changes, head, base)
+	if key, ok := markedKey(p.Body); ok {
+		body = trainBody(key, t, changes, head, base)
+	} else {
+		body = strings.TrimSuffix(body, keyMark("")+"\n")
+	}
+	if p.Title == title && p.Body == body {
+		return nil
+	}
+	return c.do(ctx, http.MethodPatch, c.repo("/pulls/%d", n), map[string]string{"title": title, "body": body}, nil)
+}
+
+// markedKey reads the key a pull request's body carries the mark of.
+func markedKey(body string) (string, bool) {
+	const open, end = "<!-- shunter-key: ", " -->"
+	i := strings.Index(body, open)
+	if i < 0 {
+		return "", false
+	}
+	rest := body[i+len(open):]
+	j := strings.Index(rest, end)
+	if j < 0 {
+		return "", false
+	}
+	return rest[:j], true
+}
+
 // open opens the train's pull request, a draft or not. A draft is the
 // same pull request whatever head its branch has moved to.
 func (c *Client) open(ctx context.Context, key string, t state.TrainID, changes []state.ChangeID, head, base state.Head, draft bool) (string, error) {

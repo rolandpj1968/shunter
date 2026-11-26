@@ -1,9 +1,11 @@
 package github
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rolandpj1968/shunter/adapter"
+	"github.com/rolandpj1968/shunter/state"
 )
 
 // A train is shown from assembly as a draft (adapter.Drafter): a draft
@@ -35,5 +37,39 @@ func TestADraftIsOpenedThenPromoted(t *testing.T) {
 	}
 	if s.pulls[501]["draft"] != false || s.count("POST", "/actions/workflows/ci.yml/dispatches") != 1 {
 		t.Fatalf("after promotion: draft %v, dispatches %d", s.pulls[501]["draft"], s.count("POST", "/actions/workflows/ci.yml/dispatches"))
+	}
+}
+
+// A draft whose build left a line out is retitled to name what the train
+// carries: the title and the list change, the key's mark is kept byte for
+// byte, and a draft that already says so is not written again.
+func TestADraftIsRetitled(t *testing.T) {
+	s, c := newServer(t)
+	s.refs["main"] = "trunk1"
+	s.refs["shunter/t1"] = "m1"
+	pr, err := c.OpenDraft(ctx, "k1.draft", "t1", []state.ChangeID{"11", "12"}, "m1", "trunk1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mark := keyMark("k1.draft")
+	if s.pulls[501]["title"] != "Merge train t1: #11 #12" || !strings.Contains(s.pulls[501]["body"].(string), "- #12\n") {
+		t.Fatalf("opened as %q: %q", s.pulls[501]["title"], s.pulls[501]["body"])
+	}
+	if err := c.Retitle(ctx, "t1", pr, []state.ChangeID{"11"}, "h1", "trunk1"); err != nil {
+		t.Fatal(err)
+	}
+	body := s.pulls[501]["body"].(string)
+	if s.pulls[501]["title"] != "Merge train t1: #11" || strings.Contains(body, "#12") || !strings.Contains(body, "- #11\n") || !strings.Contains(body, mark) || strings.Count(body, "shunter-key") != 1 {
+		t.Fatalf("retitled as %q: %q", s.pulls[501]["title"], body)
+	}
+	if body != trainBody("k1.draft", "t1", []state.ChangeID{"11"}, "h1", "trunk1") {
+		t.Fatalf("the body is not as a pull request opened naming #11: %q", body)
+	}
+	before := s.count("PATCH", "/pulls/501")
+	if err := c.Retitle(ctx, "t1", pr, []state.ChangeID{"11"}, "h1", "trunk1"); err != nil || s.count("PATCH", "/pulls/501") != before {
+		t.Fatalf("again: %v, %d writes", err, s.count("PATCH", "/pulls/501")-before)
+	}
+	if err := c.Retitle(ctx, "t1", "999", []state.ChangeID{"11"}, "h1", "trunk1"); !adapter.IsPermanent(err) {
+		t.Fatalf("a pull request not there: %v", err)
 	}
 }

@@ -443,6 +443,17 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrState, "train %s has the draft %s already", t.ID, t.PR)
 		}
 		t.PR, t.Draft = e.PR, true
+		t.Named = append([]ChangeID(nil), e.Changes...)
+		if e.Changes == nil {
+			t.Named = nil
+			for _, id := range t.Lines {
+				if l := m.s.Lines[id]; l != nil {
+					for _, c := range l.Changes {
+						t.Named = append(t.Named, c.ID)
+					}
+				}
+			}
+		}
 	case CIPassed:
 		t, err := m.train(e.Train)
 		if err != nil {

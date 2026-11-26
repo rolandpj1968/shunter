@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"time"
 
 	"github.com/rolandpj1968/shunter/adapter"
@@ -167,7 +168,8 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 					if drafted {
 						return
 					}
-					pr, err := dr.OpenDraft(ctx, k.Key+".draft", req.Train, buildChanges(req), head, req.Base)
+					named := buildChanges(req)
+					pr, err := dr.OpenDraft(ctx, k.Key+".draft", req.Train, named, head, req.Base)
 					if err != nil {
 						// The draft only shows the train; the build goes on.
 						d.log.Printf("train %s: no draft opened: %v", req.Train, err)
@@ -175,7 +177,7 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 					}
 					drafted = true
 					select {
-					case d.results <- result{side: true, events: evs(state.DraftOpened{Train: req.Train, PR: pr}), actor: "forge"}:
+					case d.results <- result{side: true, events: evs(state.DraftOpened{Train: req.Train, PR: pr, Changes: named}), actor: "forge"}:
 					case <-d.quit:
 					}
 				}
@@ -192,6 +194,12 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 			// Promotion: the draft shown since assembly is marked ready,
 			// and its CI starts.
 			pr := t.PR
+			if changes := trainChanges(s, t); t.Named != nil && !slices.Equal(changes, t.Named) {
+				// A line left out at the build: the draft names changes
+				// the train no longer carries. It is retitled beside the
+				// promotion, never holding it.
+				d.retitle(dr, k.Train, pr, changes, k.Head, k.Expect)
+			}
 			return func(ctx context.Context) result {
 				err := dr.Promote(ctx, k.Key, k.Train, pr, k.Head)
 				return result{events: evs(state.Opened{Train: k.Train, PR: pr, Head: k.Head}), actor: "forge", err: err}
@@ -249,6 +257,48 @@ func (d *Daemon) call(s state.State, k store.Keyed) (func(context.Context) resul
 }
 
 func evs(e state.Event) []state.Event { return []state.Event{e} }
+
+// retitle names on a train's draft the changes it carries now, once for
+// each draft and list: a promotion tried again does not retitle again. It
+// runs on its own, beside the promotion, and nothing waits for it: the
+// names are cosmetic, and a failure is logged and the train goes on. A
+// transient failure is tried again with a growing wait, up to the effect
+// retries; a permanent one is not.
+func (d *Daemon) retitle(dr adapter.Drafter, t state.TrainID, pr string, changes []state.ChangeID, head, base state.Head) {
+	mark := fmt.Sprint(pr, changes)
+	if d.retitled[t] == mark {
+		return
+	}
+	s := d.st.State()
+	for id := range d.retitled {
+		if tr := s.Trains[id]; tr == nil || !tr.Draft && tr.State != state.TrainBuilt {
+			delete(d.retitled, id)
+		}
+	}
+	d.retitled[t] = mark
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		for n := 1; ; n++ {
+			ctx, cancel := context.WithTimeout(context.Background(), d.cfg.Call)
+			err := dr.Retitle(ctx, t, pr, changes, head, base)
+			cancel()
+			if err == nil {
+				return
+			}
+			if adapter.IsPermanent(err) || n > d.cfg.Retries {
+				d.log.Printf("train %s: draft %s not retitled (try %d); it goes on: %v", t, pr, n, err)
+				return
+			}
+			d.log.Printf("train %s: draft %s not retitled (try %d), tried again: %v", t, pr, n, err)
+			select {
+			case <-time.After(jitter(d.backoff(n))):
+			case <-d.quit:
+				return
+			}
+		}
+	}()
+}
 
 // inert reports whether every change of the line is inert content only
 // (§5.4), by the forge's whole file list of each. Anything short of that is

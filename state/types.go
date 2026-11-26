@@ -301,7 +301,11 @@ type Train struct {
 	PR       string   // the train's own pull request
 	// Draft says PR was opened as a draft at assembly, while the cheap tier
 	// runs, and has not been promoted (§5.4). Opened promotes it.
-	Draft  bool
+	Draft bool
+	// Named is the changes the draft was opened naming, in ride order.
+	// A line left out at the build leaves it naming more than the train
+	// carries; the runner retitles the draft at promotion.
+	Named  []ChangeID
 	Reruns int  // reruns after a flake or a timing failure
 	Judged int  // reruns ordered at J1
 	Pushes int  // transient push refusals
@@ -410,6 +414,7 @@ func (s State) clone() State {
 	for k, v := range s.Trains {
 		t := *v
 		t.Lines = append([]LineID(nil), v.Lines...)
+		t.Named = append([]ChangeID(nil), v.Named...)
 		if v.Behind != nil {
 			t.Behind = &Deferred{Blamed: append([]LineID(nil), v.Behind.Blamed...), Evidence: v.Behind.Evidence}
 		}
