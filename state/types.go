@@ -543,14 +543,50 @@ func (s State) DecidedRed() TrainID {
 }
 
 // Forced is the forced line (docs/queue-as-bag.md §4), or none: the oldest
-// starving line that is the queue's to move (the first of Starved). It
-// leads the next train assembled, and no other train is assembled, but one
-// of prioritised lines, until it is ready to.
+// starving line that is the queue's to move (Starved) and can ride now,
+// with what beneath it still waits (CanRide). It leads the next train
+// assembled, and no other train is assembled but one of prioritised lines.
+// A starving line that can't ride now (stale, in conflict with trunk, with
+// no current green line check, or at the heads it was charged on) is not
+// forced, and never blocks another train: the ready lines assemble as
+// normal, and it rides first again once it is ready (owner's ruling of 27
+// Nov).
 func (s State) Forced() LineID {
-	if st := s.Starved(); len(st) > 0 {
-		return st[0]
+	for _, f := range s.Starved() {
+		if s.trainReady(s.ForcedTrain(f)) {
+			return f
+		}
 	}
 	return ""
+}
+
+// CanRide reports whether the waiting line l could join a train that takes
+// the lines in taken, as far as its own facts go: it is not stale, its need
+// is met (I3), it is not in conflict with trunk, it is not at the heads it
+// was charged on, and, where the queue requires one, it holds a current
+// green line check (I10). The caps, a split's halves and riding alone are
+// the joining rule's.
+func (s State) CanRide(l *Line, taken map[LineID]bool) bool {
+	return l.State == LineWaiting && l.Stale == "" && s.NeedMet(l, taken) &&
+		l.Conflict == "" && !l.AtChargedHeads() &&
+		(!s.Config.RequireCheck || l.CheckCurrent())
+}
+
+// trainReady reports whether the lines ids, bottom first, can ride
+// together, whole, in one train: each can ride (CanRide), all are of one
+// half of a split, and none that must ride alone has company.
+func (s State) trainReady(ids []LineID) bool {
+	taken := map[LineID]bool{}
+	group := -1
+	for _, id := range ids {
+		l := s.Lines[id]
+		if l == nil || !s.CanRide(l, taken) || (l.Alone && len(ids) > 1) || (group >= 0 && l.Group != group) {
+			return false
+		}
+		group = l.Group
+		taken[id] = true
+	}
+	return true
 }
 
 // Starved is every starving line that is the queue's to move, oldest
