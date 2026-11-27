@@ -258,12 +258,12 @@ Checked(l) == green[l] = ver[l] + 1 /\ greenBy[l] = cv
 
 \* The policy of assembly.  A line starves at StarveAt; it is urgent while
 \* it waits and nothing beneath it is held or with its owner.  One line is
-\* forced at a time, the oldest urgent one, with whatever beneath it still
-\* waits.  Every urgent line, and what it stands on, comes before the rest.
+\* forced at a time, the oldest urgent one that can ride now (Forced,
+\* below), with whatever beneath it still waits.  Every urgent line, and
+\* what it stands on, comes before the rest.
 Starving(l) == bumps[l] >= StarveAt
 Urgent == {l \in Lines : /\ line[l] = "waiting" /\ Starving(l)
                          /\ \A b \in Under(l) : line[b] \in {"waiting", "riding", "landed"}}
-Forced == {f \in Urgent : \A g \in Urgent : Rank[f] <= Rank[g]}
 ForcedTrain(f) == {f} \cup {b \in Under(f) : line[b] = "waiting"}
 InStarved(l) == \E f \in Urgent : l \in ForcedTrain(f)
 
@@ -277,13 +277,20 @@ Ready(k, S) ==
     /\ line[k] = "waiting" /\ Checked(k) /\ ~conflict[k]
     /\ \A b \in BaseOf(k) : line[b] \in {"landed", "riding"} \/ b \in S
 
+\* The forced line: the oldest urgent line whose train (it and what beneath
+\* it still waits) can ride now.  An urgent line that can't (unchecked, or
+\* in conflict with trunk) is not forced, and blocks no train: it still
+\* comes first in the order, and is forced once it is ready (owner's ruling
+\* of 27 Nov).
+Ripe == {f \in Urgent : \A k \in ForcedTrain(f) : Ready(k, ForcedTrain(f))}
+Forced == {f \in Ripe : \A g \in Ripe : Rank[f] <= Rank[g]}
+
 \* No line is left out that could ride and comes before one taken.  A
 \* train may still stop short (the caps), so S is any front of the order.
 InOrder(S) == \A l \in S : \A k \in Lines \ S : Before(k, l) => ~Ready(k, S)
 
-\* While a line is forced, every train assembled holds it and what it
-\* stands on, so none is assembled until it is ready; other lines may ride
-\* behind it, in the order.  Only a manual priority goes before it.
+\* While a line is forced (it is ready), every train assembled holds it and
+\* what it stands on; other lines may ride behind it, in the order.  Only a manual priority goes before it.
 Policy(S) ==
     /\ InOrder(S)
     /\ Forced # {} =>

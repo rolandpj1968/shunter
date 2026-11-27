@@ -38,7 +38,7 @@ Assembly is a pure function: from the bag, the chain, the settings and the time,
 **The order.** Lines are taken in this order, and a line that can't be taken is skipped, with its reason, as today (§5.3):
 
 1. **Lines with a manual priority**, oldest first.
-2. **The starving lines** (§4), oldest first, each with what beneath it still waits, the forced line leading. While the forced line is not yet ready, step 1 is the whole policy.
+2. **The starving lines** (§4), oldest first, each with what beneath it still waits, the forced line leading. A starving line that can't ride yet is skipped, as any line is, and holds back nothing (§4).
 3. **Everything else, by the age of its stack.** A line's key is the born of the bottom waiting line of its stack, then its depth in the stack. An unstacked line's key is its own born.
 
 **Stacks drain from the bottom.** Step 3's key puts a whole waiting stack where its bottom is, bottom first. A stack then rides in one train when the caps allow, and in consecutive trains when they don't, and each landing leaves less to rebuild. Under the order of offers alone, the upper lines of a stack wait behind every unrelated line offered in between, trunk moves under them, and a four-deep stack was rebuilt four times over. A line counts as stacked only by ancestry, which the gate already reads (§5.2), so a stack can't be declared to gain a place. The producer's side of this is P2: stack only when necessary, and keep a stack shallow unless its base already rides.
@@ -64,13 +64,15 @@ It doesn't go up for a no-verdict or an infrastructure failure of its own train 
 
 **Starving.** A line is starving when its count reaches `starve_after_cycles`, or, as the backstop, when its queue time reaches `starve_after_hours`. Both are settings, and 0 turns either off.
 
-**The forced line.** One line is forced at a time: the oldest starving line that is the queue's to move (it waits, and nothing beneath it is held, parked or with its owner). While a line is forced:
+**The forced line.** One line is forced at a time: the oldest starving line that is the queue's to move (it waits, and nothing beneath it is held, parked or with its owner) and that can ride now, with what beneath it still waits (§3: not stale, not in conflict, with a current green line check). A starving line that can't ride now is not forced and blocks no train: the others assemble as normal, and it is forced once it is ready (owner's ruling of 27 Nov). While a line is forced:
 
-1. **No other train is assembled until it is ready,** but one of prioritised lines. Trains already riding finish; they are at most D, so they can reopen the forced line's conflict at most D more times.
-2. **The runner makes it ready.** If it is in conflict, the rebase hook is asked at once; its line check goes first, against trunk as it is.
+1. **No other train is assembled without it,** but one of prioritised lines. Trains already riding finish; they are at most D, so they can reopen the forced line's conflict at most D more times.
+2. **The runner makes a starving line ready.** If it is in conflict, the rebase hook is asked at once; its line check goes first, against trunk as it is.
 3. **It rides first,** at the head of the next train: that line and whatever beneath it in its stack still waits, taken whole and past the caps. The train then fills behind it as any train does: the other starving lines, oldest first, then everything else by the order of §3, up to the caps. The chain need not be empty. Being first, it is merged first, so a line of the train that conflicts with it is the one left out.
 4. **It rides alone only where company is the problem.** Where any line would: it is marked to ride alone, or it alone reaches the change cap (§3). And where it has been, since its last offer, in `starve_alone_after` (default 1) failed trains that blame could not clear it from: a failure that went to J1 with it aboard, because blame named nobody or every line of several, a half of a split that failed so included. Its company is then the doubt, and riding alone proves it good or bad. Such a starving line is skipped when it is not the forced one, and, forced, its train is it and whatever beneath it still waits. The count of those failures starts again at a new offer; 0 turns the rule off.
 5. **If its train fails, the existing rules judge it** (PROTOCOL.md §5.6, J1). Blame that names it charges it: its count is halved and it goes to its owner. Blame that names another line charges that line; the starving line, uncharged, counts the cycle, stays starving, and leads the next train. A train of one line is charged by elimination, as before.
+
+*Amended* (owner's ruling, 27 Nov): "A starving line that isn't ready never blocks other trains." As first ruled, a forced line stopped every other train until it was ready. A starving line that was stale, with a conflict in a file the conflict hook could not regenerate, stopped the queue for a quarter of an hour with seven checked lines waiting.
 
 *Amended* (owner's ruling, 26 Nov, of his ruling of 24 Nov): "Prioritise old PRs, but they ride normally with trains." As first ruled, the forced line rode alone, in a train of its own assembled when the chain was empty. After an outage, the oldest lines all starved at once and went out as a string of single-line trains, which throttled the queue when it was furthest behind. The same day he refined it: "Sometimes alone": alone where company is the problem (item 4).
 
@@ -121,7 +123,7 @@ It doesn't go up for a no-verdict or an infrastructure failure of its own train 
 | Property | Says |
 |---|---|
 | `NoJump` | a line that could ride is left waiting, while a line behind it in the order is taken, only for a manual priority or for a starving line and what it stands on |
-| `ForcedFirst` | while a line is forced, every train assembled holds it and what it stands on, or is of prioritised lines; other lines may ride with it (amended 26 Nov: it was its own train, alone, with the chain empty) |
+| `ForcedFirst` | while a line is forced (only a starving line that can ride now is: amended 27 Nov), every train assembled holds it and what it stands on, or is of prioritised lines; other lines may ride with it (amended 26 Nov: it was its own train, alone, with the chain empty) |
 | `CountFallsOnlyByACharge` | a line's count goes down only by a failure of its own |
 | `VerdictsByPresentChecker` | a line is taken only on a green of the present checker; a charge is made by the present checker or the judge; a charge is dropped only when its checker has been replaced |
 | `NoStackOnRed` | no train is assembled while a train in the chain is decided red |
@@ -147,6 +149,8 @@ The owner ruled on 24 November: yes to the five that shape the design (1, 2, 4, 
 12. **Should a train decided red, but not first, be replaced at once?** *Recommended: no.* Its failure may be inherited, so it can't be judged, and replacing it needs a second chain (§10's "speculating on failure"). Keeping its place costs a chain position, not a CI slot. **Ruled: no, as recommended.**
 
 **Amended on 26 November.** The owner amended the ruling of 24 November: "Prioritise old PRs, but they ride normally with trains." A starving line rides first, at the head of the next train, which fills behind it as usual; several starving lines lead the same train, oldest first, up to the caps. It rides alone where any line would (marked alone, or alone at the change cap), and, refined the same day ("sometimes alone"), where it has been in `starve_alone_after` (1) failed trains since its last offer that blame could not clear it from. §3, §4, §7 and §8 read accordingly; questions 6 and 8 stand (a forced line still stops other trains until it is ready, and a priority still outranks it), and question 7 is overtaken.
+
+**Amended on 27 November.** The owner ruled that a starving line that isn't ready never blocks other trains. Only a starving line that can ride now is forced; one that is stale, in conflict, or without a current green line check is skipped, and the others assemble as normal. Question 6 now reads: a forced line, being ready, stops every other train only until it rides.
 
 ## 10. Changes to the protocol
 

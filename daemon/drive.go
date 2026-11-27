@@ -69,8 +69,9 @@ func soloStarving(l *state.Line, c Caps) bool {
 func Join(s state.State, c Caps) []state.LineID { return join(s, c) }
 
 // join is the joining rule. While a line is forced (docs/queue-as-bag.md
-// §4), only prioritised lines may ride before it. Once it is ready, it
-// leads the next train, with what beneath it still waits, past the caps;
+// §4), only prioritised lines may ride before it. A line is forced only
+// once it is ready (a starving line that can't ride now blocks nothing);
+// it then leads the next train, with what beneath it still waits, past the caps;
 // the train then fills behind it in the policy's order, so that the other
 // starving lines come next, oldest first, and then everything else (owner's
 // ruling of 26 Nov: they ride normally with trains). It rides alone where
@@ -93,11 +94,9 @@ func join(s state.State, c Caps) []state.LineID {
 	if out := joinFrom(s, c, nil, first); len(out) > 0 {
 		return out
 	}
+	// Forced, it is ready (state.State.Forced): a starving line that can't
+	// ride now is not forced, and the others assemble as normal.
 	want := s.ForcedTrain(f)
-	if got := joinFrom(s, Caps{}, nil, want); len(got) != len(want) {
-		// Not ready yet: nothing else is assembled meanwhile.
-		return nil
-	}
 	if soloStarving(s.Lines[f], c) {
 		return want
 	}
@@ -134,17 +133,11 @@ func joinFrom(s state.State, c Caps, lead, ids []state.LineID) []state.LineID {
 		}
 		l := s.Lines[id]
 		n := len(l.Changes)
-		if l.Stale != "" || !s.NeedMet(l, taken) {
-			continue
-		}
-		if l.Conflict != "" || l.AtChargedHeads() {
-			// In conflict with trunk, or still at the heads it was charged
-			// on: it waits for a push.
-			continue
-		}
-		if s.Config.RequireCheck && !l.CheckCurrent() {
-			// No current green line check (I10): it waits for one. A line
-			// stacked on it waits too, since its need is then unmet.
+		if !s.CanRide(l, taken) {
+			// Stale, its need unmet, in conflict with trunk, still at the
+			// heads it was charged on, or with no current green line check
+			// (I10): it waits. A line stacked on it waits too, since its
+			// need is then unmet.
 			continue
 		}
 		switch {

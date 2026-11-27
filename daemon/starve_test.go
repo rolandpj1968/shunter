@@ -144,3 +144,70 @@ func TestAStarvingLineTheRunnerCannotRebaseIsRaised(t *testing.T) {
 		t.Fatal("the judge was not told")
 	}
 }
+
+// A starving line that can't ride now never blocks other trains (issue
+// #58): stale, in conflict with trunk, or with no current green line check,
+// it is skipped, and the ready lines assemble as normal. Once it is ready,
+// it rides first again. Each train is also one the state machine accepts.
+func TestAnUnreadyStarvingLineBlocksNoTrain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		checked bool // l1 starts with a green line check
+		unready []state.Event
+		ready   []state.Event
+	}{
+		{"stale", true, []state.Event{state.Stale{Line: "l1", Reason: "its head and base disagree"}},
+			[]state.Event{state.Fresh{Line: "l1"}}},
+		{"in conflict with trunk", false, []state.Event{state.LineChecked{Line: "l1", Heads: []state.Head{"h"}, Trunk: "T0", Conflict: "x.go"}},
+			[]state.Event{state.HeadMoved{Line: "l1", Change: "c-l1", Head: "h2"}, state.LineChecked{Line: "l1", Heads: []state.Head{"h2"}, Trunk: "T0", Pass: true}}},
+		{"no line check", false, nil,
+			[]state.Event{state.LineChecked{Line: "l1", Heads: []state.Head{"h"}, Trunk: "T0", Pass: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := state.New("T0", state.Config{Depth: 2, RequireCheck: true})
+			for _, id := range []state.LineID{"l1", "l2", "l3", "l4"} {
+				s = apply(t, s, state.Offer{Line: id, Changes: []state.Change{{ID: state.ChangeID("c-" + string(id)), Head: "h"}}}, state.GateAccept{Line: id})
+				if id != "l1" || tc.checked {
+					s = apply(t, s, state.LineChecked{Line: id, Heads: []state.Head{"h"}, Trunk: "T0", Pass: true})
+				}
+			}
+			s = apply(t, s, tc.unready...)
+			s = apply(t, s, state.Starving{Line: "l1", Why: "3 cycles"})
+			caps := daemon.Caps{Lines: 8, StarveAlone: 1}
+			if f := s.Forced(); f != "" {
+				t.Fatalf("an unready line is forced: %q", f)
+			}
+			got := daemon.Join(s, caps)
+			if want := []state.LineID{"l2", "l3", "l4"}; !slices.Equal(got, want) {
+				t.Fatalf("join took %v, want %v", got, want)
+			}
+			apply(t, s, state.Assemble{Train: "t1", Lines: got})
+			// Ready, it is forced again and leads the next train.
+			s = apply(t, s, tc.ready...)
+			if f := s.Forced(); f != "l1" {
+				t.Fatalf("ready, forced %q", f)
+			}
+			got = daemon.Join(s, caps)
+			if want := []state.LineID{"l1", "l2", "l3", "l4"}; !slices.Equal(got, want) {
+				t.Fatalf("ready, join took %v, want %v", got, want)
+			}
+			apply(t, s, state.Assemble{Train: "t1", Lines: got})
+		})
+	}
+}
+
+// Of two starving lines, an older one that can't ride does not hold back
+// a younger one that can: the younger is forced and leads.
+func TestAnUnreadyStarvingLineDoesNotHoldBackAReadyOne(t *testing.T) {
+	s := apply(t, waiting(t, 1, 1, 1, 1),
+		state.Stale{Line: "l1", Reason: "its head and base disagree"},
+		state.Starving{Line: "l1", Why: "12h"}, state.Starving{Line: "l3", Why: "3 cycles"})
+	if f := s.Forced(); f != "l3" {
+		t.Fatalf("forced %q, want l3", f)
+	}
+	got := daemon.Join(s, daemon.Caps{Lines: 8})
+	if want := []state.LineID{"l3", "l2", "l4"}; !slices.Equal(got, want) {
+		t.Fatalf("join took %v, want %v", got, want)
+	}
+	apply(t, s, state.Assemble{Train: "t1", Lines: got})
+}
