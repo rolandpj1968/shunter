@@ -229,11 +229,23 @@ func CheckStep(before, after State, fx []Effect) []error {
 			}
 		}
 	}
+	cancelled := map[TrainID]bool{}
+	for _, e := range fx {
+		if e.Kind == EffCancelRun {
+			cancelled[e.Train] = true
+		}
+	}
 	for id, b := range before.Trains {
 		a := after.Trains[id]
 		if a == nil {
 			fail("I8", "train %s vanished", id)
 			continue
+		}
+		// A train built has a CI run, or is about to: one that ends without
+		// landing has its run cancelled, since closing its pull request
+		// does not stop it. Cancelling a finished run is harmless.
+		if b.State >= TrainBuilt && b.State.Live() && !a.State.Live() && a.State != TrainLanded && !cancelled[id] {
+			fail("run", "train %s went from %s to %s and its run was not cancelled", id, b.State, a.State)
 		}
 		// An ended train stays ended; a cancelled train never lands.
 		if !b.State.Live() && a.State != b.State {

@@ -743,6 +743,7 @@ func TestCheckCatchesBreaches(t *testing.T) {
 		{"I4", func(s *State) { s.Lines["b"].Changes[0].Head = "b2" }, nil},
 		{"ended", func(s *State) { s.Trains["t1"].State = TrainGreen }, nil},
 		{"I1", func(s *State) { s.Trains["t2"].Head = "swapped" }, nil},
+		{"run", func(s *State) { s.Trains["t2"].State = TrainVoid }, nil},
 	}
 	for i, c := range steps {
 		before, after := base(), base()
