@@ -582,6 +582,14 @@ func (m *machine) apply(ev Event) error {
 			return bad(ErrState, "already paused")
 		}
 		m.s.Paused, m.s.PauseWhy = true, e.Reason
+	case RequireCheck:
+		if e.Reason == "" {
+			return bad(ErrReason, "a change of the line-check gate")
+		}
+		if e.On == m.s.Config.RequireCheck {
+			return bad(ErrState, "the line-check gate is already %s", onOff(e.On))
+		}
+		m.s.Config.RequireCheck = e.On
 	case Resume:
 		if !m.s.Paused {
 			return bad(ErrState, "not paused")
@@ -1027,7 +1035,7 @@ func (m *machine) assemble(e Assemble) error {
 	}
 	lines := append([]LineID(nil), e.Lines...)
 	m.s.SortByPolicy(lines)
-	t := &Train{ID: e.Train, Lines: lines, BaseHead: base, Light: true}
+	t := &Train{ID: e.Train, Lines: lines, BaseHead: base, Light: true, Gated: m.s.Config.RequireCheck}
 	for _, id := range lines {
 		// The train's tier is its heaviest line's: light only when every
 		// line is inert.
@@ -1607,4 +1615,11 @@ func (m *machine) verified(e LandingVerified) error {
 	m.setTrain(t, TrainLanding, CauseVerified, "")
 	m.emit(Effect{Kind: EffPush, Train: t.ID, Head: t.Head, Expect: t.BaseHead})
 	return nil
+}
+
+func onOff(on bool) string {
+	if on {
+		return "on"
+	}
+	return "off"
 }

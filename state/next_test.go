@@ -864,10 +864,15 @@ func TestRandomWalk(t *testing.T) {
 				}
 			case 25:
 				if r.Intn(3) == 0 {
-					if r.Intn(2) == 0 {
+					switch r.Intn(3) {
+					case 0:
 						ev = Stale{Line: pick(), Reason: "r"}
-					} else {
+					case 1:
 						ev = Fresh{Line: pick()}
+					default:
+						// The line-check gate, turned at run time with
+						// trains in flight (I10 holds of gated trains).
+						ev = RequireCheck{On: !h.s.Config.RequireCheck, Reason: "r"}
 					}
 				} else if h.s.Paused {
 					ev = Resume{}
@@ -940,6 +945,15 @@ func settle(t *testing.T, h *harness, trains *int) {
 				continue
 			}
 			break
+		}
+		if l := h.s.Lines[w[0]]; h.s.Config.RequireCheck && !l.CheckCurrent() {
+			// The line checker is fair too: under the gate it checks the
+			// line before the runner takes it.
+			heads := make([]Head, 0, len(l.Changes))
+			for _, c := range l.Changes {
+				heads = append(heads, c.Head)
+			}
+			h.must(LineChecked{Line: l.ID, Heads: heads, Trunk: h.s.Trunk, Pass: true, Version: h.s.Checkers[CheckerLineCheck]})
 		}
 		*trains++
 		h.must(Assemble{Train: TrainID(fmt.Sprintf("t%d", *trains)), Lines: w[:1]})

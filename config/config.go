@@ -110,7 +110,9 @@ type Queue struct {
 	MaxLines   int `toml:"max_lines"`
 	MaxChanges int `toml:"max_changes"`
 	// RequireCheck: no line joins a train without a current green line
-	// check (PROTOCOL.md §5.4, I10).
+	// check (PROTOCOL.md §5.4, I10). It is read once, when the store is
+	// created; on a running queue, shunt config require-check on|off
+	// changes it, as a recorded act.
 	RequireCheck bool `toml:"require_check"`
 	// Drafts: each train is shown from assembly as a draft pull request,
 	// promoted when its pre-flight passes (PROTOCOL.md §5.4).
@@ -161,6 +163,10 @@ type Deadlines struct {
 	Claim Duration `toml:"claim"`
 	// Unanswered paces a line check given up with no verdict.
 	Unanswered Duration `toml:"unanswered"`
+	// CheckSilence: while the queue requires line checks, the judge is
+	// told when the line checker has been silent this long with a line
+	// waiting for it. An alert only.
+	CheckSilence Duration `toml:"check_silence"`
 }
 
 // Retry is the two retry budgets: the adapters' short one, inside a call,
@@ -365,7 +371,7 @@ func (f *File) Daemon(version string) daemon.Config {
 		Tiers:   tier.Rules{Inert: f.Tiers.Inert, Read: f.Tiers.Read},
 		Tick:    d.Tick.Duration, Poll: d.Poll.Duration, Call: d.Call.Duration,
 		Build: d.Build.Duration, Open: d.Open.Duration, CI: d.CI.Duration, Push: d.Push.Duration,
-		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration, Claim: d.Claim.Duration, Unanswered: d.Unanswered.Duration,
+		J1: d.J1.Duration, Park: d.Park.Duration, Review: d.Review.Duration, Owner: d.Owner.Duration, Claim: d.Claim.Duration, Unanswered: d.Unanswered.Duration, CheckSilence: d.CheckSilence.Duration,
 		MaxLines: f.Queue.MaxLines, MaxChanges: f.Queue.MaxChanges, Drafts: f.Queue.Drafts, Retries: f.Retry.Effects, Backoff: f.Retry.EffectWait.Duration,
 		Heartbeats: f.path(f.Owners.Heartbeats), Alive: f.Owners.Alive.Duration, Ownerless: f.Owners.Ownerless.Duration,
 		StarveCycles: orDefault(f.Queue.StarveAfterCycles, defaultStarveCycles),

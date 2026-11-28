@@ -73,10 +73,12 @@ func Check(s State) []error {
 		case l.State != LineRiding && (rides || l.Train != ""):
 			fail("I8", "line %s is %s and is in train %s%s", id, l.State, t, l.Train)
 		}
-		// I10, checked before assembled: where the queue requires line
-		// checks, a line rides only on the heads its green check was taken
-		// on. (A head pushed while its train lands is kept apart, in Late.)
-		if s.Config.RequireCheck && l.State == LineRiding && !l.CheckCurrent() {
+		// I10, checked before assembled: a line of a train assembled while
+		// the queue required line checks rides only on the heads its green
+		// check was taken on. (A head pushed while its train lands is kept
+		// apart, in Late.) The gate turned on later does not reach a train
+		// in flight.
+		if rides && s.Trains[t].Gated && !l.CheckCurrent() {
 			fail("I10", "line %s rides with no green line check on its present heads", id)
 		}
 		// A line in conflict with trunk, or at the heads it was charged on,

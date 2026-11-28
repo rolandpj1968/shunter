@@ -161,6 +161,18 @@ func (d *Daemon) exec(ctx context.Context, req Request) Response {
 			return errResp(errors.New("usage: pause --reason <why>"))
 		}
 		return d.act(actor, state.Pause{Reason: req.Reason}, "paused")
+	case "config":
+		// config require-check on|off --reason <why>: the line-check gate
+		// (§5.4, I10), changed on a running queue as a recorded act.
+		if len(req.Args) != 2 || req.Args[0] != "require-check" || (req.Args[1] != "on" && req.Args[1] != "off") || req.Reason == "" {
+			return errResp(errors.New("usage: config require-check on|off --reason <why>"))
+		}
+		on := req.Args[1] == "on"
+		ok := "require-check on: a line rides only on a current green line check; trains in flight are not affected"
+		if !on {
+			ok = "require-check off: waiting lines ride without a line check"
+		}
+		return d.act(actor, state.RequireCheck{On: on, Reason: req.Reason}, ok)
 	case "resume":
 		var trunk state.Head
 		if len(req.Args) == 1 {
@@ -599,6 +611,9 @@ func (d *Daemon) gateNow(ctx context.Context, line state.LineID, owed []store.Ke
 func Status(s state.State, pending []store.Keyed) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "trunk %s", s.Trunk)
+	if s.Config.RequireCheck {
+		b.WriteString("  line checks required")
+	}
 	if s.Paused {
 		fmt.Fprintf(&b, "  PAUSED: %s", s.PauseWhy)
 	}

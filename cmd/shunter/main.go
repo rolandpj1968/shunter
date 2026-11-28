@@ -478,7 +478,7 @@ func watchRun(fl map[string]string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|claim|checked|checker|handover|priority|hold|release|cancel|requeue|restore|withdraw|pause|resume|judge|status|export|import> ...")
+	fmt.Fprintln(os.Stderr, "usage: shunter serve --config FILE | shunter shadow --config FILE ... | shunter watch --config FILE | shunt <queue|claim|checked|checker|handover|priority|config|hold|release|cancel|requeue|restore|withdraw|pause|resume|judge|status|export|import> ...")
 	os.Exit(2)
 }
 
