@@ -70,6 +70,13 @@ type Config struct {
 	// unless the claim names its own lease. At its end the line may be
 	// claimed again, and the judge is told. Default 30m.
 	Claim time.Duration
+	// CheckSilence bounds the line checker's silence while the queue
+	// requires line checks (§5.4): a line waits for its check, and no
+	// claim, verdict or release has come for this long. The judge is told,
+	// and again each time that long passes. An alert only: the gate stays
+	// shut until the judge turns it off. Default 45m, longer than one
+	// check under the default claim lease.
+	CheckSilence time.Duration
 	// Unanswered is how long a line whose checker gave its claim up with no
 	// verdict (checked --action infra) is not given to a checker that asks
 	// for any line. Pacing only: a named claim takes it. Default 10m.
@@ -130,6 +137,7 @@ func (c Config) withDefaults() Config {
 	d(&c.Ownerless, time.Hour)
 	d(&c.Claim, 30*time.Minute)
 	d(&c.Unanswered, 10*time.Minute)
+	d(&c.CheckSilence, 45*time.Minute)
 	d(&c.Backoff, 5*time.Second)
 	if c.MaxLines <= 0 {
 		c.MaxLines = 8

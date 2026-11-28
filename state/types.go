@@ -315,7 +315,11 @@ type Train struct {
 	TreeWide bool
 	// Light says the train was assembled of inert lines only, so the light
 	// tier is enough for it (§5.4). A train with any other line is full.
-	Light  bool
+	Light bool
+	// Gated says the train was assembled while the queue required line
+	// checks (Config.RequireCheck), so I10 holds of its lines. The gate
+	// turned on later does not reach a train already in flight.
+	Gated  bool
 	Reason string
 	// Behind is a failure reported while a train ahead of this one was still
 	// undecided (§5.3). Nothing is judged on it yet: the failure may be the
@@ -352,7 +356,8 @@ type Config struct {
 	NoVerdictBudget int // no-verdict trains a line may ride before J3
 	PushRetries     int // transient push refusals before J3
 	// RequireCheck turns the line check into a gate (§5.4): no line
-	// is assembled into a train without a current green line check.
+	// is assembled into a train without a current green line check. The
+	// store's first record gives it; the event RequireCheck changes it.
 	RequireCheck bool
 }
 

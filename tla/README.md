@@ -32,6 +32,8 @@
 | `OneRecord` | invariant | I8: a line rides exactly when one live train carries it |
 | `EveryLineIsSpent` | liveness | L1: every line is eventually landed, returned or explicitly dropped |
 
+The line-check gate is always on in the model: every train is assembled under it, so `AssembledOnlyChecked` is I10 for every train. The gate's switch on a running queue (the event `require-check`) is not modelled; in Go, I10 holds of the trains assembled while the gate is on (`Train.Gated`), and a train already in flight when it is turned on is not touched. The random walk of `state` turns the switch with trains in flight.
+
 The judge is a nondeterministic choice within its menu (`JudgeCharge`, `JudgeRequeue`, `JudgeRerun`, `Hold`, `Abort`, `Prioritise`). Safety holds whatever it chooses.
 
 ## Fairness

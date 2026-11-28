@@ -83,6 +83,9 @@ depth = 2       # the speculation chain: trains in flight at once
 max_lines = 8   # lines in one train (J4)
 # max_changes = 12  # changes in one train, every change of a stack counted;
 #                   # unset or 0 is no cap. A line bigger than the cap rides alone.
+# require_check = true  # no line joins a train without a current green line
+#                       # check (§5.4). Read when the store is created; on a
+#                       # running queue: shunt config require-check on|off --reason
 # drafts = true    # show each train from assembly as a draft pull request,
 #                   # promoted (CI starts) when its pre-flight passes. A workflow
 #                   # run by pull request events should skip drafts.
@@ -109,6 +112,7 @@ j1 = "10m"      # J1's deadline, then its default
 park = "24h"    # a park whose condition cannot be tested is restored then
 claim = "30m"   # a line checker's claim (`shunt claim`), unless it names its own lease
 unanswered = "10m" # a line check given up with no verdict (`checked --action infra`) is offered again after this
+check_silence = "45m" # with require_check on, the judge is told when the line checker has been silent this long with a line waiting for it
 
 [retry]
 # Inside one adapter call: tries, and the waits between them.

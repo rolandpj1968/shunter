@@ -101,6 +101,10 @@ type Since struct {
 	// waiting. Nothing but landing or a withdrawal clears it.
 	Queued map[state.LineID]time.Duration `json:"queued,omitempty"`
 	Waits  map[state.LineID]time.Time     `json:"waits,omitempty"`
+	// Checker is the line checker's last sign of life (§5.4): a claim, a
+	// verdict, a claim given up, its declared version, or the line-check
+	// gate changed. Under the gate, a line waits on it.
+	Checker time.Time `json:"checker,omitempty"`
 }
 
 // QueueTime is the line's queue time at now.
@@ -312,7 +316,7 @@ func (st *Store) replay(r Record) error {
 			return fmt.Errorf("the machine now decides %s differently; start the version that wrote the log", state.Name(ev))
 		}
 		st.s = next
-		st.track(before, keyed, r.Time)
+		st.track(before, ev, keyed, r.Time)
 	}
 	for _, k := range r.Done {
 		delete(st.pending, k)
@@ -331,7 +335,15 @@ func keyEffects(seq uint64, fx []state.Effect) []Keyed {
 
 // track updates what is derived from an applied record: its pending effects
 // and the clocks of the deadlines.
-func (st *Store) track(before state.State, keyed []Keyed, at time.Time) {
+func (st *Store) track(before state.State, ev state.Event, keyed []Keyed, at time.Time) {
+	switch e := ev.(type) {
+	case state.CheckClaimed, state.LineChecked, state.ClaimReleased, state.RequireCheck:
+		st.since.Checker = at
+	case state.CheckerChanged:
+		if e.Checker == state.CheckerLineCheck {
+			st.since.Checker = at
+		}
+	}
 	for _, k := range keyed {
 		if k.Kind == state.EffRecord {
 			if k.Line != "" && k.Train == "" {
@@ -469,7 +481,7 @@ func (st *Store) Apply(actor string, ev state.Event, done ...string) (state.Stat
 	for _, k := range done {
 		delete(st.pending, k)
 	}
-	st.track(before, keyed, r.Time)
+	st.track(before, ev, keyed, r.Time)
 	var owed []Keyed
 	for _, k := range keyed {
 		if k.Kind != state.EffRecord {

@@ -28,6 +28,7 @@ func init() {
 		state.Abort{}, state.RequeueByHand{}, state.LandingVerified{}, state.PushOK{}, state.PushRefused{}, state.Pause{},
 		state.Resume{}, state.ExpireBudget{}, state.Stale{}, state.Fresh{}, state.LineChecked{}, state.HandOver{}, state.RebaseFailed{},
 		state.CheckClaimed{}, state.ClaimExpired{}, state.ClaimReleased{}, state.Prioritise{}, state.PriorityEnded{}, state.DraftOpened{}, state.Starving{}, state.CheckerChanged{},
+		state.RequireCheck{},
 	} {
 		events[state.Name(e)] = reflect.TypeOf(e)
 	}

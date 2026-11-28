@@ -219,6 +219,7 @@ func (d *Daemon) tick() {
 	}
 	d.restores(now)
 	d.claims(now, s)
+	d.silentChecker(now, s)
 	d.priorities(now, s)
 	d.starving(now)
 	d.reviews(now, s)
@@ -524,6 +525,50 @@ func (d *Daemon) claims(now time.Time, s state.State) {
 			d.alert(fmt.Sprintf("claim:%s:%s", id, c.Until.UTC().Format(time.RFC3339)), fmt.Sprintf("the line check of %s claimed by %s ran past its lease and was given up: is the checker alive?", id, c.By))
 		}
 	}
+}
+
+// silentChecker raises a line checker gone silent while the queue requires
+// line checks (§5.4, L3): lines wait for their checks, and the checker has
+// given no sign of life (a claim, a verdict, a claim given up, its version
+// declared, the gate changed) for CheckSilence, counted from no earlier than
+// the oldest such line began to wait. The judge is told, and again each
+// CheckSilence that passes. Nothing is opened: the gate stays shut until
+// the judge turns it off.
+func (d *Daemon) silentChecker(now time.Time, s state.State) {
+	if !s.Config.RequireCheck {
+		return
+	}
+	since := d.st.Since()
+	var from time.Time
+	var lines []string
+	for _, id := range s.Waiting() {
+		l := s.Lines[id]
+		if l.CheckCurrent() || l.Conflict != "" || l.Stale != "" || l.AtChargedHeads() {
+			continue
+		}
+		at, ok := since.Lines[id]
+		if !ok {
+			continue
+		}
+		if from.IsZero() || at.Before(from) {
+			from = at
+		}
+		lines = append(lines, string(id))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	if since.Checker.After(from) {
+		from = since.Checker
+	}
+	quiet := now.Sub(from)
+	if quiet <= d.cfg.CheckSilence {
+		return
+	}
+	n := int(quiet / d.cfg.CheckSilence)
+	d.alert(fmt.Sprintf("checker-silent:%s:%d", from.UTC().Format(time.RFC3339), n),
+		fmt.Sprintf("the line check has answered nothing for %s while %d lines wait for it under require_check (%s): no train takes them until it does. Is the line checker alive? The gate stays shut; to open it: shunt config require-check off --reason <why>",
+			quiet.Round(time.Minute), len(lines), strings.Join(lines, ", ")))
 }
 
 // priorities ends each manual priority whose expiry has passed

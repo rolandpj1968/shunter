@@ -248,6 +248,16 @@ type PushRefused struct {
 // Pause stops new trains (J3). Trains in flight finish.
 type Pause struct{ Reason string }
 
+// RequireCheck turns the line-check gate on or off at run time (§5.4,
+// I10), with a reason; a store's first record gives its first setting.
+// Turned on, a waiting line with no current green line check stays waiting
+// until its check passes; a train already assembling or riding is not
+// affected. Turned off, waiting lines need no check to ride.
+type RequireCheck struct {
+	On     bool
+	Reason string
+}
+
 // Resume lifts a pause. If another writer moved trunk, Trunk is where the
 // judge found it, and the machine adopts it as a foreign landing.
 type Resume struct{ Trunk Head }
@@ -403,6 +413,7 @@ func (PushOK) event() string          { return "push-ok" }
 func (PushRefused) event() string     { return "push-refused" }
 func (Pause) event() string           { return "pause" }
 func (Resume) event() string          { return "resume" }
+func (RequireCheck) event() string    { return "require-check" }
 func (ExpireBudget) event() string    { return "expire-budget" }
 func (Stale) event() string           { return "stale" }
 func (Fresh) event() string           { return "fresh" }
